@@ -3,6 +3,7 @@
   "entry": [
     "src/open-pr.ts",
     "src/install-target.ts",
+    "src/check-credentials.ts",
     "src/dev/*.ts",
     "src/agents/*.ts",
     "src/workflows/*.ts",
