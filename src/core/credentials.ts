@@ -16,8 +16,10 @@ export function detectPersistedCredentials(repo: string): string[] {
   const findings: string[] = [];
 
   // actions/checkout persist-credentials stores the token as
-  // `http.<server>/.extraheader = AUTHORIZATION: basic <base64>`.
-  for (const { key, value } of localConfigEntries(repo, "^http\\..*\\.extraheader$")) {
+  // `http.<server>/.extraheader = AUTHORIZATION: basic <base64>`; the
+  // unscoped `http.extraheader` applies to every HTTP request and can
+  // persist a token just the same.
+  for (const { key, value } of localConfigEntries(repo, "^http(\\..*)?\\.extraheader$")) {
     if (/^\s*(proxy-)?authorization\s*:/i.test(value)) {
       findings.push(`${key} carries an Authorization header`);
     }

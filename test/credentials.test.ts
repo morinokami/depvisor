@@ -35,6 +35,16 @@ test("flags the actions/checkout extraheader without leaking the token", () => {
   assert.ok(summary.includes("persist-credentials: false"));
 });
 
+test("flags the unscoped http.extraHeader too", () => {
+  const repo = tempRepo();
+  // No URL subsection — applies to every HTTP request, same token exposure.
+  execSync('git config http.extraHeader "AUTHORIZATION: basic c2VjcmV0"', { cwd: repo });
+  const findings = detectPersistedCredentials(repo);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0] ?? "", /^http\.extraheader /);
+  assert.ok(!findings[0]?.includes("c2VjcmV0"));
+});
+
 test("a non-authorization extraheader is not a credential", () => {
   const repo = tempRepo();
   execSync('git config "http.https://github.com/.extraheader" "X-Trace-Id: 1"', { cwd: repo });
