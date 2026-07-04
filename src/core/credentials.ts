@@ -26,10 +26,22 @@ export function detectPersistedCredentials(repo: string): string[] {
   }
 
   // Tokens embedded in a remote URL, either as the username
-  // (https://<token>@github.com/…) or as x-access-token:<token>.
-  for (const { key, value } of localConfigEntries(repo, "^remote\\..*\\.url$")) {
+  // (https://<token>@github.com/…) or as x-access-token:<token>. pushurl is
+  // its own key: a clean fetch URL can still hide a credentialed push URL.
+  for (const { key, value } of localConfigEntries(repo, "^remote\\..*\\.(url|pushurl)$")) {
     if (httpUrlHasUserinfo(value)) {
       findings.push(`${key} embeds credentials in the remote URL`);
+    }
+  }
+
+  // url.<base>.insteadOf rewrites (the common private-registry token setup)
+  // carry the credentialed URL in the key's SUBSECTION — the value only holds
+  // the prefix being replaced — so the key must be redacted in the finding.
+  for (const { key } of localConfigEntries(repo, "^url\\..*\\.(insteadof|pushinsteadof)$")) {
+    const kind = key.endsWith(".pushinsteadof") ? "pushinsteadof" : "insteadof";
+    const base = key.slice("url.".length, -`.${kind}`.length);
+    if (httpUrlHasUserinfo(base)) {
+      findings.push(`url.<redacted>.${kind} rewrites remote URLs to one embedding credentials`);
     }
   }
 

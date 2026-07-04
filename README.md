@@ -71,8 +71,8 @@ jobs:
   `actions/checkout` (the default is `true`). depvisor keeps tokens away from the
   AI agent and from the target's install scripts, so it fails at startup if it
   finds credentials in the checkout (an Authorization header in `.git/config`,
-  a token embedded in a remote URL, a persisted SSH key, or a repo-local
-  credential helper).
+  a token embedded in a remote URL or `insteadOf` rewrite, a persisted SSH key,
+  or a repo-local credential helper).
 - package.json defines at least one of `build` / `lint` / `test`, or the
   `verify_commands` input names your checks explicitly. These checks must pass
   on the base branch before depvisor runs.

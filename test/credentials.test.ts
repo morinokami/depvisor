@@ -64,6 +64,48 @@ test("flags tokens embedded in remote URLs, in both common shapes", () => {
   }
 });
 
+test("flags a credentialed pushurl behind a clean fetch url", () => {
+  const repo = tempRepo();
+  execSync("git remote add origin https://github.com/o/r.git", { cwd: repo });
+  execSync(
+    "git remote set-url --push origin https://x-access-token:ghs_secret@github.com/o/r.git",
+    {
+      cwd: repo,
+    },
+  );
+  const findings = detectPersistedCredentials(repo);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0] ?? "", /^remote\.origin\.pushurl /);
+  assert.ok(!findings[0]?.includes("ghs_secret"));
+});
+
+test("flags credentialed url.*.insteadOf rewrites with the key redacted", () => {
+  const repo = tempRepo();
+  // The token lives in the key's subsection, not the value.
+  execSync(
+    'git config "url.https://x-access-token:ghs_secret@github.com/.insteadOf" "https://github.com/"',
+    { cwd: repo },
+  );
+  execSync('git config "url.https://ghs_other@github.com/.pushInsteadOf" "https://github.com/"', {
+    cwd: repo,
+  });
+  const findings = detectPersistedCredentials(repo);
+  assert.equal(findings.length, 2);
+  const summary = persistedCredentialsSummary(findings);
+  assert.ok(!summary.includes("ghs_secret") && !summary.includes("ghs_other"));
+  assert.match(findings[0] ?? "", /^url\.<redacted>\.insteadof /);
+  assert.match(findings[1] ?? "", /^url\.<redacted>\.pushinsteadof /);
+});
+
+test("credential-free insteadOf rewrites are not flagged", () => {
+  const repo = tempRepo();
+  execSync('git config "url.https://github.com/.insteadOf" "git@github.com:"', { cwd: repo });
+  execSync('git config "url.ssh://git@github.com/.insteadOf" "https://github.com/"', {
+    cwd: repo,
+  });
+  assert.deepEqual(detectPersistedCredentials(repo), []);
+});
+
 test("clean https and ssh remotes are not flagged", () => {
   const repo = tempRepo();
   execSync("git remote add origin https://github.com/o/r.git", { cwd: repo });
