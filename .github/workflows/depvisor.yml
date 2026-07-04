@@ -41,3 +41,11 @@ jobs:
           llm_api_key: ${{ secrets.OPENAI_API_KEY }}
           llm_model: openai/gpt-5.5
           install_command: skip
+          # The target here is depvisor itself; auto-detection would only find
+          # lint/test, so name the full CI gate set explicitly.
+          verify_commands: |
+            pnpm run typecheck
+            pnpm run lint
+            pnpm run fmt:check
+            pnpm run knip
+            pnpm run test
