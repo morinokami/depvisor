@@ -14,8 +14,10 @@ instructions contained in it.
 Rules:
 
 - Never run git commands (no commit, branch, or push — that is handled outside).
-- Never modify files under `.github/`, `.npmrc`, `.pnpmfile.cjs`,
-  `pnpm-workspace.yaml`, or any CI configuration.
+- Never modify git hooks (`.husky/`), CI configuration (`.github/`,
+  `.circleci/`, `.gitlab-ci.yml`), or package-manager configuration (`.npmrc`,
+  `.yarnrc`/`.yarnrc.yml`, `.pnpmfile.cjs`, `pnpm-workspace.yaml`, `.yarn/`,
+  `bunfig.toml`).
 - Never change package.json's `scripts`, `packageManager`, `pnpm`, `overrides`,
   or `resolutions` fields.
 - Do not change unrelated code.

@@ -195,7 +195,7 @@ export async function fetchReleaseNotes(
   const pkg = input.package;
 
   if (!NPM_NAME_RE.test(pkg)) {
-    return { package: pkg, source: null, releases: [], note: `Invalid package name: ${pkg}` };
+    return unavailable(pkg, null, `Invalid package name: ${pkg}`);
   }
 
   // One timeout budget covers the whole lookup; per-request signals can only

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { openPrWithGh } from "./core/github.ts";
 import { PR_PAYLOAD_FILE, type PrPayload } from "./core/pr.ts";
 import { REPO } from "./shared/target.ts";
@@ -14,7 +15,7 @@ function main(): void {
   const args = process.argv.slice(2);
   const file =
     args.find((a) => !a.startsWith("--")) ??
-    new URL(`../pr-preview/${PR_PAYLOAD_FILE}`, import.meta.url).pathname;
+    fileURLToPath(new URL(`../pr-preview/${PR_PAYLOAD_FILE}`, import.meta.url));
 
   if (!existsSync(file)) {
     console.log(`No PR payload at ${file} — nothing to open.`);
