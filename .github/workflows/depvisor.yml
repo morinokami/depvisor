@@ -32,7 +32,7 @@ jobs:
             api.openai.com:443
             api.anthropic.com:443
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -41,3 +41,11 @@ jobs:
           llm_api_key: ${{ secrets.OPENAI_API_KEY }}
           llm_model: openai/gpt-5.5
           install_command: skip
+          # The target here is depvisor itself; auto-detection would only find
+          # lint/test, so name the full CI gate set explicitly.
+          verify_commands: |
+            pnpm run typecheck
+            pnpm run lint
+            pnpm run fmt:check
+            pnpm run knip
+            pnpm run test
