@@ -122,7 +122,7 @@ const narrative = (
   residualRisks: risks,
 });
 
-test("sanitizePrBody keeps buildPrPayload output intact (marker, table, diff fence)", () => {
+test("sanitizePrBody keeps buildPrPayload output intact without a diff section", () => {
   const candidates = [cand("@types/node", "18.0.0", "26.1.0")];
   const p = buildPrPayload({
     branch: "depvisor/major-types-node",
@@ -130,9 +130,9 @@ test("sanitizePrBody keeps buildPrPayload output intact (marker, table, diff fen
     candidates,
     narrative: narrative("Updated `Array<string>` types."),
     verification: [{ name: "build", ok: true, code: 0 }],
-    diffStat: "src/a.ts | 2 +-",
   });
   const clean = sanitizePrBody(p.body);
+  assert.ok(clean.startsWith("This PR updates the following packages:\n\n| Package | From | To |"));
   assert.ok(clean.includes(versionsMarker(candidates)));
   // The npm link must survive exit re-sanitization intact.
   assert.ok(
@@ -141,7 +141,7 @@ test("sanitizePrBody keeps buildPrPayload output intact (marker, table, diff fen
     ),
   );
   assert.ok(clean.includes("`Array<string>`"));
-  assert.ok(clean.includes("src/a.ts | 2 +-"));
+  assert.ok(!clean.includes("## Diff"));
 });
 
 test("buildPrPayload embeds versions in title, table and marker", () => {
@@ -152,14 +152,16 @@ test("buildPrPayload embeds versions in title, table and marker", () => {
     candidates,
     narrative: narrative("Updated types."),
     verification: [{ name: "build", ok: true, code: 0 }],
-    diffStat: "package.json | 2 +-",
   });
-  assert.match(p.title, /@types\/node 18\.0\.0 → 26\.1\.0/);
+  assert.match(p.title, /@types\/node 18\.0\.0 to 26\.1\.0/);
   assert.ok(
     p.body.includes(
       "| [`@types/node`](https://www.npmjs.com/package/@types/node/v/26.1.0) | 18.0.0 | 26.1.0 |",
     ),
   );
+  assert.ok(p.body.indexOf("| Package | From | To |") < p.body.indexOf("## What changed"));
+  assert.ok(p.body.includes("_Opened by depvisor._"));
+  assert.ok(!p.body.includes("The final merge decision is yours."));
   assert.ok(p.body.includes(versionsMarker(candidates)));
 });
 
@@ -175,7 +177,6 @@ test("buildPrPayload renders and sanitizes structured narrative sections", () =>
       ["Cache eviction timing changed <img src=http://evil/x.png>"],
     ),
     verification: [{ name: "test", ok: true, code: 0 }],
-    diffStat: "src/cache.ts | 4 +-",
   });
   assert.ok(p.body.includes("## Breaking changes addressed"));
   assert.ok(p.body.includes("- Default export removed  in v7")); // comment stripped
@@ -192,7 +193,6 @@ test("buildPrPayload keeps a narrative bullet on one line (no structure injectio
     candidates,
     narrative: narrative("Bumped lru-cache.", ["first line\n\n## Fake heading\nsecond line"]),
     verification: [{ name: "test", ok: true, code: 0 }],
-    diffStat: "",
   });
   // The text survives only mid-line, never as a real heading.
   assert.ok(!/^## Fake heading/m.test(p.body));
@@ -207,12 +207,12 @@ test("buildPrPayload omits narrative sections when their lists are empty", () =>
     candidates,
     narrative: narrative("A clean minor bump with nothing notable."),
     verification: [{ name: "test", ok: true, code: 0 }],
-    diffStat: "",
   });
   assert.ok(!p.body.includes("## Notable changes"));
   assert.ok(!p.body.includes("## Breaking changes addressed"));
   assert.ok(!p.body.includes("## Residual risks"));
-  assert.ok(p.body.includes("## Packages"));
+  assert.ok(!p.body.includes("## Packages"));
+  assert.ok(p.body.startsWith("This PR updates the following packages:"));
 });
 
 test("buildPrPayload links each package to its releases and compare pages", () => {
@@ -224,7 +224,6 @@ test("buildPrPayload links each package to its releases and compare pages", () =
     sourceRepos: new Map([["lru-cache", "isaacs/node-lru-cache"]]),
     narrative: narrative("Bumped lru-cache."),
     verification: [{ name: "test", ok: true, code: 0 }],
-    diffStat: "",
   });
   assert.ok(p.body.includes("| Package | From | To | Links |"));
   assert.ok(p.body.includes("[releases](https://github.com/isaacs/node-lru-cache/releases)"));
@@ -245,7 +244,6 @@ test("buildPrPayload drops links whose parts fail validation (fail-soft)", () =>
     sourceRepos: new Map([["bad name!", "evil/repo)](http://evil.example"]]),
     narrative: narrative("Bump."),
     verification: [{ name: "test", ok: true, code: 0 }],
-    diffStat: "",
   });
   assert.ok(!p.body.includes("evil.example"));
   assert.ok(!p.body.includes("npmjs.com"));
@@ -270,7 +268,6 @@ test("buildPrPayload renders notable changes only for packages in the update", (
       ],
     ),
     verification: [{ name: "test", ok: true, code: 0 }],
-    diffStat: "",
   });
   assert.ok(p.body.includes("## Notable changes"));
   assert.ok(p.body.includes("- `lru-cache`: The default export was removed"));

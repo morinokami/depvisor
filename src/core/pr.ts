@@ -196,13 +196,12 @@ export function buildPrPayload(args: {
   sourceRepos?: ReadonlyMap<string, string | null>;
   narrative: UpdateNarrative;
   verification: VerifyResult[];
-  diffStat: string;
 }): PrPayload {
-  const { branch, base, candidates, sourceRepos, narrative, verification, diffStat } = args;
+  const { branch, base, candidates, sourceRepos, narrative, verification } = args;
 
   const title =
     candidates.length <= 3
-      ? `deps: update ${candidates.map((c) => `${c.name} ${c.current} → ${c.latest}`).join(", ")}`
+      ? `deps: update ${candidates.map((c) => `${c.name} ${c.current} to ${c.latest}`).join(", ")}`
       : `deps: update ${candidates.map((c) => c.name).join(", ")}`;
 
   // The Links column only exists when at least one package resolved a source.
@@ -228,30 +227,26 @@ export function buildPrPayload(args: {
     .map((v) => `- ${v.ok ? "✅" : "❌"} ${v.name} (exit ${v.code})`)
     .join("\n");
 
+  const narrativeSections =
+    bulletSection("Notable changes", notable) +
+    bulletSection("Breaking changes addressed", narrative.breakingChangesAddressed) +
+    bulletSection("Residual risks", narrative.residualRisks);
+
   const body = [
+    "This PR updates the following packages:",
+    "",
+    versionTable,
+    "",
     "## What changed",
     "",
     sanitizeSummary(narrative.summary),
     "",
-    bulletSection("Notable changes", notable) +
-      bulletSection("Breaking changes addressed", narrative.breakingChangesAddressed) +
-      bulletSection("Residual risks", narrative.residualRisks) +
-      "## Packages",
-    "",
-    versionTable,
-    "",
-    "## Verification",
+    narrativeSections + "## Verification",
     "",
     checks,
     "",
-    "## Diff",
-    "",
-    "```",
-    diffStat.trim() || "(no diff)",
-    "```",
-    "",
     "---",
-    "_Opened by depvisor. The final merge decision is yours._",
+    "_Opened by depvisor._",
     "",
     versionsMarker(candidates),
   ].join("\n");

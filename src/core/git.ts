@@ -169,7 +169,3 @@ export function commitAll(repo: string, message: string): string | null {
   if (!hasStaged(repo)) return null;
   return commitStaged(repo, message);
 }
-
-export function diffStat(repo: string, base: string): string {
-  return git(repo, ["diff", "--stat", base, "HEAD"]);
-}
