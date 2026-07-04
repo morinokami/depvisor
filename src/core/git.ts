@@ -3,7 +3,9 @@ import { realpathSync } from "node:fs";
 
 /** Commit identity; github.ts uses the email to detect human commits. */
 const AGENT_NAME = "depvisor";
-export const AGENT_EMAIL = "agent@depvisor.dev";
+// GitHub's noreply domain never delivers mail, and `[`/`]` are invalid in
+// usernames, so no account can ever claim this address for attribution.
+export const AGENT_EMAIL = "depvisor[bot]@users.noreply.github.com";
 
 class GitError extends Error {}
 
