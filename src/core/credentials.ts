@@ -10,7 +10,9 @@ import { localConfigEntries } from "./git.ts";
  * the known common vectors — it is a misconfiguration gate, not a guarantee
  * that no credential exists anywhere.
  *
- * Findings name only config keys, never values: the values are the secrets.
+ * Findings name only config keys, never values — and URL-bearing subsections
+ * are redacted from the keys, because a subsection like
+ * `http.https://<token>@host/.extraheader` carries the secret itself.
  */
 export function detectPersistedCredentials(repo: string): string[] {
   const findings: string[] = [];
@@ -21,13 +23,14 @@ export function detectPersistedCredentials(repo: string): string[] {
   // persist a token just the same.
   for (const { key, value } of localConfigEntries(repo, "^http(\\..*)?\\.extraheader$")) {
     if (/^\s*(proxy-)?authorization\s*:/i.test(value)) {
-      findings.push(`${key} carries an Authorization header`);
+      findings.push(`${redactSubsection(key)} carries an Authorization header`);
     }
   }
 
   // Tokens embedded in a remote URL, either as the username
   // (https://<token>@github.com/…) or as x-access-token:<token>. pushurl is
   // its own key: a clean fetch URL can still hide a credentialed push URL.
+  // The subsection is the remote NAME, not a URL, so the key stays readable.
   for (const { key, value } of localConfigEntries(repo, "^remote\\..*\\.(url|pushurl)$")) {
     if (httpUrlHasUserinfo(value)) {
       findings.push(`${key} embeds credentials in the remote URL`);
@@ -35,13 +38,12 @@ export function detectPersistedCredentials(repo: string): string[] {
   }
 
   // url.<base>.insteadOf rewrites (the common private-registry token setup)
-  // carry the credentialed URL in the key's SUBSECTION — the value only holds
-  // the prefix being replaced — so the key must be redacted in the finding.
+  // carry the credentialed URL in the key's subsection — the value only holds
+  // the prefix being replaced.
   for (const { key } of localConfigEntries(repo, "^url\\..*\\.(insteadof|pushinsteadof)$")) {
-    const kind = key.endsWith(".pushinsteadof") ? "pushinsteadof" : "insteadof";
-    const base = key.slice("url.".length, -`.${kind}`.length);
-    if (httpUrlHasUserinfo(base)) {
-      findings.push(`url.<redacted>.${kind} rewrites remote URLs to one embedding credentials`);
+    const base = subsectionOf(key);
+    if (base !== null && httpUrlHasUserinfo(base)) {
+      findings.push(`${redactSubsection(key)} rewrites remote URLs to one embedding credentials`);
     }
   }
 
@@ -56,10 +58,28 @@ export function detectPersistedCredentials(repo: string): string[] {
   // config on developer machines; repo-local ones are persisted-credential
   // setups.
   for (const { key } of localConfigEntries(repo, "^credential\\.(.*\\.)?helper$")) {
-    findings.push(`${key} is set (repo-local credential helper)`);
+    findings.push(`${redactSubsection(key)} is set (repo-local credential helper)`);
   }
 
   return findings;
+}
+
+// Config keys are section.subsection.variable; sections and variables cannot
+// contain dots, so the subsection spans the first to the last dot. Subsections
+// CAN be full URLs — userinfo included — which is why findings redact them.
+
+function subsectionOf(key: string): string | null {
+  const first = key.indexOf(".");
+  const last = key.lastIndexOf(".");
+  if (first === -1 || last === first) return null;
+  return key.slice(first + 1, last);
+}
+
+function redactSubsection(key: string): string {
+  const first = key.indexOf(".");
+  const last = key.lastIndexOf(".");
+  if (first === -1 || last === first) return key; // no subsection, nothing secret-bearing
+  return `${key.slice(0, first)}.<redacted>${key.slice(last)}`;
 }
 
 function httpUrlHasUserinfo(raw: string): boolean {

@@ -27,12 +27,28 @@ test("flags the actions/checkout extraheader without leaking the token", () => {
   });
   const findings = detectPersistedCredentials(repo);
   assert.equal(findings.length, 1);
-  assert.match(findings[0] ?? "", /extraheader/);
+  assert.match(findings[0] ?? "", /^http\.<redacted>\.extraheader /);
   // Finding and summary name the key only — the value IS the token.
   const summary = persistedCredentialsSummary(findings);
   assert.ok(!findings[0]?.includes("c2VjcmV0"));
   assert.ok(!summary.includes("c2VjcmV0"));
   assert.ok(summary.includes("persist-credentials: false"));
+});
+
+test("redacts URL subsections that carry the secret themselves", () => {
+  const repo = tempRepo();
+  // Both are valid repo-local keys whose SUBSECTION embeds the credential.
+  execSync(
+    'git config "http.https://ghs_secret@github.com/.extraHeader" "AUTHORIZATION: basic x"',
+    { cwd: repo },
+  );
+  execSync('git config "credential.https://ghs_other@github.com.helper" store', { cwd: repo });
+  const findings = detectPersistedCredentials(repo);
+  assert.equal(findings.length, 2);
+  const summary = persistedCredentialsSummary(findings);
+  assert.ok(!summary.includes("ghs_secret") && !summary.includes("ghs_other"));
+  assert.match(findings[0] ?? "", /^http\.<redacted>\.extraheader /);
+  assert.match(findings[1] ?? "", /^credential\.<redacted>\.helper /);
 });
 
 test("flags the unscoped http.extraHeader too", () => {
