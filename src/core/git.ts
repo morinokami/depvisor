@@ -59,6 +59,30 @@ export function currentBranch(repo: string): string {
   return git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
 }
 
+/**
+ * Repo-local config entries whose keys match `keyPattern` (git lowercases
+ * section and variable names in its output; subsections keep their case).
+ * Values may hold secrets — callers must never log them.
+ */
+export function localConfigEntries(
+  repo: string,
+  keyPattern: string,
+): { key: string; value: string }[] {
+  // -z terminates entries with NUL and separates key from value with \n, so
+  // values containing newlines cannot masquerade as extra entries.
+  const res = probe(repo, ["config", "--local", "-z", "--get-regexp", keyPattern]);
+  if (res.code !== 0) return []; // no match — or no repo, which callers reject elsewhere
+  const entries: { key: string; value: string }[] = [];
+  for (const chunk of res.out.split("\0")) {
+    if (!chunk) continue;
+    const nl = chunk.indexOf("\n");
+    // A key set without `= value` comes back with no separator.
+    if (nl === -1) entries.push({ key: chunk, value: "" });
+    else entries.push({ key: chunk.slice(0, nl), value: chunk.slice(nl + 1) });
+  }
+  return entries;
+}
+
 function branchExists(repo: string, name: string): boolean {
   return probe(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]).code === 0;
 }

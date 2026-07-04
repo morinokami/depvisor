@@ -5,6 +5,7 @@ import * as v from "valibot";
 import updater from "../agents/updater.ts";
 import { resolveSourceRepo } from "../core/changelog.ts";
 import { collectCandidates } from "../core/collect.ts";
+import { detectPersistedCredentials, persistedCredentialsSummary } from "../core/credentials.ts";
 import { groupCandidates } from "../core/grouping.ts";
 import { detectPackageManager, type PmToolchain } from "../core/pm.ts";
 import {
@@ -63,6 +64,17 @@ function preflight():
       summary:
         `${REPO} is not the root of its own git repository. For the local fixture, ` +
         "run `pnpm run fixture:init` first.",
+    };
+  }
+  // Second layer of the credentials gate (the action runs check-credentials.ts
+  // before even installing the target): also covers local runs and workflows
+  // that bypass the composite action.
+  const credentialFindings = detectPersistedCredentials(REPO);
+  if (credentialFindings.length > 0) {
+    return {
+      ok: false,
+      status: "persisted-credentials",
+      summary: persistedCredentialsSummary(credentialFindings),
     };
   }
   if (hasChanges(REPO)) {

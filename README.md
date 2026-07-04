@@ -55,7 +55,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false # keep the token out of .git/config
+          persist-credentials: false # required — depvisor refuses persisted tokens
 
       - uses: morinokami/depvisor@v1
         with:
@@ -67,6 +67,12 @@ jobs:
 
 - **Repo setting**: enable "Allow GitHub Actions to create and approve pull requests"
   (Settings → Actions → General → Workflow permissions), or PR creation fails.
+- The checkout must not persist credentials: set `persist-credentials: false` on
+  `actions/checkout` (the default is `true`). depvisor keeps tokens away from the
+  AI agent and from the target's install scripts, so it fails at startup if it
+  finds credentials in the checkout (an Authorization header in `.git/config`,
+  a token embedded in a remote URL or `insteadOf` rewrite, a persisted SSH key,
+  or a repo-local credential helper).
 - package.json defines at least one of `build` / `lint` / `test`, or the
   `verify_commands` input names your checks explicitly. These checks must pass
   on the base branch before depvisor runs.
@@ -101,7 +107,9 @@ The remaining inputs (`llm_api_key_env`, `github_token`, `base_branch`,
 
 depvisor keeps the LLM and GitHub token in separate steps. Token-holding steps
 only snapshot existing PRs and push/open the final PR; the agent step gets only
-the LLM key.
+the LLM key. Because a checkout that persists credentials would defeat this
+separation from the outside, depvisor checks for persisted credentials first
+and refuses to start if it finds any.
 
 For each update, deterministic code picks a stable dependency group and verifies
 the base branch first. The agent then reads release notes, updates the dependency,

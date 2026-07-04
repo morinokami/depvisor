@@ -58,6 +58,16 @@ runs:
       with:
         node-version: ${{ inputs.node_version }}
 
+    # Fail-closed credentials gate: the agent step and the target's install
+    # scripts must never see a token, but actions/checkout defaults to
+    # persist-credentials: true, which leaves it in the checkout's .git/config.
+    # Refuse to run the rest of the pipeline next to it.
+    - name: Refuse persisted credentials in the target checkout
+      shell: bash
+      env:
+        DEPVISOR_TARGET_REPO: ${{ github.workspace }}
+      run: node "$DEPVISOR_HOME/src/check-credentials.ts"
+
     - name: Install depvisor dependencies
       shell: bash
       working-directory: ${{ env.DEPVISOR_HOME }}
