@@ -17,7 +17,6 @@ import {
   commitAll,
   commitPaths,
   currentBranch,
-  diffStat,
   discardWorkPast,
   ensureBranch,
   hasChanges,
@@ -308,7 +307,6 @@ export default defineWorkflow({
           residualRisks: result.residual_risks,
         },
         verification,
-        diffStat: diffStat(REPO, base),
       });
       emitPrPayload(PR_OUT_DIR, payload);
       return { status: "pr-prepared", branch, summary, verification };
