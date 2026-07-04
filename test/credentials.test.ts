@@ -35,6 +35,29 @@ test("flags the actions/checkout extraheader without leaking the token", () => {
   assert.ok(summary.includes("persist-credentials: false"));
 });
 
+test("flags the checkout v6+ credential persisted in a separate file via include.path", () => {
+  const repo = tempRepo();
+  // actions/checkout v6+ with persist-credentials: true writes the token into
+  // a separate config file (under RUNNER_TEMP in CI) and points the repo-local
+  // config at it with include.path — the credential must be seen through it.
+  const credsFile = join(mkdtempSync(join(tmpdir(), "depvisor-cred-temp-")), "credentials");
+  writeFileSync(
+    credsFile,
+    '[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic c2VjcmV0\n',
+  );
+  execSync(`git config include.path "${credsFile}"`, { cwd: repo });
+  const findings = detectPersistedCredentials(repo);
+  assert.equal(findings.length, 1);
+  assert.match(findings[0] ?? "", /^http\.<redacted>\.extraheader /);
+  assert.ok(!findings[0]?.includes("c2VjcmV0"));
+});
+
+test("a dangling include.path is ignored, not an error", () => {
+  const repo = tempRepo();
+  execSync('git config include.path "/nonexistent/depvisor-gone"', { cwd: repo });
+  assert.deepEqual(detectPersistedCredentials(repo), []);
+});
+
 test("redacts URL subsections that carry the secret themselves", () => {
   const repo = tempRepo();
   // Both are valid repo-local keys whose SUBSECTION embeds the credential.

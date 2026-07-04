@@ -72,7 +72,10 @@ export function localConfigEntries(
 ): { key: string; value: string }[] {
   // -z terminates entries with NUL and separates key from value with \n, so
   // values containing newlines cannot masquerade as extra entries.
-  const res = probe(repo, ["config", "--local", "-z", "--get-regexp", keyPattern]);
+  // --includes because actions/checkout v6+ persists the token in a separate
+  // file referenced via include.path from the repo-local config; git does not
+  // expand includes for --local by default, which would hide that credential.
+  const res = probe(repo, ["config", "--local", "--includes", "-z", "--get-regexp", keyPattern]);
   if (res.code !== 0) return []; // no match — or no repo, which callers reject elsewhere
   const entries: { key: string; value: string }[] = [];
   for (const chunk of res.out.split("\0")) {
