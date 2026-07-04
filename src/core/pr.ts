@@ -161,6 +161,7 @@ function bulletSection(title: string, items: string[]): string {
 // link; the table remains readable without it.
 const GITHUB_SLUG_RE = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 const VERSION_RE = /^[A-Za-z0-9.+-]+$/;
+const DEPVISOR_REPO_URL = "https://github.com/morinokami/depvisor";
 
 /** Package cell: link valid npm names/versions, otherwise render a code span. */
 function packageCell(c: Candidate): string {
@@ -246,7 +247,7 @@ export function buildPrPayload(args: {
     checks,
     "",
     "---",
-    "_Opened by depvisor._",
+    `_Opened by [depvisor](${DEPVISOR_REPO_URL})._`,
     "",
     versionsMarker(candidates),
   ].join("\n");

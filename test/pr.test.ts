@@ -16,6 +16,7 @@ const cand = (name: string, current: string, latest: string): Candidate => ({
   kind: "dev",
   updateType: "major",
 });
+const depvisorFooter = "_Opened by [depvisor](https://github.com/morinokami/depvisor)._";
 
 test("group branches derive from the stable key, not the member list", () => {
   assert.equal(branchNameForGroup("dev-minor"), "depvisor/dev-minor");
@@ -141,6 +142,7 @@ test("sanitizePrBody keeps buildPrPayload output intact without a diff section",
     ),
   );
   assert.ok(clean.includes("`Array<string>`"));
+  assert.ok(clean.includes(depvisorFooter));
   assert.ok(!clean.includes("## Diff"));
 });
 
@@ -160,7 +162,7 @@ test("buildPrPayload embeds versions in title, table and marker", () => {
     ),
   );
   assert.ok(p.body.indexOf("| Package | From | To |") < p.body.indexOf("## What changed"));
-  assert.ok(p.body.includes("_Opened by depvisor._"));
+  assert.ok(p.body.includes(depvisorFooter));
   assert.ok(!p.body.includes("The final merge decision is yours."));
   assert.ok(p.body.includes(versionsMarker(candidates)));
 });
