@@ -53,7 +53,7 @@ jobs:
             registry.npmjs.org:443
             api.openai.com:443
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false # required — depvisor refuses persisted tokens
 
