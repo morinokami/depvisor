@@ -4,6 +4,11 @@ import { join } from "node:path";
 import type { PmToolchain } from "./pm.ts";
 import type { Candidate, DepKind, UpdateType } from "./types.ts";
 
+// Deliberately unanchored, unlike changelog.ts's end-anchored parseSemver
+// (which must keep prerelease tags out of release-note windows): `outdated`
+// reports the `latest` dist-tag verbatim, and when a maintainer points it at a
+// prerelease (e.g. 2.0.0-rc.1) that exact string is what the update installs,
+// so it still classifies from its x.y.z core instead of being dropped.
 function parseVersion(v: string): [number, number, number] | null {
   const m = /(\d+)\.(\d+)\.(\d+)/.exec(v ?? "");
   if (!m) return null;
@@ -79,8 +84,10 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
   try {
     data = JSON.parse(raw) as Record<string, unknown>;
   } catch {
+    const stderr = (res.stderr ?? "").trim();
     throw new Error(
-      `${pm.name} outdated produced non-JSON output (exit ${res.status}): ${raw.slice(0, 200)}${(res.stderr ?? "").slice(0, 200)}`,
+      `${pm.name} outdated produced non-JSON output (exit ${res.status}): ${raw.slice(0, 200)}` +
+        (stderr ? ` — stderr: ${stderr.slice(0, 200)}` : ""),
     );
   }
   if (pm.name === "pnpm") return parsePnpmOutdated(data);

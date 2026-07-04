@@ -134,6 +134,8 @@ test("fetchReleaseNotes rejects an invalid package name without fetching", async
     { fetch: stubFetch({}, calls) },
   );
   assert.match(r.note, /Invalid package name/);
+  // Every result's note carries the untrusted-data framing, this path included.
+  assert.match(r.note, /UNTRUSTED/);
   assert.equal(calls.length, 0);
   assert.equal(r.releases.length, 0);
 });

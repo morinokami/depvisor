@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { defineWorkflow, ResultUnavailableError } from "@flue/runtime";
 import * as v from "valibot";
 import updater from "../agents/updater.ts";
@@ -29,7 +30,7 @@ import { branchNameForGroup, buildPrPayload, emitPrPayload, versionsMarker } fro
 import { checkDiffScope } from "../core/scope.ts";
 import { REPO } from "../shared/target.ts";
 
-const PR_OUT_DIR = new URL("../../pr-preview", import.meta.url).pathname;
+const PR_OUT_DIR = fileURLToPath(new URL("../../pr-preview", import.meta.url));
 
 // CI passes the default branch explicitly; local runs fall back to the current
 // branch after preflight rejects HEAD or depvisor/*.
@@ -256,7 +257,14 @@ export default defineWorkflow({
 
       // 4. Deterministic gates — authoritative regardless of what the agent claims.
       if (revParse(REPO, "HEAD") !== headBefore) {
-        return { status: "unexpected-commits", branch, summary, verification: [] };
+        return {
+          status: "unexpected-commits",
+          branch,
+          summary:
+            "The agent moved HEAD during its session, but commits are made " +
+            "deterministically outside the agent. Refusing to trust them; no PR.",
+          verification: [],
+        };
       }
       const scope = checkDiffScope(REPO, base);
       if (!scope.ok) {
