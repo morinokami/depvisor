@@ -1,8 +1,12 @@
+# @mongodb-js/zstd and node-liblzma (optional native accelerators of
+# @flue/runtime's just-bash) are deliberately denied: their builds need
+# network egress (release-assets.githubusercontent.com, nodejs.org) that
+# hardened CI blocks, and every run works fine on their JS fallbacks.
 allowBuilds:
   "@google/genai": true
-  "@mongodb-js/zstd": true
+  "@mongodb-js/zstd": false
   esbuild: true
-  node-liblzma: true
+  node-liblzma: false
   protobufjs: true
   sharp: true
   workerd: true
