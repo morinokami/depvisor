@@ -1,0 +1,34 @@
+{
+  "name": "depvisor",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GitHub Action that investigates, updates, fixes and explains dependency updates.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "fixture:init": "bash scripts/init-fixture.sh",
+    "fixture:init:pnpm": "bash scripts/init-fixture.sh --pm pnpm",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "knip": "knip",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@flue/runtime": "1.0.0-beta.9",
+    "valibot": "1.4.2"
+  },
+  "devDependencies": {
+    "@flue/cli": "1.0.0-beta.9",
+    "@types/node": "24.13.2",
+    "knip": "6.23.0",
+    "oxfmt": "0.57.0",
+    "oxlint": "1.72.0",
+    "typescript": "7.0.1-rc"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

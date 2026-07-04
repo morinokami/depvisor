@@ -1,0 +1,139 @@
+name: depvisor
+description: >-
+  AI agent that investigates dependency updates, applies them, fixes any
+  breakage, verifies with your build/test suite, and opens an explained PR.
+branding:
+  icon: package
+  color: purple
+
+inputs:
+  llm_api_key:
+    description: LLM provider API key. Exposed only to the agent step.
+    required: true
+  llm_model:
+    description: Model specifier for the provider, e.g. openai/gpt-5.5.
+    required: true
+  install_command:
+    description: Dependency install command; use "auto" for npm/pnpm lockfile installs or "skip" if already installed.
+    required: false
+    default: auto
+  llm_api_key_env:
+    description: Environment variable name used for llm_api_key; inferred for known providers.
+    required: false
+    default: ""
+  github_token:
+    description: Token used only by the PR snapshot, push, and PR creation steps.
+    required: false
+    default: ${{ github.token }}
+  base_branch:
+    description: Base branch for update branches and PRs.
+    required: false
+    default: ${{ github.event.repository.default_branch }}
+  verify_commands:
+    description: Newline-separated verification commands; replaces automatic build/lint/test script detection.
+    required: false
+    default: ""
+  node_version:
+    description: Node version used for depvisor and target verification scripts.
+    required: false
+    default: "24"
+
+runs:
+  using: composite
+  steps:
+    # Resolve two runner quirks in one place: nested `uses:` steps cannot read
+    # `github.action_path`, and pnpm/action-setup mangles absolute
+    # package_json_file paths by joining them to GITHUB_WORKSPACE.
+    - name: Resolve action path and pnpm version
+      shell: bash
+      run: |
+        echo "DEPVISOR_HOME=$GITHUB_ACTION_PATH" >> "$GITHUB_ENV"
+        echo "DEPVISOR_PNPM_VERSION=$(node -p "require(process.env.GITHUB_ACTION_PATH + '/package.json').packageManager.split('@')[1]")" >> "$GITHUB_ENV"
+
+    - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      with:
+        version: ${{ env.DEPVISOR_PNPM_VERSION }}
+
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: Install depvisor dependencies
+      shell: bash
+      working-directory: ${{ env.DEPVISOR_HOME }}
+      run: pnpm install --frozen-lockfile
+
+    # Keep the install command in an env var so shell metacharacters cannot
+    # break out while GitHub generates the run script. `eval` then runs the
+    # intended shell command; "auto" delegates to src/install-target.ts.
+    - name: Install target dependencies
+      if: inputs.install_command != 'skip'
+      shell: bash
+      env:
+        DEPVISOR_INSTALL_COMMAND: ${{ inputs.install_command }}
+        DEPVISOR_TARGET_REPO: ${{ github.workspace }}
+      run: |
+        if [ "$DEPVISOR_INSTALL_COMMAND" = "auto" ]; then
+          node "$DEPVISOR_HOME/src/install-target.ts"
+        else
+          eval "$DEPVISOR_INSTALL_COMMAND"
+        fi
+
+    # Deterministic, token-holding: snapshot open PRs so the (token-free)
+    # agent step can skip groups whose PR is already up to date.
+    - name: Snapshot open PRs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: gh pr list --state open --limit 100 --json headRefName,body > "$RUNNER_TEMP/depvisor-open-prs.json"
+
+    # Agent step: investigates, updates, fixes, verifies, and emits the PR
+    # payload. It has the LLM key and nothing else.
+    - name: Run depvisor (agent — no tokens)
+      shell: bash
+      working-directory: ${{ env.DEPVISOR_HOME }}
+      env:
+        LLM_API_KEY: ${{ inputs.llm_api_key }}
+        LLM_API_KEY_ENV: ${{ inputs.llm_api_key_env }}
+        DEPVISOR_MODEL: ${{ inputs.llm_model }}
+        DEPVISOR_TARGET_REPO: ${{ github.workspace }}
+        DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
+        DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
+        DEPVISOR_OPEN_PRS_FILE: ${{ runner.temp }}/depvisor-open-prs.json
+      run: |
+        # `required: true` on action inputs is documentation only — the runner
+        # does not enforce it for (composite) actions — so enforce it here.
+        # Without a model, the key may be exported under the wrong provider's
+        # env var and fail later during the agent run.
+        if [ -z "$DEPVISOR_MODEL" ]; then
+          echo "::error::The llm_model input is required (e.g. openai/gpt-5.5, anthropic/claude-sonnet-5). It selects the provider your llm_api_key belongs to."
+          exit 1
+        fi
+        # Hand the key to Flue under the env var its provider expects
+        # (@flue/cli docs/guide/models.md).
+        if [ -z "$LLM_API_KEY_ENV" ]; then
+          case "$DEPVISOR_MODEL" in
+            openai/*)     LLM_API_KEY_ENV=OPENAI_API_KEY ;;
+            anthropic/*)  LLM_API_KEY_ENV=ANTHROPIC_API_KEY ;;
+            openrouter/*) LLM_API_KEY_ENV=OPENROUTER_API_KEY ;;
+            *)
+              echo "::error::No default key env var for llm_model '$DEPVISOR_MODEL'; set the llm_api_key_env input."
+              exit 1 ;;
+          esac
+        fi
+        export "$LLM_API_KEY_ENV=$LLM_API_KEY"
+        unset LLM_API_KEY
+        pnpm exec flue run update-one --target node
+
+    # Deterministic, token-holding: push the branch and open (or refresh) the
+    # PR from the emitted payload. Refuses to force-push over human commits.
+    - name: Push branch & open PR
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        DEPVISOR_TARGET_REPO: ${{ github.workspace }}
+        # Trusted push target from the Actions context. Do not derive it from
+        # the target checkout's .git/config; the agent can rewrite that to a
+        # local bare repo whose server-side hooks would run here with GH_TOKEN.
+        DEPVISOR_REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}
+      run: node "$DEPVISOR_HOME/src/open-pr.ts"

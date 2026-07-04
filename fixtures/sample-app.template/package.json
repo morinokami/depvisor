@@ -1,0 +1,20 @@
+{
+  "name": "sample-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Throwaway target repo for depvisor prototyping. Deps are intentionally outdated.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "chalk": "4.1.2",
+    "lru-cache": "7.18.3",
+    "semver": "7.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "18.0.0",
+    "@types/semver": "7.3.0",
+    "typescript": "5.3.3"
+  }
+}

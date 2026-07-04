@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/open-pr.ts",
+    "src/install-target.ts",
+    "src/dev/*.ts",
+    "src/agents/*.ts",
+    "src/workflows/*.ts",
+    "flue.config.ts",
+    "test/*.test.ts"
+  ],
+  "project": ["src/**/*.ts", "test/**/*.ts"]
+}
