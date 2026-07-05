@@ -270,6 +270,36 @@ test("bunWorkspaceMap throws on an unsupported glob pattern (fail-closed)", () =
   assert.throws(() => bunWorkspaceMap(repo), /unsupported bun workspaces pattern/);
 });
 
+test("bunWorkspaceMap maps the root even when the root package omits a name", () => {
+  // A private monorepo root often has no `name`; `bun outdated -r` then labels
+  // its root dependencies with an empty Workspace cell, which must still resolve.
+  const repo = mkdtempSync(join(tmpdir(), "depvisor-bunws-"));
+  writeFileSync(
+    join(repo, "package.json"),
+    JSON.stringify({ private: true, workspaces: ["packages/*"] }),
+  );
+  mkdirSync(join(repo, "packages/a"), { recursive: true });
+  writeFileSync(join(repo, "packages/a/package.json"), JSON.stringify({ name: "@mono/a" }));
+  const map = bunWorkspaceMap(repo);
+  assert.equal(map.get(""), ""); // empty Workspace cell → root path
+  assert.equal(map.get("@mono/a"), "packages/a");
+});
+
+test("parseBunOutdated: an empty Workspace cell (unnamed private root) resolves to the root", () => {
+  // Regression: previously threw `unknown workspace ""` for a valid repo whose
+  // root package.json omits `name`.
+  const out = parseBunOutdated(
+    [
+      "| Package | Current | Update | Latest | Workspace |",
+      "| ms      | 2.0.0   | 2.0.0  | 2.1.3  |           |",
+    ].join("\n"),
+    new Map([["", ""]]),
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0]!.name, "ms");
+  assert.deepEqual(out[0]!.locations, [""]);
+});
+
 test("parsePnpmOutdated classifies via dependencyType and relativizes dependent locations", () => {
   // Shape verified against `pnpm outdated -r --format json` (pnpm 11).
   const out = parsePnpmOutdated(

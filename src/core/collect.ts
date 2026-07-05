@@ -155,10 +155,12 @@ export function parsePnpmOutdated(data: Record<string, unknown>, repoPath: strin
 const BUN_COLUMNS = ["Package", "Current", "Update", "Latest", "Workspace"] as const;
 
 /**
- * Map each bun workspace's package name to its repo-relative path (the root
- * package's name → ""), by expanding the root package.json `workspaces` globs.
- * `bun outdated -r` reports the declaring workspace by name, but `bun add`
- * scopes by path (`--cwd`), so this bridges the two. Supported patterns: a
+ * Map each bun workspace's package name to its repo-relative path, by expanding
+ * the root package.json `workspaces` globs. `bun outdated -r` reports the
+ * declaring workspace by name, but `bun add` scopes by path (`--cwd`), so this
+ * bridges the two. The root is keyed both by its `name` (when it has one) and by
+ * "" — `bun outdated -r` leaves the Workspace cell empty for a root dependency
+ * when the (typically private) root package omits `name`. Supported patterns: a
  * literal directory or a single-level `dir/*`; any other glob (`**`, braces,
  * negation) throws, and so does a workspace name that later has no path here —
  * fail-closed, because guessing would scope an update to the wrong manifest.
@@ -176,6 +178,10 @@ export function bunWorkspaceMap(repoPath: string): Map<string, string> {
   };
 
   const map = new Map<string, string>();
+  // The root workspace: `bun outdated -r` labels a root dependency with the root
+  // package's name when it has one, but with an EMPTY Workspace cell when the
+  // (typically private) root omits `name`. Map both spellings to the root path.
+  map.set("", "");
   const rootName = nameAt(".");
   if (rootName) map.set(rootName, "");
 
