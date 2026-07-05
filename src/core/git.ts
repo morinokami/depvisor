@@ -92,6 +92,10 @@ function branchExists(repo: string, name: string): boolean {
   return probe(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]).code === 0;
 }
 
+export function refExists(repo: string, ref: string): boolean {
+  return probe(repo, ["rev-parse", "--verify", "--quiet", ref]).code === 0;
+}
+
 export function revParse(repo: string, ref: string): string {
   return git(repo, ["rev-parse", ref]);
 }

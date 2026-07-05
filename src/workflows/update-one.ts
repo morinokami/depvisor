@@ -23,11 +23,19 @@ import {
   hasChanges,
   isClean,
   isRepoRoot,
+  refExists,
   revParse,
   tryCheckout,
 } from "../core/git.ts";
 import { branchNameForGroup, buildPrPayload, emitPrPayload, versionsMarker } from "../core/pr.ts";
 import { checkDiffScope } from "../core/scope.ts";
+import {
+  emitRunStatus,
+  statusFailsJob,
+  statusLogLine,
+  statusPackages,
+  type RunStatus,
+} from "../core/status.ts";
 import { REPO } from "../shared/target.ts";
 
 const PR_OUT_DIR = fileURLToPath(new URL("../../pr-preview", import.meta.url));
@@ -103,6 +111,16 @@ function preflight():
         "or set DEPVISOR_BASE_BRANCH explicitly.",
     };
   }
+  if (!refExists(REPO, base)) {
+    return {
+      ok: false,
+      status: "missing-base",
+      summary:
+        `Base branch '${base}' does not exist in the checkout. If this run was ` +
+        "dispatched from a non-default branch, run it from the default branch or set " +
+        "the base_branch input to a branch that was fetched.",
+    };
+  }
   // Explicit verify_commands replace auto-detection entirely; auto-detection
   // is only the fallback for the unconfigured case.
   const custom = parseVerifyCommands(VERIFY_COMMANDS);
@@ -121,6 +139,33 @@ function preflight():
   return { ok: true, base, verifySteps, pm };
 }
 
+function describeVerifySteps(steps: VerifyStep[]): string {
+  return steps.map((step) => step.name).join(", ");
+}
+
+function describeMembers(
+  members: readonly { name: string; current: string; latest: string }[],
+): string {
+  return members.map((m) => `${m.name} ${m.current} -> ${m.latest}`).join(", ");
+}
+
+function groupStart(title: string): void {
+  if (process.env.GITHUB_ACTIONS) process.stdout.write(`::group::${title}\n`);
+}
+
+function groupEnd(): void {
+  if (process.env.GITHUB_ACTIONS) process.stdout.write("::endgroup::\n");
+}
+
+function runVerificationPhase(title: string, steps: VerifyStep[]) {
+  groupStart(title);
+  try {
+    return runVerification(REPO, steps);
+  } finally {
+    groupEnd();
+  }
+}
+
 export default defineWorkflow({
   agent: updater,
   output: v.object({
@@ -132,31 +177,65 @@ export default defineWorkflow({
     ),
   }),
 
-  async run({ harness }) {
+  async run({ harness, log }) {
+    const finish = (status: RunStatus) => {
+      emitRunStatus(PR_OUT_DIR, status);
+      const line = statusLogLine(status);
+      if (statusFailsJob(status.status)) log.warn(line);
+      else log.info(line);
+      return {
+        status: status.status,
+        branch: status.branch,
+        summary: status.summary,
+        verification: status.verification,
+      };
+    };
+
     // 0. Preflight.
     const pre = preflight();
     if (!pre.ok) {
-      return { status: pre.status, branch: null, summary: pre.summary, verification: [] };
+      return finish({
+        status: pre.status,
+        branch: null,
+        base: null,
+        group: null,
+        summary: pre.summary,
+        packages: [],
+        verification: [],
+        prUrl: null,
+      });
     }
     const { base, verifySteps, pm } = pre;
+    log.info(
+      `preflight ok: pm=${pm.name}, base=${base}, verify steps: ${describeVerifySteps(verifySteps)}`,
+    );
 
     // 1. Scan + group, and take the first group.
     // TODO: loop over groups up to max_prs_per_run.
     const candidates = collectCandidates(REPO, pm);
-    const group = groupCandidates(candidates)[0];
+    const groups = groupCandidates(candidates);
+    const group = groups[0];
     if (!group) {
-      return {
+      return finish({
         status: "no-updates",
         branch: null,
+        base,
+        group: null,
         summary: "No outdated dependencies found.",
+        packages: [],
         verification: [],
-      };
+        prUrl: null,
+      });
     }
     const members = group.members;
     const pkgList = members.map((m) => m.name).join(", ");
     // The branch derives from the stable group key, not the member list —
     // member churn in e.g. dev-minor must not change the PR identity.
     const branch = branchNameForGroup(group.key);
+    const packages = statusPackages(members);
+    log.info(
+      `${candidates.length} update candidates -> ${groups.length} groups; picked "${group.key}" (${describeMembers(members)}), branch ${branch}`,
+    );
 
     // Skip-if-up-to-date: when an open PR for this branch already
     // covers exactly these target versions, skip the whole agent run.
@@ -169,33 +248,44 @@ export default defineWorkflow({
       }
       const existing = openPrs.find((p) => p.headRefName === branch);
       if (existing?.body?.includes(versionsMarker(members))) {
-        return {
+        return finish({
           status: "pr-up-to-date",
           branch,
+          base,
+          group: group.key,
           summary: `Open PR on ${branch} already covers ${pkgList} at the current target versions; skipped.`,
+          packages,
           verification: [],
-        };
+          prUrl: null,
+        });
       }
     }
 
     // 2. Deterministic: create/reset the update branch off the base.
+    log.info(`preparing branch ${branch} from base ${base}`);
     ensureBranch(REPO, branch, base);
 
     try {
       // Baseline gate: if verification is already red on base, stop before the
       // agent so later failures are attributable to the update.
-      const baseline = runVerification(REPO, verifySteps);
+      log.info(`baseline verification (${verifySteps.length} steps) ...`);
+      const baseline = runVerificationPhase("depvisor baseline verification", verifySteps);
       const broken = baseline.find((r) => !r.ok);
       if (broken) {
-        return {
+        return finish({
           status: "baseline-red",
           branch,
+          base,
+          group: group.key,
           summary:
             `Verification ('${broken.name}') already fails on '${base}' before any update. ` +
             "Fix the baseline first; no agent run, no PR.",
+          packages,
           verification: baseline,
-        };
+          prUrl: null,
+        });
       }
+      log.info("baseline verification passed");
 
       // Snapshot HEAD so the post-agent gate can detect commits the agent made
       // (it must not touch git); a moved HEAD means "unexpected-commits" → no PR.
@@ -214,6 +304,7 @@ export default defineWorkflow({
       const verifyCmds = verifySteps.map((s) => `\`${s.run}\``).join(", ");
       let result: v.InferOutput<typeof UpdateResult>;
       try {
+        log.info(`agent session starting for ${describeMembers(members)}`);
         const response = await session.prompt(
           `Update the following packages in this repository to the target versions listed:\n` +
             `${targets}\n` +
@@ -229,18 +320,23 @@ export default defineWorkflow({
           { result: UpdateResult },
         );
         result = v.parse(UpdateResult, response.data);
+        log.info(`agent structured result received: verdict=${result.verdict}`);
       } catch (err) {
         // The agent could not produce a validated result — whether Flue gave up
         // (ResultUnavailableError) or the defensive re-parse above rejected the
         // data (ValiError). Fail-closed either way: no PR — the pipeline
         // won't vouch for an update it can't describe.
         if (err instanceof ResultUnavailableError || err instanceof v.ValiError) {
-          return {
+          return finish({
             status: "no-structured-result",
             branch,
+            base,
+            group: group.key,
             summary: "The agent did not return a structured update result; no PR was created.",
+            packages,
             verification: [],
-          };
+            prUrl: null,
+          });
         }
         throw err;
       }
@@ -256,48 +352,83 @@ export default defineWorkflow({
         const reason = result.defer_reason
           ? `Deferred: ${result.defer_reason}`
           : `Deferred. ${summary}`;
-        return {
+        return finish({
           status: "deferred",
           branch,
+          base,
+          group: group.key,
           summary: leftovers
             ? `${reason} (leftover changes from the deferred attempt were discarded)`
             : reason,
+          packages,
           verification: [],
-        };
+          prUrl: null,
+        });
       }
 
       // 4. Deterministic gates — authoritative regardless of what the agent claims.
       if (revParse(REPO, "HEAD") !== headBefore) {
-        return {
+        return finish({
           status: "unexpected-commits",
           branch,
+          base,
+          group: group.key,
           summary:
             "The agent moved HEAD during its session, but commits are made " +
             "deterministically outside the agent. Refusing to trust them; no PR.",
+          packages,
           verification: [],
-        };
+          prUrl: null,
+        });
       }
+      log.info("unexpected-commits gate passed");
       const scope = checkDiffScope(REPO, base);
       if (!scope.ok) {
-        return {
+        return finish({
           status: "scope-violation",
           branch,
+          base,
+          group: group.key,
           summary: `Agent touched denied paths: ${scope.violations.join(", ")}. Nothing was committed.`,
+          packages,
           verification: [],
-        };
+          prUrl: null,
+        });
       }
-      const verification = runVerification(REPO, verifySteps);
+      log.info("scope gate passed");
+      log.info(`post-update verification gate (${verifySteps.length} steps) ...`);
+      const verification = runVerificationPhase("depvisor post-update verification", verifySteps);
       if (!verification.every((r) => r.ok)) {
-        return { status: "verification-failed", branch, summary, verification };
+        return finish({
+          status: "verification-failed",
+          branch,
+          base,
+          group: group.key,
+          summary,
+          packages,
+          verification,
+          prUrl: null,
+        });
       }
+      log.info("post-update verification passed");
       if (!hasChanges(REPO)) {
-        return { status: "no-changes", branch, summary, verification };
+        return finish({
+          status: "no-changes",
+          branch,
+          base,
+          group: group.key,
+          summary,
+          packages,
+          verification,
+          prUrl: null,
+        });
       }
 
       // 5. Two commits: the mechanical manifest bump, then the agent's code
       //    fixes — so a reviewer can see at a glance what the AI actually wrote.
       commitPaths(REPO, [...pm.manifests], `deps: bump ${pkgList}`);
       commitAll(REPO, `fix: adapt code to ${pkgList} update`);
+      log.info(`created deterministic commits for ${pkgList}`);
 
       // 6. Emit the PR payload. A separate token-holding step pushes and opens
       //    the PR. Source repo resolution is optional; unresolved packages just
@@ -320,8 +451,18 @@ export default defineWorkflow({
         },
         verification,
       });
-      emitPrPayload(PR_OUT_DIR, payload);
-      return { status: "pr-prepared", branch, summary, verification };
+      const payloadPath = emitPrPayload(PR_OUT_DIR, payload);
+      log.info(`PR payload emitted: ${payloadPath}`);
+      return finish({
+        status: "pr-prepared",
+        branch,
+        base,
+        group: group.key,
+        summary,
+        packages,
+        verification,
+        prUrl: null,
+      });
     } finally {
       // Leave the checkout back on base so the next run never chains off an
       // update branch. A dirty tree, e.g. after failed verification, stays on

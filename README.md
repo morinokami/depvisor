@@ -119,3 +119,17 @@ verify the final result before a PR is opened.
 The update branch uses a stable name, so reruns update the same PR instead of
 creating duplicates. It contains two commits: `deps: bump …` for the manifest and
 lockfile changes, and `fix: adapt code to …` for code changes written by the AI.
+
+### Reading the Actions result
+
+depvisor writes a job summary and annotation for every known outcome. Successful
+no-op outcomes (`no-updates`, `pr-up-to-date`, `deferred`) stay green and explain
+why no PR was opened. Outcomes that need attention (`baseline-red`,
+`no-verify-scripts`, `missing-base`, `scope-violation`, `verification-failed`,
+`open-pr-failed`, and similar fail-closed stops) fail the job so they are not
+missed in scheduled runs.
+
+The step summary includes the selected group, branch, package version table,
+verification results, and the PR URL when one was created or refreshed. Baseline
+and post-update verification output is grouped in the log so repeated test output
+is easier to scan.
