@@ -2,6 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "src/open-pr.ts",
+    "src/report-status.ts",
     "src/install-target.ts",
     "src/check-credentials.ts",
     "src/dev/*.ts",

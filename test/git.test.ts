@@ -10,6 +10,7 @@ import {
   commitAll,
   discardWorkPast,
   isRepoRoot,
+  refExists,
 } from "../src/core/git.ts";
 
 function tempRepo(): string {
@@ -31,6 +32,14 @@ test("isRepoRoot accepts only the top of an own repo, not subdirectories", () =>
   // operating there would silently hit the parent repo.
   execSync("mkdir -p sub", { cwd: repo });
   assert.equal(isRepoRoot(join(repo, "sub")), false);
+});
+
+test("refExists probes branches without throwing", () => {
+  const repo = tempRepo();
+  assert.equal(refExists(repo, "HEAD"), true);
+  assert.equal(refExists(repo, "missing-base"), false);
+  execSync("git branch missing-base", { cwd: repo });
+  assert.equal(refExists(repo, "missing-base"), true);
 });
 
 test("changedPaths does not truncate the first entry (leading-space status)", () => {

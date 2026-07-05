@@ -136,7 +136,7 @@ runs:
         fi
         export "$LLM_API_KEY_ENV=$LLM_API_KEY"
         unset LLM_API_KEY
-        pnpm exec flue run update-one --target node
+        pnpm --silent exec flue run update-one --target node
 
     # Deterministic, token-holding: push the branch and open (or refresh) the
     # PR from the emitted payload. Refuses to force-push over human commits.
@@ -150,3 +150,8 @@ runs:
         # local bare repo whose server-side hooks would run here with GH_TOKEN.
         DEPVISOR_REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}
       run: node "$DEPVISOR_HOME/src/open-pr.ts"
+
+    - name: Report depvisor result
+      if: always()
+      shell: bash
+      run: node "$DEPVISOR_HOME/src/report-status.ts"
