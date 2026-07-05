@@ -29,7 +29,24 @@ test("versionsMarker is order-independent (stable idempotency key)", () => {
   const a = versionsMarker([cand("b", "1.0.0", "2.0.0"), cand("a", "1.0.0", "1.2.0")]);
   const b = versionsMarker([cand("a", "1.0.0", "1.2.0"), cand("b", "1.0.0", "2.0.0")]);
   assert.equal(a, b);
-  assert.match(a, /depvisor:versions=a@1\.2\.0,b@2\.0\.0/);
+  // Root-declared deps carry a trailing "@" (empty workspace list).
+  assert.match(a, /depvisor:versions=a@1\.2\.0@,b@2\.0\.0@/);
+});
+
+test("versionsMarker keys on the declaring workspaces, not just name@latest", () => {
+  // An open PR that updated semver@7.7.3 in only packages/a must NOT be treated
+  // as up to date once packages/b also needs semver@7.7.3 — otherwise the extra
+  // workspace is silently skipped.
+  const oneWs = versionsMarker([{ name: "semver", latest: "7.7.3", locations: ["packages/a"] }]);
+  const twoWs = versionsMarker([
+    { name: "semver", latest: "7.7.3", locations: ["packages/a", "packages/b"] },
+  ]);
+  assert.notEqual(oneWs, twoWs);
+  // But workspace order within a member is irrelevant (still a stable key).
+  const twoWsReordered = versionsMarker([
+    { name: "semver", latest: "7.7.3", locations: ["packages/b", "packages/a"] },
+  ]);
+  assert.equal(twoWs, twoWsReordered);
 });
 
 test("sanitizeSummary strips hidden HTML comments and defuses mentions", () => {
