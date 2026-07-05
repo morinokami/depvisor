@@ -1,8 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   branchNameForGroup,
   buildPrPayload,
+  clearPrPreview,
+  emitPrPayload,
+  PR_PAYLOADS_DIR,
   sanitizePrBody,
   sanitizeSummary,
   versionsMarker,
@@ -270,6 +276,55 @@ test("buildPrPayload drops links whose parts fail validation (fail-soft)", () =>
   // No package resolved a valid source, so the Links column disappears entirely.
   assert.ok(p.body.includes("| Package | From | To |\n|---|---|---|"));
   assert.ok(p.body.includes("| `bad name!` | 1.0.0 | 2.0.0 |"));
+});
+
+test("emitPrPayload names payloads by processing order and branch slug", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-pr-"));
+  const p0 = buildPrPayload({
+    branch: "depvisor/dev-minor",
+    base: "main",
+    candidates: [cand("knip", "6.23.0", "6.24.0")],
+    narrative: narrative("Bump knip."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  const p1 = buildPrPayload({
+    branch: "depvisor/major-lru-cache",
+    base: "main",
+    candidates: [cand("lru-cache", "6.0.0", "11.0.0")],
+    narrative: narrative("Bump lru-cache."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  const a = emitPrPayload(dir, p0, 0);
+  const b = emitPrPayload(dir, p1, 1);
+  assert.ok(a.endsWith(join(PR_PAYLOADS_DIR, "00-depvisor-dev-minor.json")));
+  assert.ok(b.endsWith(join(PR_PAYLOADS_DIR, "01-depvisor-major-lru-cache.json")));
+  // Filenames sort in processing order, and round-trip the payload.
+  const files = readdirSync(join(dir, PR_PAYLOADS_DIR)).sort();
+  assert.deepEqual(files, ["00-depvisor-dev-minor.json", "01-depvisor-major-lru-cache.json"]);
+  assert.equal(
+    (JSON.parse(readFileSync(a, "utf8")) as { branch: string }).branch,
+    "depvisor/dev-minor",
+  );
+});
+
+test("clearPrPreview removes stale payloads and the status file before a run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-pr-"));
+  const payload = buildPrPayload({
+    branch: "depvisor/dev-minor",
+    base: "main",
+    candidates: [cand("knip", "6.23.0", "6.24.0")],
+    narrative: narrative("Bump knip."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  emitPrPayload(dir, payload, 0);
+  writeFileSync(join(dir, "status.json"), "{}");
+  assert.ok(existsSync(join(dir, PR_PAYLOADS_DIR)));
+
+  clearPrPreview(dir);
+  assert.ok(!existsSync(join(dir, PR_PAYLOADS_DIR)), "payloads dir must be gone");
+  assert.ok(!existsSync(join(dir, "status.json")), "status file must be gone");
+  // Safe to call when nothing exists.
+  clearPrPreview(dir);
 });
 
 test("buildPrPayload renders notable changes only for packages in the update", () => {

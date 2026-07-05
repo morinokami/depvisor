@@ -33,6 +33,10 @@ inputs:
     description: Newline-separated verification commands; replaces automatic build/lint/test script detection.
     required: false
     default: ""
+  max_prs:
+    description: Maximum number of open depvisor PRs to keep at once; a run opens new PRs only up to this ceiling.
+    required: false
+    default: "1"
   node_version:
     description: Node version used for depvisor and target verification scripts.
     required: false
@@ -93,12 +97,15 @@ runs:
         fi
 
     # Deterministic, token-holding: snapshot open PRs so the (token-free)
-    # agent step can skip groups whose PR is already up to date.
+    # agent step can skip groups whose PR is already up to date AND count open
+    # depvisor PRs against the max_prs ceiling. The ceiling fails open if the
+    # snapshot is truncated, hence the generous --limit (gh paginates; only
+    # repos with more open PRs than this can undercount).
     - name: Snapshot open PRs
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
-      run: gh pr list --state open --limit 100 --json headRefName,body > "$RUNNER_TEMP/depvisor-open-prs.json"
+      run: gh pr list --state open --limit 1000 --json headRefName,body > "$RUNNER_TEMP/depvisor-open-prs.json"
 
     # Agent step: investigates, updates, fixes, verifies, and emits the PR
     # payload. It has the LLM key and nothing else.
@@ -112,6 +119,12 @@ runs:
         DEPVISOR_TARGET_REPO: ${{ github.workspace }}
         DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
         DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
+        DEPVISOR_MAX_PRS: ${{ inputs.max_prs }}
+        # Forwarded for the reset between dependency groups: a custom command is
+        # reused verbatim; "auto"/"skip" fall back to the PM's lockfile-faithful
+        # install ("skip" skips only the pre-agent install step above, not the
+        # between-groups reinstall, which needs a committed lockfile).
+        DEPVISOR_INSTALL_COMMAND: ${{ inputs.install_command }}
         DEPVISOR_OPEN_PRS_FILE: ${{ runner.temp }}/depvisor-open-prs.json
       run: |
         # `required: true` on action inputs is documentation only — the runner
@@ -136,7 +149,7 @@ runs:
         fi
         export "$LLM_API_KEY_ENV=$LLM_API_KEY"
         unset LLM_API_KEY
-        pnpm --silent exec flue run update-one --target node
+        pnpm --silent exec flue run update --target node
 
     # Deterministic, token-holding: push the branch and open (or refresh) the
     # PR from the emitted payload. Refuses to force-push over human commits.

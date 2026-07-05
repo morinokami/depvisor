@@ -139,6 +139,22 @@ export function discardWorkPast(repo: string, ref: string): void {
   git(repo, ["clean", "-fd"]);
 }
 
+/**
+ * Reset the working tree to `base` between groups in a multi-PR run: force back
+ * to the base commit and remove untracked files, discarding whatever the
+ * previous group left behind (commits on its own branch — which stay reachable
+ * via that branch ref — or a dirty tree after a failed verification). `-f`
+ * because a failed group can leave conflicting tracked changes that a plain
+ * `checkout` would refuse; `clean -fd` (no `-x`) removes untracked files but
+ * keeps ignored ones like node_modules, which the reinstall that follows
+ * restores to the base lockfile state. Goes through `git()` so `NO_HOOKS`
+ * applies — `.git/` is attacker-writable.
+ */
+export function resetToBase(repo: string, base: string): void {
+  git(repo, ["checkout", "-f", base]);
+  git(repo, ["clean", "-fd"]);
+}
+
 /** Probe variant of hasChanges; a failing status counts as not clean. */
 export function isClean(repo: string): boolean {
   const res = probe(repo, ["status", "--porcelain"]);

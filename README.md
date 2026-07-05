@@ -104,11 +104,12 @@ jobs:
 
 ### Inputs
 
-| Input             | Purpose                                                                                                                    |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `llm_api_key`     | (required) Provider API key — reaches **only** the agent step                                                              |
-| `llm_model`       | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                          |
-| `verify_commands` | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection |
+| Input             | Purpose                                                                                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `llm_api_key`     | (required) Provider API key — reaches **only** the agent step                                                                                                                                                |
+| `llm_model`       | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                                                                                                            |
+| `verify_commands` | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                   |
+| `max_prs`         | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly |
 
 ```yaml
 # e.g. when your checks go by other names:
@@ -138,16 +139,30 @@ The update branch uses a stable name, so reruns update the same PR instead of
 creating duplicates. It contains two commits: `deps: bump …` for the manifest and
 lockfile changes, and `fix: adapt code to …` for code changes written by the AI.
 
+By default depvisor keeps at most one open PR at a time. Raise `max_prs` to let a
+single run open several PRs — one per dependency group — up to that many open
+depvisor PRs at once. It fills empty slots as you merge or close existing PRs, and
+always refreshes the PRs it already opened (a refresh does not consume a slot).
+Each group runs its own agent session with a fresh reinstall in between, so a
+higher `max_prs` costs proportionally more LLM calls and CI time. The
+between-groups reinstall happens even with `install_command: skip` (which only
+skips the install before the first group) and uses the package manager's
+lockfile-faithful install — so multi-group runs need a committed lockfile;
+without one, groups after the first are reported as `reinstall-unavailable`.
+
 ### Reading the Actions result
 
-depvisor writes a job summary and annotation for every known outcome. Benign
-no-PR outcomes (`no-updates`, `pr-up-to-date`, `deferred`, and `open-pr-blocked`
-when a human has taken over the PR branch) stay green and explain why no PR was
-opened. Outcomes that need attention (`baseline-red`, `no-verify-scripts`,
-`missing-base`, `scope-violation`, `verification-failed`, `open-pr-failed`, and
-similar fail-closed stops) fail the job so they are not missed in scheduled runs.
+depvisor writes a job summary and an annotation for every known outcome, at both
+the run level and per group. Benign outcomes (`no-updates`, `pr-up-to-date`,
+`deferred`, `open-pr-blocked` when a human has taken over the PR branch, and
+`held-back-by-limit` when the `max_prs` ceiling is reached) stay green and explain
+why no PR was opened. Outcomes that need attention (`baseline-red`, `reset-failed`,
+`no-verify-scripts`, `missing-base`, `scope-violation`, `verification-failed`,
+`reinstall-unavailable`, `open-pr-failed`, and similar fail-closed stops) fail the
+job so they are not missed in scheduled runs — a run stays red if any of its
+groups failed.
 
-The step summary includes the selected group, branch, package version table,
-verification results, and the PR URL when one was created or refreshed. Baseline
-and post-update verification output is grouped in the log so repeated test output
-is easier to scan.
+The step summary has a section per group depvisor touched, each with its branch,
+package version table, verification results, and the PR URL when one was created
+or refreshed. Baseline and post-update verification output is grouped in the log
+so repeated test output is easier to scan.

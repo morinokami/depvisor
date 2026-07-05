@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,6 +12,7 @@ import {
   isRepoRoot,
   manifestBumpPaths,
   refExists,
+  resetToBase,
 } from "../src/core/git.ts";
 
 function tempRepo(): string {
@@ -136,6 +137,36 @@ test("discardWorkPast drops commits, tracked edits, and untracked files", () => 
 
   assert.equal(execSync("git rev-parse HEAD", { cwd: repo, encoding: "utf8" }).trim(), head);
   assert.equal(execSync("git status --porcelain", { cwd: repo, encoding: "utf8" }).trim(), "");
+});
+
+test("resetToBase returns to base, discards work, and keeps ignored files + the branch ref", () => {
+  const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  // Capture the init default branch name; it varies (main vs master) by git config.
+  const base = sh("git rev-parse --abbrev-ref HEAD").trim();
+  // node_modules is ignored; the reinstall (not resetToBase) is what restores it.
+  writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm gitignore");
+
+  // A previous group: commit on its own branch, then a dirty tree + untracked file.
+  sh("git checkout -q -b depvisor/prod-x");
+  writeFileSync(join(repo, "src.ts"), "export const changed = true;\n");
+  sh("git -c user.email=t@t -c user.name=t commit -aqm 'group work'");
+  writeFileSync(join(repo, "src.ts"), "export const uncommittedEdit = true;\n"); // dirty tracked
+  writeFileSync(join(repo, "stray.ts"), "export {};\n"); // untracked
+  mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+  writeFileSync(join(repo, "node_modules/pkg/index.js"), "module.exports = 1;\n"); // ignored
+
+  resetToBase(repo, base);
+
+  // Back on base, tree clean, untracked removed.
+  assert.equal(sh("git rev-parse --abbrev-ref HEAD").trim(), base);
+  assert.equal(sh("git status --porcelain").trim(), "");
+  assert.ok(!existsSync(join(repo, "stray.ts")), "untracked files are removed");
+  // Ignored files survive (the reinstall restores them, not the reset).
+  assert.ok(existsSync(join(repo, "node_modules/pkg/index.js")), "ignored files are kept");
+  // The group's branch ref still exists so open-pr can push it.
+  assert.equal(refExists(repo, "depvisor/prod-x"), true);
 });
 
 test("commits ignore a planted .git/hooks/pre-commit (no local hooks run)", () => {
