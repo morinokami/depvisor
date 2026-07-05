@@ -142,6 +142,8 @@ test("discardWorkPast drops commits, tracked edits, and untracked files", () => 
 test("resetToBase returns to base, discards work, and keeps ignored files + the branch ref", () => {
   const repo = tempRepo();
   const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  // Capture the init default branch name; it varies (main vs master) by git config.
+  const base = sh("git rev-parse --abbrev-ref HEAD").trim();
   // node_modules is ignored; the reinstall (not resetToBase) is what restores it.
   writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
   sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm gitignore");
@@ -155,10 +157,10 @@ test("resetToBase returns to base, discards work, and keeps ignored files + the 
   mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
   writeFileSync(join(repo, "node_modules/pkg/index.js"), "module.exports = 1;\n"); // ignored
 
-  resetToBase(repo, "main");
+  resetToBase(repo, base);
 
   // Back on base, tree clean, untracked removed.
-  assert.equal(sh("git rev-parse --abbrev-ref HEAD").trim(), "main");
+  assert.equal(sh("git rev-parse --abbrev-ref HEAD").trim(), base);
   assert.equal(sh("git status --porcelain").trim(), "");
   assert.ok(!existsSync(join(repo, "stray.ts")), "untracked files are removed");
   // Ignored files survive (the reinstall restores them, not the reset).
