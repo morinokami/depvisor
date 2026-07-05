@@ -144,7 +144,11 @@ single run open several PRs — one per dependency group — up to that many ope
 depvisor PRs at once. It fills empty slots as you merge or close existing PRs, and
 always refreshes the PRs it already opened (a refresh does not consume a slot).
 Each group runs its own agent session with a fresh reinstall in between, so a
-higher `max_prs` costs proportionally more LLM calls and CI time.
+higher `max_prs` costs proportionally more LLM calls and CI time. The
+between-groups reinstall happens even with `install_command: skip` (which only
+skips the install before the first group) and uses the package manager's
+lockfile-faithful install — so multi-group runs need a committed lockfile;
+without one, groups after the first are reported as `reinstall-unavailable`.
 
 ### Reading the Actions result
 
@@ -154,8 +158,9 @@ the run level and per group. Benign outcomes (`no-updates`, `pr-up-to-date`,
 `held-back-by-limit` when the `max_prs` ceiling is reached) stay green and explain
 why no PR was opened. Outcomes that need attention (`baseline-red`, `reset-failed`,
 `no-verify-scripts`, `missing-base`, `scope-violation`, `verification-failed`,
-`open-pr-failed`, and similar fail-closed stops) fail the job so they are not
-missed in scheduled runs — a run stays red if any of its groups failed.
+`reinstall-unavailable`, `open-pr-failed`, and similar fail-closed stops) fail the
+job so they are not missed in scheduled runs — a run stays red if any of its
+groups failed.
 
 The step summary has a section per group depvisor touched, each with its branch,
 package version table, verification results, and the PR URL when one was created

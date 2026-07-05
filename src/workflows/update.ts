@@ -43,10 +43,12 @@ import { checkDiffScope } from "../core/scope.ts";
 import {
   emitRunStatus,
   groupLogLine,
+  RUN_OUTPUT_SCHEMA,
   runFailsJob,
   runLogLine,
   statusFailsJob,
   statusPackages,
+  toRunOutput,
   type GroupResult,
   type RunStatus,
 } from "../core/status.ts";
@@ -58,7 +60,11 @@ const PR_OUT_DIR = fileURLToPath(new URL("../../pr-preview", import.meta.url));
 // branch after preflight rejects HEAD or depvisor/*.
 const BASE_OVERRIDE = process.env.DEPVISOR_BASE_BRANCH || undefined;
 // JSON snapshot of open PRs ({headRefName, body}[]), written by a separate
-// token-holding workflow step. Data flows in; credentials never do.
+// token-holding workflow step. Data flows in; credentials never do. The max_prs
+// ceiling counts open depvisor PRs from this snapshot, so its accuracy matters:
+// in CI the snapshot step fails the job if `gh pr list` fails, but a truncated
+// snapshot (more open PRs than its --limit) or an absent one (local runs) fails
+// open — the ceiling can be exceeded, never the reverse.
 const OPEN_PRS_FILE = process.env.DEPVISOR_OPEN_PRS_FILE;
 // Newline-separated shell commands that replace auto-detected verification.
 // This comes from workflow config, never from the agent-writable target tree.
@@ -66,9 +72,10 @@ const VERIFY_COMMANDS = process.env.DEPVISOR_VERIFY_COMMANDS || "";
 // Ceiling on the number of open depvisor PRs (Dependabot's open-pull-requests-limit
 // model). Empty = unset = 1. Refreshing an existing PR never consumes a slot.
 const MAX_PRS_RAW = process.env.DEPVISOR_MAX_PRS || "";
-// The install_command input, forwarded so the group-boundary reset can restore
-// node_modules with the same command the pre-agent install used. Trusted
-// (workflow file / env), never the agent-writable target tree.
+// The install_command input, forwarded for the group-boundary reset: a custom
+// command is reused verbatim; `auto`/`skip`/unset fall back to the PM's
+// lockfile-faithful install (`skip` skips only the pre-agent install step, not
+// this reset). Trusted (workflow file / env), never the agent-writable tree.
 const INSTALL_COMMAND = process.env.DEPVISOR_INSTALL_COMMAND || "";
 
 // The agent's structured account of the update: a verdict the workflow can
@@ -94,7 +101,12 @@ function resolveResetCommand(pm: PmToolchain, repo: string, installInput: string
   return pm.installCommand(repo);
 }
 
-/** Open-PR snapshot, or [] when absent — correctness never depends on it. */
+/**
+ * Open-PR snapshot, or [] when absent. Skip-if-up-to-date degrades gracefully
+ * without it (a missed skip just re-runs the agent), but the max_prs ceiling
+ * counts from it, so an absent/unreadable snapshot fails open toward opening
+ * more PRs — see the OPEN_PRS_FILE comment above.
+ */
 function readOpenPrs(): { headRefName?: string; body?: string }[] {
   if (!OPEN_PRS_FILE) return [];
   try {
@@ -225,47 +237,21 @@ function summarizeRun(run: RunStatus): string {
 
 export default defineWorkflow({
   agent: updater,
-  output: v.object({
-    status: v.string(),
-    base: v.nullable(v.string()),
-    summary: v.string(),
-    groups: v.array(
-      v.object({
-        status: v.string(),
-        branch: v.nullable(v.string()),
-        group: v.nullable(v.string()),
-        summary: v.string(),
-        verification: v.array(
-          v.object({ name: v.string(), ok: v.boolean(), code: v.nullable(v.number()) }),
-        ),
-      }),
-    ),
-  }),
+  // The status shape is single-sourced in core/status.ts; toRunOutput below is
+  // the projector derived from this same schema.
+  output: RUN_OUTPUT_SCHEMA,
 
   async run({ harness, log }) {
     // Deterministic pre-agent cleanup so a stale payload from a previous local
     // run cannot be pushed and the incremental status stays consistent.
     clearPrPreview(PR_OUT_DIR);
 
-    const toOutput = (run: RunStatus) => ({
-      status: run.status,
-      base: run.base,
-      summary: run.summary,
-      groups: run.groups.map((g) => ({
-        status: g.status,
-        branch: g.branch,
-        group: g.group,
-        summary: g.summary,
-        verification: g.verification,
-      })),
-    });
-
     const finish = (run: RunStatus) => {
       emitRunStatus(PR_OUT_DIR, run);
       const line = runLogLine(run);
       if (runFailsJob(run)) log.warn(line);
       else log.info(line);
-      return toOutput(run);
+      return toRunOutput(run);
     };
 
     // 0. Preflight.
@@ -323,7 +309,18 @@ export default defineWorkflow({
       `${candidates.length} candidates -> ${groups.length} groups; ${openDepvisorCount} open depvisor PR(s), ${newSlots} new-PR slot(s) (max_prs=${maxPrs})`,
     );
 
-    const run: RunStatus = { status: "completed", base, summary: "", groups: [] };
+    // The run starts as `in-progress` — a job-failing status — and only the
+    // graceful finish below upgrades it to `completed`. If the process dies
+    // mid-loop, the last incremental write is what report-status reads, and it
+    // must fail the job instead of impersonating a green completed run.
+    const run: RunStatus = {
+      status: "in-progress",
+      base,
+      summary:
+        "The run was interrupted before it finished; the groups below are only " +
+        "those completed before the stop.",
+      groups: [],
+    };
     const recordGroup = (g: GroupResult): void => {
       run.groups.push(g);
       // Incremental write: if the loop throws, the emitted payloads and the
@@ -336,6 +333,12 @@ export default defineWorkflow({
 
     let firstProcessed = true;
     let prepared = 0;
+    // Distinct group keys can slugify to the same branch (slugify strips `@`
+    // and maps `/` to `-`, so `prod/@babel/core` and `prod/babel-core`
+    // collide). Branch = PR identity, and processing a collider would
+    // ensureBranch-reset the earlier group's commits away — fail closed on
+    // every branch seen this run, whatever its disposition.
+    const seenBranches = new Set<string>();
 
     try {
       for (const group of groups) {
@@ -343,6 +346,22 @@ export default defineWorkflow({
         const pkgList = members.map((m) => m.name).join(", ");
         const branch = branchNameForGroup(group.key);
         const packages = statusPackages(members);
+        if (seenBranches.has(branch)) {
+          recordGroup({
+            status: "branch-collision",
+            branch,
+            group: group.key,
+            summary:
+              `Group '${group.key}' maps to branch '${branch}', which another group in ` +
+              "this run already uses (their names collide after slugification). Refusing " +
+              "to process it so the other group's branch and PR are not overwritten.",
+            packages,
+            verification: [],
+            prUrl: null,
+          });
+          continue;
+        }
+        seenBranches.add(branch);
         const hasOpenPr = openBranches.has(branch);
         const upToDate = bodyByBranch.get(branch)?.includes(versionsMarker(members)) ?? false;
         const disposition = classifyGroup({ hasOpenPr, upToDate, newSlots });
@@ -383,21 +402,23 @@ export default defineWorkflow({
         if (!firstProcessed) {
           if (resetCommand === null) {
             // install_command: skip and no lockfile → no reinstall is possible
-            // between groups. The first group ran on the pre-agent install; the
-            // rest (and everything after) cannot.
+            // between groups. The first group ran on the pre-agent install; this
+            // one (and every later processable group, each recorded in turn)
+            // cannot. A fixable configuration gap, not the ceiling at work —
+            // red, so scheduled runs surface it instead of staying green.
             recordGroup({
-              status: "held-back-by-limit",
+              status: "reinstall-unavailable",
               branch,
               group: group.key,
               summary:
-                "Held back: processing more than one group requires a reinstall between " +
-                "groups, but install_command is 'skip' and no lockfile is present. Set " +
-                "install_command or run with max_prs=1.",
+                "Cannot process this group: multi-group runs need a reinstall between " +
+                "groups, but install_command is 'skip' and the repo has no committed " +
+                "lockfile. Commit a lockfile or set install_command.",
               packages,
               verification: [],
               prUrl: null,
             });
-            break;
+            continue;
           }
           resetToBase(REPO, base);
           log.info(`reset to ${base}; reinstalling before ${branch}: ${resetCommand}`);
@@ -617,7 +638,12 @@ export default defineWorkflow({
       if (isClean(REPO)) tryCheckout(REPO, base);
     }
 
-    if (run.status === "completed") run.summary = summarizeRun(run);
+    // Graceful end of the loop: upgrade the crash marker to the real outcome.
+    // Run-level stops (baseline-red, reset-failed) already set their status.
+    if (run.status === "in-progress") {
+      run.status = "completed";
+      run.summary = summarizeRun(run);
+    }
     return finish(run);
   },
 });

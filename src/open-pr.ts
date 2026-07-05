@@ -39,7 +39,17 @@ function main(): void {
 
   let anyFailed = false;
   for (const file of files) {
-    const payload = JSON.parse(readFileSync(file, "utf8")) as PrPayload;
+    // An unreadable/corrupt payload must not stop the remaining PRs (the
+    // isolation this entrypoint promises). Its branch is unknown, so there is
+    // no status entry to patch — the non-zero exit is what surfaces it.
+    let payload: PrPayload;
+    try {
+      payload = JSON.parse(readFileSync(file, "utf8")) as PrPayload;
+    } catch (err) {
+      console.error(`  failed: unreadable payload ${file}: ${(err as Error).message}`);
+      anyFailed = true;
+      continue;
+    }
     console.log(`\nOpening PR for ${payload.branch} (from ${file})...`);
     // CI supplies a trusted push target; only trusted local dev falls back to the
     // target checkout's .git/config. Empty string = unset (composite action

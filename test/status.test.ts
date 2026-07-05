@@ -10,6 +10,7 @@ import {
   runFailsJob,
   statusFailsJob,
   statusPath,
+  toRunOutput,
   updateGroupStatus,
   type GroupResult,
   type RunStatus,
@@ -55,9 +56,12 @@ test("status failure policy keeps benign outcomes green and fail-closed stops re
     assert.equal(statusFailsJob(status), false);
   }
   for (const status of [
+    "in-progress",
     "baseline-red",
     "reset-failed",
     "bad-max-prs",
+    "reinstall-unavailable",
+    "branch-collision",
     "verification-failed",
     "scope-violation",
     "unexpected-commits",
@@ -68,6 +72,19 @@ test("status failure policy keeps benign outcomes green and fail-closed stops re
   ]) {
     assert.equal(statusFailsJob(status), true);
   }
+});
+
+test("toRunOutput projects the workflow output, dropping packages and prUrl", () => {
+  const output = toRunOutput(run({ groups: [group({ prUrl: "https://github.com/o/r/pull/1" })] }));
+  assert.equal(output.status, "completed");
+  assert.equal(output.base, "main");
+  assert.equal(output.groups.length, 1);
+  const g = output.groups[0] as Record<string, unknown>;
+  assert.equal(g.status, "pr-prepared");
+  assert.equal(g.branch, "depvisor/dev-minor");
+  assert.deepEqual(g.verification, [{ name: "pnpm run test", ok: true, code: 0 }]);
+  assert.ok(!("packages" in g), "packages must be stripped from the workflow output");
+  assert.ok(!("prUrl" in g), "prUrl must be stripped from the workflow output");
 });
 
 test("runFailsJob fails a completed run when any group failed", () => {

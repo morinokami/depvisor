@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as v from "valibot";
 import { sanitizeSummary } from "./pr.ts";
 import { RUN_STATUS_FILE } from "./status-file.ts";
 import type { Candidate } from "./types.ts";
@@ -39,11 +40,40 @@ export interface RunStatus {
   groups: GroupResult[];
 }
 
+/**
+ * The workflow-facing view of a run: `RunStatus` minus per-group `packages` and
+ * `prUrl` (the full record lives in status.json). Schema and projector are one
+ * definition — `toRunOutput` is a `v.parse`, and `v.object` strips the extra
+ * keys — so the workflow output cannot silently drift from `RunStatus`.
+ */
+export const RUN_OUTPUT_SCHEMA = v.object({
+  status: v.string(),
+  base: v.nullable(v.string()),
+  summary: v.string(),
+  groups: v.array(
+    v.object({
+      status: v.string(),
+      branch: v.nullable(v.string()),
+      group: v.nullable(v.string()),
+      summary: v.string(),
+      verification: v.array(
+        v.object({ name: v.string(), ok: v.boolean(), code: v.nullable(v.number()) }),
+      ),
+    }),
+  ),
+});
+
+export function toRunOutput(run: RunStatus): v.InferOutput<typeof RUN_OUTPUT_SCHEMA> {
+  return v.parse(RUN_OUTPUT_SCHEMA, run);
+}
+
 // Benign outcomes that stay green. Covers both run-level (`completed`,
 // `no-updates`) and group-level statuses. `open-pr-blocked` is green because a
 // human having taken over the PR branch is expected (see open-pr.ts);
 // `held-back-by-limit` is green because the max_prs ceiling doing its job is
-// normal operation, not a failure.
+// normal operation, not a failure. Everything else — including the
+// `in-progress` marker the workflow writes incrementally, which only a
+// graceful finish upgrades to `completed` — fails the job.
 const OK_STATUSES = new Set([
   "completed",
   "no-updates",
