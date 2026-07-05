@@ -34,13 +34,14 @@ function main(): void {
     console.log(`  ${result.action}: ${result.url}`);
     updateRunStatus(statusFile, { prUrl: result.url });
   } else if (result.action === "blocked") {
-    // Policy stop, such as human commits on the branch, not a process failure.
+    // Policy stop, such as human commits on the branch: not a process failure.
+    // Record it but stay green — an in-progress human takeover of the PR branch
+    // is expected and must not turn recurring runs red.
     console.log(`  blocked: ${result.error}`);
     updateRunStatus(statusFile, {
       status: "open-pr-blocked",
       summary: `PR creation was blocked: ${result.error}`,
     });
-    process.exit(1);
   } else {
     console.error(`  failed: ${result.error}`);
     updateRunStatus(statusFile, {

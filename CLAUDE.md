@@ -43,7 +43,7 @@ One split governs everything: **deterministic code does anything needing reprodu
   - The agent carries one bounded tool, `fetch_release_notes` (`src/tools/release-notes.ts` — `defineTool`, backed by `core/changelog.ts`) — the single narrow door for untrusted external text, never raw agent HTTP.
   - Tool definitions live in `src/tools/` (not auto-discovered by Flue; imported and attached via `tools:`).
 - `src/shared/target.ts` — the one value both the agent (its `cwd`) and the workflow share: `REPO`, the target checkout in CI / throwaway fixture locally.
-- `src/open-pr.ts` — the deterministic, token-holding entrypoint: push + `gh pr create` from the emitted payload, then patch the status file with the PR URL or open-pr failure. The ONLY command that needs `GH_TOKEN`; in CI it runs as its own Action step.
+- `src/open-pr.ts` — the deterministic, token-holding entrypoint: push + `gh pr create` from the emitted payload, then patch the status file with the PR URL, a blocked-takeover note (`open-pr-blocked`, stays green), or an open-pr failure (`open-pr-failed`, fails the job). The ONLY command that needs `GH_TOKEN`; in CI it runs as its own Action step.
 - `src/report-status.ts` — the deterministic Actions log UX entrypoint. It reads `pr-preview/status.json`, emits a notice/error annotation, appends a Markdown step summary, and exits non-zero for non-benign no-PR statuses.
 - `src/check-credentials.ts` — the plain-node entrypoint for the credentials gate: fails the job with `::error` when `core/credentials.ts` finds persisted credentials in the target checkout. Runs as the first target-touching Action step — **before** the target install (whose lifecycle scripts must not see a token either) and regardless of `install_command`.
 - `src/install-target.ts` — the plain-node entrypoint behind `install_command: auto`: detects the target's PM and runs the matching lockfile-faithful install (`npm ci` / `pnpm install --frozen-lockfile`) before the agent step.
@@ -62,7 +62,7 @@ The workflow imports the updater agent and drives it:
 
 - The workflow branches on `verdict`: `defer` → no PR, `deferred` status; leftover commits/tree changes from the deferred attempt are discarded deterministically, not trusted away.
 - It fails closed (`no-structured-result`) when the agent can't produce validated data (`ResultUnavailableError` or the defensive re-parse).
-- The composite action reports the status file after the token-holding open-pr step. `pr-prepared`, `pr-up-to-date`, `no-updates`, and `deferred` stay green; statuses such as `baseline-red`, `no-verify-scripts`, `scope-violation`, `verification-failed`, `missing-base`, and `open-pr-failed` become job failures so silent no-PR outcomes notify users.
+- The composite action reports the status file after the token-holding open-pr step. `pr-prepared`, `pr-up-to-date`, `no-updates`, `deferred`, and `open-pr-blocked` (a human took over the PR branch) stay green; statuses such as `baseline-red`, `no-verify-scripts`, `scope-violation`, `verification-failed`, `missing-base`, and `open-pr-failed` become job failures so silent no-PR outcomes notify users.
 
 ### Invariants
 

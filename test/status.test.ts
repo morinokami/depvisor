@@ -33,8 +33,14 @@ const baseStatus = (patch: Partial<RunStatus> = {}): RunStatus => ({
   ...patch,
 });
 
-test("status failure policy keeps no-op successes green and blocked outcomes red", () => {
-  for (const status of ["pr-prepared", "pr-up-to-date", "no-updates", "deferred"]) {
+test("status failure policy keeps benign no-PR outcomes green and fail-closed stops red", () => {
+  for (const status of [
+    "pr-prepared",
+    "pr-up-to-date",
+    "no-updates",
+    "deferred",
+    "open-pr-blocked",
+  ]) {
     assert.equal(statusFailsJob(status), false);
   }
   for (const status of [
@@ -43,6 +49,7 @@ test("status failure policy keeps no-op successes green and blocked outcomes red
     "scope-violation",
     "missing-base",
     "no-changes",
+    "open-pr-failed",
   ]) {
     assert.equal(statusFailsJob(status), true);
   }

@@ -25,7 +25,16 @@ export interface RunStatus {
   prUrl: string | null;
 }
 
-const OK_STATUSES = new Set(["pr-prepared", "pr-up-to-date", "no-updates", "deferred"]);
+// Benign no-PR outcomes stay green. `open-pr-blocked` is here because a human
+// having taken over the PR branch (which makes depvisor refuse to force-push)
+// is expected, not a failure — see open-pr.ts.
+const OK_STATUSES = new Set([
+  "pr-prepared",
+  "pr-up-to-date",
+  "no-updates",
+  "deferred",
+  "open-pr-blocked",
+]);
 
 export function statusPackages(candidates: Candidate[]): StatusPackage[] {
   return candidates.map(({ name, current, latest, kind, updateType }) => ({

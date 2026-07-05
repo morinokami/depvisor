@@ -122,12 +122,12 @@ lockfile changes, and `fix: adapt code to …` for code changes written by the A
 
 ### Reading the Actions result
 
-depvisor writes a job summary and annotation for every known outcome. Successful
-no-op outcomes (`no-updates`, `pr-up-to-date`, `deferred`) stay green and explain
-why no PR was opened. Outcomes that need attention (`baseline-red`,
-`no-verify-scripts`, `missing-base`, `scope-violation`, `verification-failed`,
-`open-pr-failed`, and similar fail-closed stops) fail the job so they are not
-missed in scheduled runs.
+depvisor writes a job summary and annotation for every known outcome. Benign
+no-PR outcomes (`no-updates`, `pr-up-to-date`, `deferred`, and `open-pr-blocked`
+when a human has taken over the PR branch) stay green and explain why no PR was
+opened. Outcomes that need attention (`baseline-red`, `no-verify-scripts`,
+`missing-base`, `scope-violation`, `verification-failed`, `open-pr-failed`, and
+similar fail-closed stops) fail the job so they are not missed in scheduled runs.
 
 The step summary includes the selected group, branch, package version table,
 verification results, and the PR URL when one was created or refreshed. Baseline
