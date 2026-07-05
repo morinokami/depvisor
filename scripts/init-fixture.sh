@@ -11,9 +11,10 @@
 # same template, but with a pnpm-lock.yaml instead of the template's committed
 # package-lock.json, so package-manager detection resolves to pnpm.
 # --pm bun does the same with a bun.lock (default dest fixtures/sample-app-bun).
-# --workspaces creates the npm-workspaces monorepo variant from a separate
-# template (default dest fixtures/sample-app-workspaces): two packages that
-# share a dependency, so it exercises workspace collection and -w-scoped updates.
+# --workspaces creates a monorepo variant from a separate template: two packages
+# that share a dependency, so it exercises workspace collection and scoped
+# updates. Default with --pm npm: fixtures/sample-app-workspaces (-w-scoped);
+# with --pm bun: fixtures/sample-app-bun-workspaces (--cwd-scoped).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,14 +40,23 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$ws" = "1" ]; then
-  # The monorepo variant is npm-only for now (bun/yarn workspaces are out of
-  # scope; a pnpm-workspaces variant would need its own workspace declaration).
-  if [ "$pm" != "npm" ]; then
-    echo "--workspaces currently supports only --pm npm" >&2
-    exit 1
-  fi
-  template="$root/fixtures/sample-app-workspaces.template"
-  dest="${dest:-$root/fixtures/sample-app-workspaces}"
+  # Monorepo variants exist for npm and bun (each with its own template — the
+  # root scripts differ per PM). pnpm workspaces are not templated yet; yarn is
+  # unsupported.
+  case "$pm" in
+    npm)
+      template="$root/fixtures/sample-app-workspaces.template"
+      dest="${dest:-$root/fixtures/sample-app-workspaces}"
+      ;;
+    bun)
+      template="$root/fixtures/sample-app-bun-workspaces.template"
+      dest="${dest:-$root/fixtures/sample-app-bun-workspaces}"
+      ;;
+    *)
+      echo "--workspaces supports --pm npm or bun" >&2
+      exit 1
+      ;;
+  esac
 else
   template="$root/fixtures/sample-app.template"
   case "$pm" in
@@ -69,7 +79,17 @@ fi
 mkdir -p "$dest"
 cp -R "$template/." "$dest/"
 cd "$dest"
-if [ "$ws" = "1" ]; then
+if [ "$ws" = "1" ] && [ "$pm" = "bun" ]; then
+  # bun workspaces: the template ships no lockfile, so generate bun.lock BEFORE
+  # the baseline commit, leaving a clean tree. `bun install` at the root installs
+  # every workspace; the root scripts fan build/test out with `bun run --filter`.
+  bun install
+  git init -q -b main
+  git add -A
+  git -c user.email=fixture@depvisor.dev -c user.name=depvisor-fixture \
+    commit -qm 'baseline: sample-bun-workspaces (deps intentionally outdated)'
+  bun run build >/dev/null
+elif [ "$ws" = "1" ]; then
   # npm workspaces: the template ships no lockfile, so generate the single root
   # package-lock.json BEFORE the baseline commit (like the pnpm/bun variants),
   # leaving a clean, lockfile-complete tree. `npm install` at the root installs
@@ -115,5 +135,5 @@ else
   npm run build >/dev/null
 fi
 label="$pm"
-[ "$ws" = "1" ] && label="npm-workspaces"
+[ "$ws" = "1" ] && label="$pm-workspaces"
 echo "fixture ready at $dest (green baseline on branch main, $label)."

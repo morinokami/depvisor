@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { relative } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import type { PmToolchain } from "./pm.ts";
 import type { Candidate, DepKind, UpdateType } from "./types.ts";
 
@@ -148,21 +149,88 @@ export function parsePnpmOutdated(data: Record<string, unknown>, repoPath: strin
   return out;
 }
 
-// Pinned to `bun outdated`'s table as of bun 1.3 — any drift must throw, not
-// guess. A new column set (e.g. the Workspace column of `-r` mode) lands here.
-const BUN_COLUMNS = ["Package", "Current", "Update", "Latest"] as const;
+// Pinned to `bun outdated -r`'s table as of bun 1.3 — any drift must throw, not
+// guess. depvisor always passes `-r` (see pm.ts), so the Workspace column is
+// always present, for single-package repos too (Workspace = the repo's name).
+const BUN_COLUMNS = ["Package", "Current", "Update", "Latest", "Workspace"] as const;
 
 /**
- * Pure half of the bun collector: parse the ASCII table `bun outdated` prints
- * (it has no JSON output and exits 0 whether or not updates exist —
- * oven-sh/bun#15648). Fail-closed: an unknown line, column set, or package
- * annotation throws instead of yielding silently-wrong candidates, so a format
- * change in a future bun version turns the run red. devDependencies carry a
- * ` (dev)` suffix in the Package column; `latest` deliberately comes from the
- * Latest column (registry latest, matching npm/pnpm semantics), not the
- * range-bound Update column.
+ * Map each bun workspace's package name to its repo-relative path (the root
+ * package's name → ""), by expanding the root package.json `workspaces` globs.
+ * `bun outdated -r` reports the declaring workspace by name, but `bun add`
+ * scopes by path (`--cwd`), so this bridges the two. Supported patterns: a
+ * literal directory or a single-level `dir/*`; any other glob (`**`, braces,
+ * negation) throws, and so does a workspace name that later has no path here —
+ * fail-closed, because guessing would scope an update to the wrong manifest.
  */
-export function parseBunOutdated(raw: string): Candidate[] {
+export function bunWorkspaceMap(repoPath: string): Map<string, string> {
+  const nameAt = (dir: string): string | null => {
+    try {
+      const pkg = JSON.parse(readFileSync(join(repoPath, dir, "package.json"), "utf8")) as {
+        name?: unknown;
+      };
+      return typeof pkg.name === "string" ? pkg.name : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const map = new Map<string, string>();
+  const rootName = nameAt(".");
+  if (rootName) map.set(rootName, "");
+
+  const rootPkg = JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8")) as {
+    workspaces?: unknown;
+  };
+  // bun accepts both the array form and npm's `{ packages: [...] }` object form.
+  const ws = rootPkg.workspaces;
+  const patterns = Array.isArray(ws)
+    ? ws
+    : Array.isArray((ws as { packages?: unknown })?.packages)
+      ? (ws as { packages: unknown[] }).packages
+      : [];
+
+  for (const patternRaw of patterns) {
+    if (typeof patternRaw !== "string") continue;
+    const pattern = patternRaw.replace(/\/+$/, "");
+    let dirs: string[];
+    if (!pattern.includes("*")) {
+      dirs = [pattern];
+    } else if (pattern.endsWith("/*") && !pattern.slice(0, -2).includes("*")) {
+      const parent = pattern.slice(0, -2);
+      try {
+        dirs = readdirSync(join(repoPath, parent), { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => `${parent}/${e.name}`);
+      } catch {
+        dirs = [];
+      }
+    } else {
+      throw new Error(`unsupported bun workspaces pattern: "${patternRaw}"`);
+    }
+    for (const dir of dirs) {
+      if (!existsSync(join(repoPath, dir, "package.json"))) continue;
+      const name = nameAt(dir);
+      if (name) map.set(name, dir);
+    }
+  }
+  return map;
+}
+
+/**
+ * Pure half of the bun collector: parse the ASCII table `bun outdated -r` prints
+ * (it has no JSON output and exits 0 whether or not updates exist —
+ * oven-sh/bun#15648). Fail-closed: an unknown line, column set, package
+ * annotation, or unmapped workspace throws instead of yielding silently-wrong
+ * candidates, so a format change in a future bun version turns the run red.
+ * devDependencies carry a ` (dev)` suffix in the Package column; `latest`
+ * deliberately comes from the Latest column (registry latest, matching
+ * npm/pnpm), not the range-bound Update column. Occurrences of one package
+ * across workspaces (separate rows) are merged: lowest `current`, union
+ * `locations` (resolved to paths via `workspaces`), dev only if every
+ * occurrence is a devDependency.
+ */
+export function parseBunOutdated(raw: string, workspaces: Map<string, string>): Candidate[] {
   const rows: string[][] = [];
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -183,9 +251,16 @@ export function parseBunOutdated(raw: string): Candidate[] {
   if (header.join(",") !== BUN_COLUMNS.join(",")) {
     throw new Error(`unexpected bun outdated columns: "${header.join(" | ")}"`);
   }
-  const out: Candidate[] = [];
+
+  interface Acc {
+    currents: string[];
+    latest: string;
+    locations: Set<string>;
+    allDev: boolean;
+  }
+  const merged = new Map<string, Acc>();
   for (const row of rows) {
-    const [pkgCell = "", current = "", , latest = ""] = row;
+    const [pkgCell = "", current = "", , latest = "", workspaceName = ""] = row;
     if (row.length !== BUN_COLUMNS.length || !pkgCell) {
       throw new Error(`malformed bun outdated row: "| ${row.join(" | ")} |"`);
     }
@@ -198,15 +273,31 @@ export function parseBunOutdated(raw: string): Candidate[] {
       throw new Error(`unknown package annotation in bun outdated output: "${pkgCell}"`);
     }
     if (!latest || latest === current) continue;
+    const location = workspaces.get(workspaceName);
+    if (location === undefined) {
+      throw new Error(`unknown workspace "${workspaceName}" in bun outdated output`);
+    }
+    let acc = merged.get(m[1]);
+    if (!acc) {
+      acc = { currents: [], latest, locations: new Set(), allDev: true };
+      merged.set(m[1], acc);
+    }
+    if (current) acc.currents.push(current);
+    acc.latest = latest;
+    acc.locations.add(location);
+    if (m[2] !== "dev") acc.allDev = false;
+  }
+
+  const out: Candidate[] = [];
+  for (const [name, acc] of merged) {
+    const current = lowestVersion(acc.currents);
     out.push({
-      name: m[1],
+      name,
       current,
-      latest,
-      kind: m[2] === "dev" ? "dev" : "prod",
-      updateType: classifyUpdate(current, latest),
-      // bun support is single-package only (workspace monorepos are out of
-      // scope); every candidate is treated as declared at the repo root.
-      locations: [""],
+      latest: acc.latest,
+      kind: acc.allDev ? "dev" : "prod",
+      updateType: classifyUpdate(current, acc.latest),
+      locations: [...acc.locations].sort(),
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -247,8 +338,11 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
   if (!raw) return [];
 
   if (pm.name === "bun") {
+    // Resolved outside the try so an unsupported workspaces glob surfaces its own
+    // clear error instead of the generic "not parseable" wrapper below.
+    const workspaces = bunWorkspaceMap(repoPath);
     try {
-      return parseBunOutdated(raw);
+      return parseBunOutdated(raw, workspaces);
     } catch (err) {
       const stderr = (res.stderr ?? "").trim();
       const message = err instanceof Error ? err.message : String(err);

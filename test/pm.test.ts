@@ -138,6 +138,7 @@ test("outdatedArgv: workspace-aware flags", () => {
   // --long carries per-entry type + dependedByLocation; -r reports workspaces.
   assert.deepEqual(npmToolchain.outdatedArgv, ["npm", "outdated", "--json", "--long"]);
   assert.deepEqual(pnpmToolchain.outdatedArgv, ["pnpm", "outdated", "-r", "--format", "json"]);
+  assert.deepEqual(bunToolchain.outdatedArgv, ["bun", "outdated", "-r"]);
 });
 
 test("npm updateInstruction: single-package uses no -w, -D marks dev deps", () => {
@@ -172,11 +173,24 @@ test("pnpm updateInstruction: a single recursive command covers every workspace"
   assert.doesNotMatch(out, /-D /);
 });
 
-test("bun updateInstruction: keeps the caret, -d marks dev deps", () => {
+test("bun updateInstruction: keeps the caret, -d marks dev deps (single-package)", () => {
   const out = bunToolchain.updateInstruction([
     cand({ name: "chalk", latest: "5.0.0" }),
     cand({ name: "@types/node", latest: "22.0.0", kind: "dev" }),
   ]);
   assert.match(out, /bun add chalk@\^5\.0\.0(\n|$)/);
   assert.match(out, /bun add -d @types\/node@\^22\.0\.0(\n|$)/);
+  assert.doesNotMatch(out, /--cwd/); // root-only deps take no --cwd
+});
+
+test("bun updateInstruction: scopes --cwd to declaring workspaces, root gets its own line", () => {
+  const out = bunToolchain.updateInstruction([
+    cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
+    cand({ name: "isarray", latest: "2.0.5", kind: "dev", locations: ["packages/a"] }),
+    cand({ name: "ms", latest: "2.1.3", locations: [""] }),
+  ]);
+  assert.match(out, /bun add --cwd packages\/a left-pad@\^1\.3\.0(\n|$)/);
+  assert.match(out, /bun add --cwd packages\/b left-pad@\^1\.3\.0(\n|$)/);
+  assert.match(out, /bun add --cwd packages\/a -d isarray@\^2\.0\.5(\n|$)/);
+  assert.match(out, /bun add ms@\^2\.1\.3(\n|$)/); // root → no --cwd
 });

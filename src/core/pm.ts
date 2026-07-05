@@ -96,16 +96,21 @@ function pnpmUpdateInstruction(candidates: readonly Candidate[]): string {
 }
 
 /**
- * bun is single-package only (workspace monorepos are out of scope), so this
- * ignores `locations`. The explicit `^` matters: bun writes the given specifier
+ * bun scopes an add with `--cwd <workspace-path>` (it has no `-w`/`--filter` for
+ * add), so this emits one line per declaring workspace (root — location "" —
+ * takes no `--cwd`). The explicit `^` matters: bun writes the given specifier
  * verbatim, so a bare `name@1.2.3` would pin exactly where npm/pnpm write a
  * caret range (verified against bun 1.3.14).
  */
 function bunUpdateInstruction(candidates: readonly Candidate[]): string {
-  const lines = candidates.map((c) => {
+  const lines: string[] = [];
+  for (const c of candidates) {
     const flag = c.kind === "dev" ? "-d " : "";
-    return `bun add ${flag}${c.name}@^${c.latest}`;
-  });
+    const spec = `${c.name}@^${c.latest}`;
+    for (const loc of c.locations) {
+      lines.push(loc === "" ? `bun add ${flag}${spec}` : `bun add --cwd ${loc} ${flag}${spec}`);
+    }
+  }
   return instructionBlock(lines);
 }
 
@@ -157,7 +162,11 @@ export const pnpmToolchain: PmToolchain = {
 
 export const bunToolchain: PmToolchain = {
   name: "bun",
-  outdatedArgv: ["bun", "outdated"],
+  // -r reports workspace dependencies too and adds a Workspace column; it also
+  // works for a single-package repo (Workspace = the package's own name). The
+  // 4-column non-recursive form only ever reports the root package. See
+  // collect.ts's parseBunOutdated.
+  outdatedArgv: ["bun", "outdated", "-r"],
   runScript: (script) => `bun run ${script}`,
   updateInstruction: bunUpdateInstruction,
   lockfiles: BUN_LOCKFILES,
