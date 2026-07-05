@@ -31,13 +31,23 @@ export function branchNameForGroup(groupKey: string): string {
 }
 
 /**
- * Machine-readable marker embedded in the PR body. A later run compares its
- * own target versions against the marker of the open PR on the same branch and
- * skips the whole agent run when nothing changed (idempotency and cost).
+ * Machine-readable marker embedded in the PR body. A later run compares its own
+ * targets against the marker of the open PR on the same branch and skips the
+ * whole agent run when nothing changed (idempotency and cost).
+ *
+ * Each member is encoded as `name@latest@<workspaces>` (its declaring
+ * workspaces, sorted, `~`-joined; the root is ""). The workspaces are part of
+ * the key on purpose: in a monorepo the same `name@latest` can newly apply to
+ * an additional workspace, and an open PR that updated fewer workspaces than the
+ * current run must NOT be treated as up to date — otherwise the extra workspace
+ * is silently skipped. All parts stay within VERSIONS_MARKER_RE's charset (paths
+ * use `/` and `-`, never `~`), so the marker survives exit-boundary sanitizing.
  */
-export function versionsMarker(members: Pick<Candidate, "name" | "latest">[]): string {
+export function versionsMarker(
+  members: Pick<Candidate, "name" | "latest" | "locations">[],
+): string {
   const list = members
-    .map((m) => `${m.name}@${m.latest}`)
+    .map((m) => `${m.name}@${m.latest}@${[...m.locations].sort().join("~")}`)
     .sort()
     .join(",");
   return `<!-- depvisor:versions=${list} -->`;

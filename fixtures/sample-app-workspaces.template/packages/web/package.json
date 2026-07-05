@@ -1,0 +1,17 @@
+{
+  "name": "@sample/web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "chalk": "4.1.2",
+    "semver": "7.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "18.0.0",
+    "typescript": "5.3.3"
+  }
+}

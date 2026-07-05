@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { relative } from "node:path";
 import type { PmToolchain } from "./pm.ts";
 import type { Candidate, DepKind, UpdateType } from "./types.ts";
 
@@ -13,6 +12,38 @@ function parseVersion(v: string): [number, number, number] | null {
   const m = /(\d+)\.(\d+)\.(\d+)/.exec(v ?? "");
   if (!m) return null;
   return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/**
+ * The lowest of several `current` versions — used when one dependency is
+ * declared at different versions across workspaces (npm reports these as an
+ * array). Picking the lowest makes the jump to `latest` the largest, so the
+ * classification (patch/minor/major) is the most conservative one. Unparseable
+ * versions are ignored unless all are, in which case the first is kept so the
+ * candidate still surfaces (as 'unknown', excluded from grouping downstream).
+ */
+function lowestVersion(versions: string[]): string {
+  let lowest: string | undefined;
+  let lowestParsed: [number, number, number] | undefined;
+  for (const v of versions) {
+    const p = parseVersion(v);
+    if (!p) continue;
+    if (!lowestParsed || compareVersion(p, lowestParsed) < 0) {
+      lowest = v;
+      lowestParsed = p;
+    }
+  }
+  return lowest ?? versions[0] ?? "";
+}
+
+function compareVersion(a: [number, number, number], b: [number, number, number]): number {
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+/** An absolute workspace path relativized against the repo root; root → "". */
+function relativeLocation(repoPath: string, location: string | undefined): string {
+  if (!location) return "";
+  return relative(repoPath, location);
 }
 
 /**
@@ -32,35 +63,86 @@ export function classifyUpdate(current: string, latest: string): UpdateType {
   return "unknown";
 }
 
-/** Pure half of the collector: turn `npm outdated --json` output into candidates. */
-export function parseOutdated(data: Record<string, unknown>, devDeps: Set<string>): Candidate[] {
+/**
+ * Pure half of the collector: turn `npm outdated --json --long` output into
+ * candidates. `--long` adds the two fields workspaces need: `type`
+ * (dependencies/devDependencies, so dev/prod is judged per-occurrence rather
+ * than from the root package.json) and `dependedByLocation` (the repo-relative
+ * workspace path, "" for the root). A dependency declared at different versions
+ * across workspaces arrives as an array; all occurrences are merged into one
+ * candidate — `current` is the lowest (most conservative classification),
+ * `locations` is the union, and `kind` is dev only when every occurrence is a
+ * devDependency (a mix falls to prod, i.e. no `-D`).
+ */
+export function parseOutdated(data: Record<string, unknown>): Candidate[] {
   const out: Candidate[] = [];
   for (const [name, infoRaw] of Object.entries(data)) {
-    const info = (Array.isArray(infoRaw) ? infoRaw[0] : infoRaw) as Record<string, string>;
-    const current = String(info.current ?? "");
-    const latest = String(info.latest ?? "");
+    const entries = (Array.isArray(infoRaw) ? infoRaw : [infoRaw]) as Record<string, string>[];
+    const currents: string[] = [];
+    const locations = new Set<string>();
+    let latest = "";
+    let allDev = entries.length > 0;
+    for (const info of entries) {
+      const cur = String(info.current ?? "");
+      if (cur) currents.push(cur);
+      const lat = String(info.latest ?? "");
+      if (lat) latest = lat; // registry `latest`, identical across occurrences
+      locations.add(String(info.dependedByLocation ?? ""));
+      if (info.type !== "devDependencies") allDev = false;
+    }
+    const current = lowestVersion(currents);
     if (!latest || latest === current) continue;
-    const kind: DepKind = devDeps.has(name) ? "dev" : "prod";
-    out.push({ name, current, latest, kind, updateType: classifyUpdate(current, latest) });
+    const kind: DepKind = allDev ? "dev" : "prod";
+    out.push({
+      name,
+      current,
+      latest,
+      kind,
+      updateType: classifyUpdate(current, latest),
+      locations: [...locations].sort(),
+    });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
 }
 
 /**
- * Pure half of the pnpm collector: turn `pnpm outdated --format json` output
- * into candidates. Unlike npm's, pnpm's entries carry `dependencyType`, so no
- * devDependencies set is needed.
+ * Pure half of the pnpm collector: turn `pnpm outdated -r --format json` output
+ * into candidates. `-r` is what makes workspace dependencies visible at all
+ * (without it only the root package's deps are reported). Unlike npm's, pnpm's
+ * entries carry `dependencyType`, so no devDependencies set is needed;
+ * `dependentPackages[].location` (an absolute path) is relativized against
+ * `repoPath`. pnpm keys its JSON by package name, so a dependency declared at
+ * different versions across workspaces collapses to a single occurrence here —
+ * `locations` may therefore be incomplete, but `pnpm -r update` still reaches
+ * every declaring workspace, so nothing is left stale.
  */
-export function parsePnpmOutdated(data: Record<string, unknown>): Candidate[] {
+export function parsePnpmOutdated(data: Record<string, unknown>, repoPath: string): Candidate[] {
   const out: Candidate[] = [];
   for (const [name, infoRaw] of Object.entries(data)) {
-    const info = infoRaw as Record<string, string>;
+    const info = infoRaw as {
+      current?: string;
+      latest?: string;
+      dependencyType?: string;
+      dependentPackages?: { location?: string }[];
+    };
     const current = String(info.current ?? "");
     const latest = String(info.latest ?? "");
     if (!latest || latest === current) continue;
+    const locations = new Set<string>();
+    for (const dep of info.dependentPackages ?? []) {
+      locations.add(relativeLocation(repoPath, dep.location));
+    }
+    if (locations.size === 0) locations.add(""); // defensive: treat as root
     const kind: DepKind = info.dependencyType === "devDependencies" ? "dev" : "prod";
-    out.push({ name, current, latest, kind, updateType: classifyUpdate(current, latest) });
+    out.push({
+      name,
+      current,
+      latest,
+      kind,
+      updateType: classifyUpdate(current, latest),
+      locations: [...locations].sort(),
+    });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
@@ -122,6 +204,9 @@ export function parseBunOutdated(raw: string): Candidate[] {
       latest,
       kind: m[2] === "dev" ? "dev" : "prod",
       updateType: classifyUpdate(current, latest),
+      // bun support is single-package only (workspace monorepos are out of
+      // scope); every candidate is treated as declared at the repo root.
+      locations: [""],
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -184,9 +269,6 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
         (stderr ? ` — stderr: ${stderr.slice(0, 200)}` : ""),
     );
   }
-  if (pm.name === "pnpm") return parsePnpmOutdated(data);
-
-  const pkg = JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8"));
-  const devSet = new Set(Object.keys(pkg.devDependencies ?? {}));
-  return parseOutdated(data, devSet);
+  if (pm.name === "pnpm") return parsePnpmOutdated(data, repoPath);
+  return parseOutdated(data);
 }

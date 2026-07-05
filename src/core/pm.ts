@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Candidate } from "./types.ts";
 
 /**
  * Package-manager detection and per-PM command table. The JS package semantics
@@ -26,14 +27,18 @@ export interface PmToolchain {
   outdatedArgv: readonly [string, ...string[]];
   /** Shell command that runs a package.json script. */
   runScript(script: string): string;
-  /** The update command the agent is instructed to use (one sentence). */
-  updateInstruction: string;
   /**
-   * Manifest + lockfile paths of this PM, for the mechanical bump commit of
-   * the two-commit split.
+   * The concrete update command(s) the agent is instructed to run, scoped to
+   * the workspaces that already declare each dependency (via each candidate's
+   * `locations`). Built per group so a monorepo update touches only the right
+   * manifests instead of adding dependencies to the root — see updater.md.
    */
-  manifests: readonly string[];
-  /** This PM's lockfile names (for detection and error messages). */
+  updateInstruction(candidates: readonly Candidate[]): string;
+  /**
+   * This PM's lockfile names — for detection, error messages, and (with every
+   * `package.json`) the mechanical bump commit of the two-commit split
+   * (`git.ts`'s `manifestBumpPaths`).
+   */
   lockfiles: readonly string[];
   /**
    * Install command that does not create a lockfile — the escape hatch a
@@ -54,6 +59,66 @@ export interface PmToolchain {
   installCommand(repoPath: string): string | null;
 }
 
+/**
+ * npm update commands, one line per candidate, scoped with `-w <workspace>` to
+ * exactly the workspaces that declare it (root — location "" — takes no `-w`).
+ * A dependency present in both the root and a workspace yields two lines. `-D`
+ * is added for dev-only dependencies to match the manifest section. `npm
+ * install` (not `update`) is used because it reliably jumps to a specific
+ * version regardless of the existing range; npm keeps an existing dependency in
+ * its current section.
+ */
+function npmUpdateInstruction(candidates: readonly Candidate[]): string {
+  const lines: string[] = [];
+  for (const c of candidates) {
+    const flag = c.kind === "dev" ? "-D " : "";
+    const spec = `${c.name}@${c.latest}`;
+    const workspaces = c.locations.filter((l) => l !== "");
+    if (c.locations.includes("") || workspaces.length === 0) {
+      lines.push(`npm install ${flag}${spec}`);
+    }
+    if (workspaces.length > 0) {
+      lines.push(`npm install ${flag}${spec} ${workspaces.map((w) => `-w ${w}`).join(" ")}`);
+    }
+  }
+  return instructionBlock(lines);
+}
+
+/**
+ * pnpm needs only one recursive command: `pnpm -r update` reaches every
+ * workspace (and the root) that declares each package, leaves the rest
+ * untouched, and preserves each dependency's section — so no `-D` and no
+ * per-workspace flags. `-r` also drives the single-package case correctly.
+ */
+function pnpmUpdateInstruction(candidates: readonly Candidate[]): string {
+  const specs = candidates.map((c) => `${c.name}@${c.latest}`).join(" ");
+  return instructionBlock([`pnpm -r update ${specs}`]);
+}
+
+/**
+ * bun is single-package only (workspace monorepos are out of scope), so this
+ * ignores `locations`. The explicit `^` matters: bun writes the given specifier
+ * verbatim, so a bare `name@1.2.3` would pin exactly where npm/pnpm write a
+ * caret range (verified against bun 1.3.14).
+ */
+function bunUpdateInstruction(candidates: readonly Candidate[]): string {
+  const lines = candidates.map((c) => {
+    const flag = c.kind === "dev" ? "-d " : "";
+    return `bun add ${flag}${c.name}@^${c.latest}`;
+  });
+  return instructionBlock(lines);
+}
+
+/** Frame concrete update commands as an instruction the agent runs verbatim. */
+function instructionBlock(commands: string[]): string {
+  return (
+    "Update the dependencies by running exactly these commands (they touch only " +
+    "the workspaces that already declare each package — never add a dependency to " +
+    "another workspace or to the root):\n" +
+    commands.map((c) => `    ${c}`).join("\n")
+  );
+}
+
 const NPM_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json"] as const;
 const PNPM_LOCKFILES = ["pnpm-lock.yaml"] as const;
 // bun.lock is the textual default since bun 1.2; the legacy binary bun.lockb
@@ -63,11 +128,12 @@ const BUN_LOCKFILES = ["bun.lock", "bun.lockb"] as const;
 
 export const npmToolchain: PmToolchain = {
   name: "npm",
-  outdatedArgv: ["npm", "outdated", "--json"],
+  // --long adds each entry's `type` (dependencies/devDependencies) and
+  // `dependedByLocation` (the workspace path) — both needed to classify and
+  // target workspace dependencies. See collect.ts's parseOutdated.
+  outdatedArgv: ["npm", "outdated", "--json", "--long"],
   runScript: (script) => `npm run ${script}`,
-  updateInstruction:
-    "Use `npm install <name>@<version>` (`npm install -D <name>@<version>` for dev dependencies).",
-  manifests: ["package.json", "package-lock.json", "npm-shrinkwrap.json"],
+  updateInstruction: npmUpdateInstruction,
   lockfiles: NPM_LOCKFILES,
   noLockfileInstall: "npm install --package-lock=false",
   installCommand: (repoPath) =>
@@ -76,11 +142,11 @@ export const npmToolchain: PmToolchain = {
 
 export const pnpmToolchain: PmToolchain = {
   name: "pnpm",
-  outdatedArgv: ["pnpm", "outdated", "--format", "json"],
+  // -r reports workspace dependencies too (without it only the root package's
+  // deps are visible); it also works for a single-package repo. See collect.ts.
+  outdatedArgv: ["pnpm", "outdated", "-r", "--format", "json"],
   runScript: (script) => `pnpm run ${script}`,
-  updateInstruction:
-    "Use `pnpm add <name>@<version>` (`pnpm add -D <name>@<version>` for dev dependencies).",
-  manifests: ["package.json", "pnpm-lock.yaml"],
+  updateInstruction: pnpmUpdateInstruction,
   lockfiles: PNPM_LOCKFILES,
   noLockfileInstall: "pnpm install --no-lockfile",
   installCommand: (repoPath) =>
@@ -93,12 +159,7 @@ export const bunToolchain: PmToolchain = {
   name: "bun",
   outdatedArgv: ["bun", "outdated"],
   runScript: (script) => `bun run ${script}`,
-  // The explicit `^` matters: bun preserves the given specifier verbatim, so a
-  // bare `bun add name@1.2.3` would write an exact pin where npm/pnpm write a
-  // caret range (verified against bun 1.3.14).
-  updateInstruction:
-    "Use `bun add <name>@^<version>` (`bun add -d <name>@^<version>` for dev dependencies).",
-  manifests: ["package.json", "bun.lock", "bun.lockb"],
+  updateInstruction: bunUpdateInstruction,
   lockfiles: BUN_LOCKFILES,
   // No escape hatch: `bun outdated` reads the committed lockfile, not the
   // installed tree, so `bun install --no-save` (which writes no lockfile)

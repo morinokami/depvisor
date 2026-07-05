@@ -9,6 +9,7 @@
     "fixture:init": "bash scripts/init-fixture.sh",
     "fixture:init:bun": "bash scripts/init-fixture.sh --pm bun",
     "fixture:init:pnpm": "bash scripts/init-fixture.sh --pm pnpm",
+    "fixture:init:workspaces": "bash scripts/init-fixture.sh --workspaces",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "knip": "knip",
