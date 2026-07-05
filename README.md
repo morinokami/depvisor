@@ -76,8 +76,11 @@ jobs:
 - package.json defines at least one of `build` / `lint` / `test`, or the
   `verify_commands` input names your checks explicitly. These checks must pass
   on the base branch before depvisor runs.
-- The repo uses npm, pnpm, or bun, with a committed lockfile. Repos without a committed
-  lockfile must set `install_command` explicitly to a command that does not create one.
+- The repo uses npm, pnpm, or bun, with a committed lockfile. For npm/pnpm, a repo that
+  tracks no lockfile can still run by setting `install_command` explicitly to a command
+  that does not create one. bun has no such escape hatch — it computes updates from the
+  committed lockfile, not the installed tree, so a bun repo must commit `bun.lock` (or
+  `bun.lockb`) to be updatable at all.
 - bun repos additionally need the bun binary on the runner — GitHub-hosted runners do
   not preinstall it, so add [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun)
   before the depvisor step, and pin `bun-version`: depvisor parses `bun outdated`'s

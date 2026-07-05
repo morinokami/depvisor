@@ -145,6 +145,19 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
   delete env.FORCE_COLOR;
   const res = spawnSync(cmd, args, { cwd: repoPath, encoding: "utf8", env });
   if (res.error) throw new Error(`${pm.name} outdated failed to run: ${res.error.message}`);
+
+  // bun exits 0 whether or not updates exist (oven-sh/bun#15648), so — unlike
+  // npm/pnpm, whose normal "updates exist" path is exit 1 — a non-zero bun exit
+  // is unambiguously an error (e.g. a missing/broken lockfile, whose stdout is
+  // just the version banner and would otherwise parse to an empty, silently
+  // wrong "no updates"). Fail closed before the banner ever reaches the parser.
+  if (pm.name === "bun" && res.status !== 0) {
+    const stderr = (res.stderr ?? "").trim();
+    throw new Error(
+      `bun outdated failed (exit ${res.status})` + (stderr ? `: ${stderr.slice(0, 200)}` : ""),
+    );
+  }
+
   const raw = (res.stdout || "").trim();
   if (!raw) return [];
 

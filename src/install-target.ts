@@ -20,12 +20,22 @@ function main(): void {
   }
   const command = detected.pm.installCommand(REPO);
   if (command === null) {
-    console.error(
+    const base =
       `::error::install_command "auto" needs a committed ${detected.pm.name} lockfile ` +
-        `(${detected.pm.lockfiles.join(" or ")}) and found none in ${REPO}. Commit a ` +
-        `lockfile, or — if your repository tracks none by policy — set the ` +
-        `install_command input to "${detected.pm.noLockfileInstall}" (a bare install ` +
-        `would create the lockfile, and depvisor refuses the resulting dirty tree).`,
+      `(${detected.pm.lockfiles.join(" or ")}) and found none in ${REPO}. `;
+    // A lockfile-less escape hatch only helps PMs whose outdated check reads the
+    // installed tree (npm/pnpm). bun reads the lockfile itself, so there is no
+    // install flag that makes a lockfile-less repo updatable — say so plainly
+    // instead of pointing bun users at a dead end.
+    console.error(
+      detected.pm.noLockfileInstall === null
+        ? base +
+            `Commit a ${detected.pm.name} lockfile: ${detected.pm.name} computes updates from ` +
+            `the lockfile, so depvisor cannot update a repository that tracks none.`
+        : base +
+            `Commit a lockfile, or — if your repository tracks none by policy — set the ` +
+            `install_command input to "${detected.pm.noLockfileInstall}" (a bare install ` +
+            `would create the lockfile, and depvisor refuses the resulting dirty tree).`,
     );
     process.exit(1);
   }

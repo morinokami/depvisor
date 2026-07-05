@@ -104,8 +104,9 @@ test("installCommand: requires a committed lockfile (null = auto must fail close
   // The advertised escape hatch must itself create no lockfile.
   assert.equal(npmToolchain.noLockfileInstall, "npm install --package-lock=false");
   assert.equal(pnpmToolchain.noLockfileInstall, "pnpm install --no-lockfile");
-  // Verified against bun 1.3.14: --no-save writes neither bun.lock nor package.json.
-  assert.equal(bunToolchain.noLockfileInstall, "bun install --no-save");
+  // bun has no escape hatch: `bun outdated` reads the committed lockfile (not the
+  // installed tree), so no install flag makes a lockfile-less bun repo updatable.
+  assert.equal(bunToolchain.noLockfileInstall, null);
 });
 
 test("toolchains: per-PM commands and manifest sets", () => {

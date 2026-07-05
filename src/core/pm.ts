@@ -40,8 +40,11 @@ export interface PmToolchain {
    * lockfile-less repo sets as its explicit install_command.
    * Only used in guidance messages; a bare `npm install`/`pnpm install`
    * would create the lockfile and dirty the pre-agent tree.
+   * `null` when the PM has no such escape hatch: bun reads the committed
+   * lockfile (not the installed tree) to compute outdated candidates, so a
+   * lockfile-less bun repo cannot be updated at all — no install flag helps.
    */
-  noLockfileInstall: string;
+  noLockfileInstall: string | null;
   /**
    * Install command for `install_command: auto`, or null when the repo has no
    * committed lockfile. Auto fails closed there because a bare install would
@@ -97,7 +100,11 @@ export const bunToolchain: PmToolchain = {
     "Use `bun add <name>@^<version>` (`bun add -d <name>@^<version>` for dev dependencies).",
   manifests: ["package.json", "bun.lock", "bun.lockb"],
   lockfiles: BUN_LOCKFILES,
-  noLockfileInstall: "bun install --no-save",
+  // No escape hatch: `bun outdated` reads the committed lockfile, not the
+  // installed tree, so `bun install --no-save` (which writes no lockfile)
+  // leaves it erroring with "missing lockfile" — a lockfile-less bun repo
+  // simply cannot be updated. See noLockfileInstall's doc on PmToolchain.
+  noLockfileInstall: null,
   installCommand: (repoPath) =>
     BUN_LOCKFILES.some((f) => existsSync(join(repoPath, f)))
       ? "bun install --frozen-lockfile"
