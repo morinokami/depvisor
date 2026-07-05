@@ -2,11 +2,12 @@ import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   appendStepSummary,
+  groupLogLine,
   readRunStatus,
+  runFailsJob,
+  runLogLine,
   RUN_STATUS_FILE,
-  statusAnnotationLevel,
   statusFailsJob,
-  statusLogLine,
 } from "./core/status.ts";
 
 const DEFAULT_STATUS_FILE = fileURLToPath(
@@ -42,13 +43,21 @@ function main(): void {
     process.exit(1);
   }
 
-  const message = `depvisor ${statusLogLine(status)}`;
-  emitAnnotation(statusAnnotationLevel(status.status), message);
+  // Run-level annotation reflects the overall job outcome (a completed run with
+  // a failed group is still a red job), then one error annotation per failing
+  // group so each no-PR/failed outcome is surfaced individually.
+  const runFails = runFailsJob(status);
+  emitAnnotation(runFails ? "error" : "notice", `depvisor ${runLogLine(status)}`);
+  for (const group of status.groups) {
+    if (statusFailsJob(group.status)) {
+      emitAnnotation("error", `depvisor ${groupLogLine(group)}`);
+    }
+  }
 
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   if (summaryFile) appendStepSummary(summaryFile, status);
 
-  if (statusFailsJob(status.status)) process.exit(1);
+  if (runFails) process.exit(1);
 }
 
 main();

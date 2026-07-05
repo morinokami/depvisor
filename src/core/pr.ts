@@ -1,6 +1,7 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isValidNpmName } from "./changelog.ts";
+import { RUN_STATUS_FILE } from "./status-file.ts";
 import type { Candidate, UpdateNarrative } from "./types.ts";
 import type { VerifyResult } from "./verify.ts";
 
@@ -11,10 +12,15 @@ export interface PrPayload {
   body: string;
 }
 
-/** One run prepares at most one PR, so the payload lives at a fixed name. */
-export const PR_PAYLOAD_FILE = "payload.json";
+/**
+ * A run prepares one payload per prepared PR, under this directory in the
+ * pr-preview output. Filenames are `<NN>-<slug>.json` (processing order, then
+ * the branch slug), so the token-holding open-pr step enumerates them
+ * deterministically in order.
+ */
+export const PR_PAYLOADS_DIR = "payloads";
 
-function slugify(s: string): string {
+export function slugify(s: string): string {
   return s
     .replace(/@/g, "")
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
@@ -266,13 +272,30 @@ export function buildPrPayload(args: {
 }
 
 /**
- * Emit the PR payload locally. The agent-facing workflow ALWAYS stops here —
- * pushing and opening the PR is a separate, token-holding step (`src/open-pr.ts`)
- * so the agent's execution environment never contains credentials.
+ * Emit one PR payload locally under `<outDir>/payloads/<NN>-<slug>.json`, where
+ * `NN` is the zero-padded processing order and `slug` is the branch slug. The
+ * agent-facing workflow ALWAYS stops here — pushing and opening the PR is a
+ * separate, token-holding step (`src/open-pr.ts`) so the agent's execution
+ * environment never contains credentials.
  */
-export function emitPrPayload(outDir: string, payload: PrPayload): string {
-  mkdirSync(outDir, { recursive: true });
-  const outPath = join(outDir, PR_PAYLOAD_FILE);
+export function emitPrPayload(outDir: string, payload: PrPayload, index: number): string {
+  const dir = join(outDir, PR_PAYLOADS_DIR);
+  mkdirSync(dir, { recursive: true });
+  const outPath = join(dir, `${String(index).padStart(2, "0")}-${slugify(payload.branch)}.json`);
   writeFileSync(outPath, JSON.stringify(payload, null, 2));
   return outPath;
+}
+
+/**
+ * Remove prior-run output before a new run: the payloads directory and the
+ * status file. Without this a stale payload from a previous local run would be
+ * pushed by open-pr, and old per-group payloads would accumulate across runs
+ * (their filenames differ, so writing new ones does not overwrite them). Runs in
+ * deterministic code before the agent. In CI the checkout is fresh each run, so
+ * this only matters for repeated local runs — but the failure mode (pushing a
+ * stale branch) is bad enough to clear unconditionally.
+ */
+export function clearPrPreview(outDir: string): void {
+  rmSync(join(outDir, PR_PAYLOADS_DIR), { recursive: true, force: true });
+  rmSync(join(outDir, RUN_STATUS_FILE), { force: true });
 }

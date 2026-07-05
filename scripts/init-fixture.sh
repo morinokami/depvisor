@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create a local working fixture from fixtures/sample-app.template/.
 #
-# The working fixture must be its OWN git repository (update-one creates
+# The working fixture must be its OWN git repository (the update workflow creates
 # branches/commits inside it), so it cannot be tracked by the depvisor repo —
 # it is gitignored and recreated on demand with this script.
 #

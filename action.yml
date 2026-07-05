@@ -33,6 +33,10 @@ inputs:
     description: Newline-separated verification commands; replaces automatic build/lint/test script detection.
     required: false
     default: ""
+  max_prs:
+    description: Maximum number of open depvisor PRs to keep at once; a run opens new PRs only up to this ceiling.
+    required: false
+    default: "1"
   node_version:
     description: Node version used for depvisor and target verification scripts.
     required: false
@@ -112,6 +116,10 @@ runs:
         DEPVISOR_TARGET_REPO: ${{ github.workspace }}
         DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
         DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
+        DEPVISOR_MAX_PRS: ${{ inputs.max_prs }}
+        # Forwarded so the group-boundary reset can restore node_modules with the
+        # same (trusted, workflow-supplied) command the pre-agent install used.
+        DEPVISOR_INSTALL_COMMAND: ${{ inputs.install_command }}
         DEPVISOR_OPEN_PRS_FILE: ${{ runner.temp }}/depvisor-open-prs.json
       run: |
         # `required: true` on action inputs is documentation only — the runner
@@ -136,7 +144,7 @@ runs:
         fi
         export "$LLM_API_KEY_ENV=$LLM_API_KEY"
         unset LLM_API_KEY
-        pnpm --silent exec flue run update-one --target node
+        pnpm --silent exec flue run update --target node
 
     # Deterministic, token-holding: push the branch and open (or refresh) the
     # PR from the emitted payload. Refuses to force-push over human commits.

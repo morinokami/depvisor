@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runInstall } from "./core/install.ts";
 import { detectPackageManager } from "./core/pm.ts";
 import { REPO } from "./shared/target.ts";
 
@@ -42,12 +42,12 @@ function main(): void {
   console.log(
     `depvisor install-target → ${detected.pm.name} detected via ${detected.source}; running: ${command}`,
   );
-  const res = spawnSync(command, { cwd: REPO, shell: true, stdio: "inherit" });
+  const res = runInstall(REPO, command);
   if (res.error) {
-    console.error(`::error::${command} failed to run: ${res.error.message}`);
+    console.error(`::error::${command} failed to run: ${res.error}`);
     process.exit(1);
   }
-  process.exit(res.status ?? 1);
+  process.exit(res.code);
 }
 
 main();

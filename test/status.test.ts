@@ -7,16 +7,17 @@ import {
   emitRunStatus,
   readRunStatus,
   renderStepSummary,
+  runFailsJob,
   statusFailsJob,
   statusPath,
-  updateRunStatus,
+  updateGroupStatus,
+  type GroupResult,
   type RunStatus,
 } from "../src/core/status.ts";
 
-const baseStatus = (patch: Partial<RunStatus> = {}): RunStatus => ({
+const group = (patch: Partial<GroupResult> = {}): GroupResult => ({
   status: "pr-prepared",
   branch: "depvisor/dev-minor",
-  base: "main",
   group: "dev-minor",
   summary: "Updated knip. <!-- hidden --> @octocat\n::error:: nope",
   packages: [
@@ -33,20 +34,34 @@ const baseStatus = (patch: Partial<RunStatus> = {}): RunStatus => ({
   ...patch,
 });
 
-test("status failure policy keeps benign no-PR outcomes green and fail-closed stops red", () => {
+const run = (patch: Partial<RunStatus> = {}): RunStatus => ({
+  status: "completed",
+  base: "main",
+  summary: "Prepared 1 PR(s) from 1 group(s).",
+  groups: [group()],
+  ...patch,
+});
+
+test("status failure policy keeps benign outcomes green and fail-closed stops red", () => {
   for (const status of [
+    "completed",
+    "no-updates",
     "pr-prepared",
     "pr-up-to-date",
-    "no-updates",
     "deferred",
     "open-pr-blocked",
+    "held-back-by-limit",
   ]) {
     assert.equal(statusFailsJob(status), false);
   }
   for (const status of [
     "baseline-red",
+    "reset-failed",
+    "bad-max-prs",
     "verification-failed",
     "scope-violation",
+    "unexpected-commits",
+    "no-structured-result",
     "missing-base",
     "no-changes",
     "open-pr-failed",
@@ -55,20 +70,79 @@ test("status failure policy keeps benign no-PR outcomes green and fail-closed st
   }
 });
 
-test("run status is emitted, read, and patched with the PR URL", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = emitRunStatus(dir, baseStatus());
-  assert.equal(file, statusPath(dir));
-  assert.equal(readRunStatus(file)?.status, "pr-prepared");
-
-  const next = updateRunStatus(file, { prUrl: "https://github.com/o/r/pull/1" });
-  assert.equal(next?.prUrl, "https://github.com/o/r/pull/1");
-  assert.equal(readRunStatus(file)?.prUrl, "https://github.com/o/r/pull/1");
+test("runFailsJob fails a completed run when any group failed", () => {
+  assert.equal(runFailsJob(run()), false);
+  assert.equal(
+    runFailsJob(run({ groups: [group(), group({ status: "verification-failed" })] })),
+    true,
+    "a completed run with a failed group must fail the job (silent no-PR is surfaced)",
+  );
+  assert.equal(
+    runFailsJob(run({ status: "reset-failed", groups: [group()] })),
+    true,
+    "a run-level failure fails the job even when its groups succeeded",
+  );
+  assert.equal(
+    runFailsJob(run({ groups: [group({ status: "held-back-by-limit", prUrl: null })] })),
+    false,
+    "held-back-by-limit is a benign outcome",
+  );
 });
 
-test("step summary sanitizes agent text and renders packages and verification", () => {
-  const summary = renderStepSummary(baseStatus());
-  assert.ok(summary.includes("| Status | `pr-prepared` |"));
+test("run status is emitted, read, and patched per group by branch", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
+  const file = emitRunStatus(
+    dir,
+    run({
+      groups: [
+        group({ branch: "depvisor/dev-minor" }),
+        group({ branch: "depvisor/prod-semver", group: "prod/semver" }),
+      ],
+    }),
+  );
+  assert.equal(file, statusPath(dir));
+  assert.equal(readRunStatus(file)?.groups.length, 2);
+
+  const next = updateGroupStatus(file, "depvisor/prod-semver", {
+    prUrl: "https://github.com/o/r/pull/2",
+  });
+  // Only the matching group is patched.
+  assert.equal(
+    next?.groups.find((g) => g.branch === "depvisor/prod-semver")?.prUrl,
+    "https://github.com/o/r/pull/2",
+  );
+  assert.equal(next?.groups.find((g) => g.branch === "depvisor/dev-minor")?.prUrl, null);
+  assert.equal(
+    readRunStatus(file)?.groups.find((g) => g.branch === "depvisor/prod-semver")?.prUrl,
+    "https://github.com/o/r/pull/2",
+  );
+});
+
+test("updateGroupStatus can flip a single group to a failed open-pr outcome", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
+  const file = emitRunStatus(dir, run());
+  updateGroupStatus(file, "depvisor/dev-minor", {
+    status: "open-pr-failed",
+    summary: "PR creation failed: boom",
+  });
+  const patched = readRunStatus(file);
+  assert.equal(patched?.status, "completed");
+  assert.equal(runFailsJob(patched as RunStatus), true);
+});
+
+test("step summary renders run header, per-group sections, and sanitizes agent text", () => {
+  const summary = renderStepSummary(
+    run({
+      groups: [
+        group(),
+        group({ status: "held-back-by-limit", branch: "depvisor/types", group: "types" }),
+      ],
+    }),
+  );
+  assert.ok(summary.includes("| Status | `completed` |"));
+  assert.ok(summary.includes("| Groups | 2 |"));
+  assert.ok(summary.includes("Group `dev-minor` — `pr-prepared`"));
+  assert.ok(summary.includes("Group `types` — `held-back-by-limit`"));
   assert.ok(summary.includes("| knip | 6.23.0 | 6.24.0 | dev | minor |"));
   assert.ok(summary.includes("| pass | pnpm run test | 0 |"));
   assert.ok(!summary.includes("<!-- hidden -->"));

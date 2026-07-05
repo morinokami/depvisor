@@ -1,10 +1,11 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sanitizeSummary } from "./pr.ts";
+import { RUN_STATUS_FILE } from "./status-file.ts";
 import type { Candidate } from "./types.ts";
 import type { VerifyResult } from "./verify.ts";
 
-export const RUN_STATUS_FILE = "status.json";
+export { RUN_STATUS_FILE };
 
 export interface StatusPackage {
   name: string;
@@ -14,10 +15,10 @@ export interface StatusPackage {
   updateType: Candidate["updateType"];
 }
 
-export interface RunStatus {
+/** One group's outcome within a run — the unit the PR/annotation UX renders. */
+export interface GroupResult {
   status: string;
   branch: string | null;
-  base: string | null;
   group: string | null;
   summary: string;
   packages: StatusPackage[];
@@ -25,15 +26,32 @@ export interface RunStatus {
   prUrl: string | null;
 }
 
-// Benign no-PR outcomes stay green. `open-pr-blocked` is here because a human
-// having taken over the PR branch (which makes depvisor refuse to force-push)
-// is expected, not a failure — see open-pr.ts.
+/**
+ * A run's aggregate status: run-level fields plus one entry per group the run
+ * touched. A run can prepare several PRs (up to `max_prs` open depvisor PRs), so
+ * the group array carries the per-PR detail while `status` describes the run as
+ * a whole (`completed`, or a run-level stop like `no-updates`/`baseline-red`).
+ */
+export interface RunStatus {
+  status: string;
+  base: string | null;
+  summary: string;
+  groups: GroupResult[];
+}
+
+// Benign outcomes that stay green. Covers both run-level (`completed`,
+// `no-updates`) and group-level statuses. `open-pr-blocked` is green because a
+// human having taken over the PR branch is expected (see open-pr.ts);
+// `held-back-by-limit` is green because the max_prs ceiling doing its job is
+// normal operation, not a failure.
 const OK_STATUSES = new Set([
+  "completed",
+  "no-updates",
   "pr-prepared",
   "pr-up-to-date",
-  "no-updates",
   "deferred",
   "open-pr-blocked",
+  "held-back-by-limit",
 ]);
 
 export function statusPackages(candidates: Candidate[]): StatusPackage[] {
@@ -57,35 +75,63 @@ export function emitRunStatus(outDir: string, status: RunStatus): string {
   return outPath;
 }
 
+function parseGroup(raw: Partial<GroupResult>): GroupResult {
+  return {
+    status: String(raw.status ?? "unknown"),
+    branch: typeof raw.branch === "string" ? raw.branch : null,
+    group: typeof raw.group === "string" ? raw.group : null,
+    summary: typeof raw.summary === "string" ? raw.summary : "",
+    packages: Array.isArray(raw.packages) ? (raw.packages as StatusPackage[]) : [],
+    verification: Array.isArray(raw.verification) ? (raw.verification as VerifyResult[]) : [],
+    prUrl: typeof raw.prUrl === "string" ? raw.prUrl : null,
+  };
+}
+
 export function readRunStatus(file: string): RunStatus | null {
   if (!existsSync(file)) return null;
   const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<RunStatus>;
   return {
     status: String(parsed.status ?? "unknown"),
-    branch: typeof parsed.branch === "string" ? parsed.branch : null,
     base: typeof parsed.base === "string" ? parsed.base : null,
-    group: typeof parsed.group === "string" ? parsed.group : null,
     summary: typeof parsed.summary === "string" ? parsed.summary : "",
-    packages: Array.isArray(parsed.packages) ? (parsed.packages as StatusPackage[]) : [],
-    verification: Array.isArray(parsed.verification) ? (parsed.verification as VerifyResult[]) : [],
-    prUrl: typeof parsed.prUrl === "string" ? parsed.prUrl : null,
+    groups: Array.isArray(parsed.groups)
+      ? (parsed.groups as Partial<GroupResult>[]).map(parseGroup)
+      : [],
   };
 }
 
-export function updateRunStatus(file: string, patch: Partial<RunStatus>): RunStatus | null {
+/**
+ * Patch the group entry whose branch matches `branch` and rewrite the file. Used
+ * by the token-holding open-pr step to write back per-PR results (the PR URL, or
+ * an open-pr-blocked/open-pr-failed status) without disturbing other groups.
+ */
+export function updateGroupStatus(
+  file: string,
+  branch: string,
+  patch: Partial<GroupResult>,
+): RunStatus | null {
   const current = readRunStatus(file);
   if (!current) return null;
-  const next: RunStatus = { ...current, ...patch };
+  const next: RunStatus = {
+    ...current,
+    groups: current.groups.map((g) => (g.branch === branch ? { ...g, ...patch } : g)),
+  };
   writeFileSync(file, JSON.stringify(next, null, 2));
   return next;
 }
 
+/** Whether a single status string is a job-failing outcome. */
 export function statusFailsJob(status: string): boolean {
   return !OK_STATUSES.has(status);
 }
 
-export function statusAnnotationLevel(status: string): "notice" | "error" {
-  return statusFailsJob(status) ? "error" : "notice";
+/**
+ * Whether the run should fail the job: a run-level failure, OR any group with a
+ * job-failing status. A `completed` run still fails the job when a group ended
+ * in e.g. `verification-failed`, so silent no-PR outcomes still notify users.
+ */
+export function runFailsJob(status: RunStatus): boolean {
+  return statusFailsJob(status.status) || status.groups.some((g) => statusFailsJob(g.status));
 }
 
 function oneLine(value: string): string {
@@ -95,12 +141,27 @@ function oneLine(value: string): string {
     .trim();
 }
 
-export function statusLogLine(status: RunStatus): string {
+/** Run-level one-line summary for logs and the top annotation. */
+export function runLogLine(status: RunStatus): string {
   const parts = [`status=${status.status}`];
-  if (status.branch) parts.push(`branch=${status.branch}`);
-  if (status.group) parts.push(`group=${status.group}`);
-  if (status.prUrl) parts.push(`pr=${status.prUrl}`);
+  if (status.base) parts.push(`base=${status.base}`);
+  if (status.groups.length > 0) {
+    const counts = new Map<string, number>();
+    for (const g of status.groups) counts.set(g.status, (counts.get(g.status) ?? 0) + 1);
+    const breakdown = [...counts.entries()].map(([s, n]) => `${s}=${n}`).join(", ");
+    parts.push(`groups=${status.groups.length} (${breakdown})`);
+  }
   const summary = oneLine(status.summary);
+  return summary ? `${parts.join(" ")} - ${summary}` : parts.join(" ");
+}
+
+/** Per-group one-line summary for logs and per-group annotations. */
+export function groupLogLine(group: GroupResult): string {
+  const parts = [`status=${group.status}`];
+  if (group.group) parts.push(`group=${group.group}`);
+  if (group.branch) parts.push(`branch=${group.branch}`);
+  if (group.prUrl) parts.push(`pr=${group.prUrl}`);
+  const summary = oneLine(group.summary);
   return summary ? `${parts.join(" ")} - ${summary}` : parts.join(" ");
 }
 
@@ -117,7 +178,7 @@ function packageTable(packages: StatusPackage[]): string {
       `| ${mdCell(p.name)} | ${mdCell(p.current)} | ${mdCell(p.latest)} | ${mdCell(p.kind)} | ${mdCell(p.updateType)} |`,
   );
   return [
-    "### Packages",
+    "#### Packages",
     "",
     "| Package | From | To | Kind | Type |",
     "|---|---|---|---|---|",
@@ -131,36 +192,52 @@ function verificationTable(results: VerifyResult[]): string {
   const rows = results.map(
     (r) => `| ${r.ok ? "pass" : "fail"} | ${mdCell(r.name)} | ${mdCell(r.code)} |`,
   );
-  return ["### Verification", "", "| Result | Command | Exit |", "|---|---|---|", ...rows, ""].join(
-    "\n",
-  );
+  return [
+    "#### Verification",
+    "",
+    "| Result | Command | Exit |",
+    "|---|---|---|",
+    ...rows,
+    "",
+  ].join("\n");
 }
 
-export function renderStepSummary(status: RunStatus): string {
-  const rows = [
-    `| Status | \`${mdCell(status.status)}\` |`,
-    `| Branch | ${status.branch ? `\`${mdCell(status.branch)}\`` : "none"} |`,
-    `| Base | ${status.base ? `\`${mdCell(status.base)}\`` : "none"} |`,
-    `| Group | ${status.group ? `\`${mdCell(status.group)}\`` : "none"} |`,
-  ];
-  if (status.prUrl) rows.push(`| PR | ${mdCell(status.prUrl)} |`);
-
+function renderGroup(group: GroupResult): string {
+  const heading = `### Group \`${mdCell(group.group ?? "?")}\` — \`${mdCell(group.status)}\``;
+  const rows = [`| Branch | ${group.branch ? `\`${mdCell(group.branch)}\`` : "none"} |`];
+  if (group.prUrl) rows.push(`| PR | ${mdCell(group.prUrl)} |`);
   return [
-    "## depvisor",
+    heading,
     "",
     "| Field | Value |",
     "|---|---|",
     ...rows,
     "",
+    mdCell(group.summary) || "No summary was emitted.",
+    "",
+    packageTable(group.packages),
+    verificationTable(group.verification),
+  ]
+    .filter((part) => part !== "")
+    .join("\n");
+}
+
+export function renderStepSummary(status: RunStatus): string {
+  const header = [
+    "## depvisor",
+    "",
+    "| Field | Value |",
+    "|---|---|",
+    `| Status | \`${mdCell(status.status)}\` |`,
+    `| Base | ${status.base ? `\`${mdCell(status.base)}\`` : "none"} |`,
+    `| Groups | ${status.groups.length} |`,
+    "",
     "### Summary",
     "",
     mdCell(status.summary) || "No summary was emitted.",
     "",
-    packageTable(status.packages),
-    verificationTable(status.verification),
-  ]
-    .filter((part) => part !== "")
-    .join("\n");
+  ].join("\n");
+  return [header, ...status.groups.map(renderGroup)].filter((part) => part !== "").join("\n");
 }
 
 export function appendStepSummary(file: string, status: RunStatus): void {
