@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectPackageManager, npmToolchain, pnpmToolchain } from "../src/core/pm.ts";
+import { bunToolchain, detectPackageManager, npmToolchain, pnpmToolchain } from "../src/core/pm.ts";
 
 function repoWith(files: Record<string, string>): string {
   const repo = mkdtempSync(join(tmpdir(), "depvisor-pm-"));
@@ -23,6 +23,9 @@ test("detect: lockfile decides when there is no packageManager field", () => {
   assert.equal(pmNameOf(repoWith({ "package-lock.json": "{}" })), "npm");
   assert.equal(pmNameOf(repoWith({ "npm-shrinkwrap.json": "{}" })), "npm");
   assert.equal(pmNameOf(repoWith({ "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" })), "pnpm");
+  assert.equal(pmNameOf(repoWith({ "bun.lock": "{}" })), "bun");
+  // The legacy binary lockfile still selects bun.
+  assert.equal(pmNameOf(repoWith({ "bun.lockb": "" })), "bun");
 });
 
 test("detect: packageManager field (corepack standard) wins over lockfiles", () => {
@@ -31,6 +34,7 @@ test("detect: packageManager field (corepack standard) wins over lockfiles", () 
     "package-lock.json": "{}", // stale leftover — the field is authoritative
   });
   assert.equal(pmNameOf(repo), "pnpm");
+  assert.equal(pmNameOf(repoWith({ "package.json": `{"packageManager":"bun@1.3.14"}` })), "bun");
 });
 
 test("detect: no lockfile and no field falls back to npm, the ecosystem default", () => {
@@ -45,17 +49,16 @@ test("detect: malformed packageManager field is ignored, lockfile decides", () =
   assert.equal(pmNameOf(repo), "pnpm");
 });
 
-test("detect: yarn and bun are recognized but refused as unsupported", () => {
+test("detect: yarn is recognized but refused as unsupported", () => {
   for (const files of [
     { "yarn.lock": "" },
-    { "bun.lockb": "" },
     { "package.json": `{"packageManager":"yarn@4.0.0"}` },
   ]) {
     const detected = detectPackageManager(repoWith(files));
     assert.equal(detected.ok, false);
     if (!detected.ok) {
       assert.equal(detected.status, "unsupported-package-manager");
-      assert.match(detected.summary, /npm and pnpm/);
+      assert.match(detected.summary, /npm, pnpm, and bun/);
     }
   }
 });
@@ -88,15 +91,31 @@ test("installCommand: requires a committed lockfile (null = auto must fail close
   // (e.g. a packageManager-field-only repo).
   assert.equal(pnpmToolchain.installCommand(repoWith({})), null);
 
+  assert.equal(
+    bunToolchain.installCommand(repoWith({ "bun.lock": "{}" })),
+    "bun install --frozen-lockfile",
+  );
+  assert.equal(
+    bunToolchain.installCommand(repoWith({ "bun.lockb": "" })),
+    "bun install --frozen-lockfile",
+  );
+  assert.equal(bunToolchain.installCommand(repoWith({})), null);
+
   // The advertised escape hatch must itself create no lockfile.
   assert.equal(npmToolchain.noLockfileInstall, "npm install --package-lock=false");
   assert.equal(pnpmToolchain.noLockfileInstall, "pnpm install --no-lockfile");
+  // Verified against bun 1.3.14: --no-save writes neither bun.lock nor package.json.
+  assert.equal(bunToolchain.noLockfileInstall, "bun install --no-save");
 });
 
 test("toolchains: per-PM commands and manifest sets", () => {
   assert.equal(npmToolchain.runScript("test"), "npm run test");
   assert.equal(pnpmToolchain.runScript("test"), "pnpm run test");
+  assert.equal(bunToolchain.runScript("test"), "bun run test");
   assert.ok(npmToolchain.manifests.includes("package-lock.json"));
   assert.ok(pnpmToolchain.manifests.includes("pnpm-lock.yaml"));
   assert.ok(!pnpmToolchain.manifests.includes("package-lock.json"));
+  // Both lockfile forms: whichever one `bun add` touches must be committed.
+  assert.ok(bunToolchain.manifests.includes("bun.lock"));
+  assert.ok(bunToolchain.manifests.includes("bun.lockb"));
 });

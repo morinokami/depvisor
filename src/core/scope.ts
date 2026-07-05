@@ -30,11 +30,26 @@ function isPackageJson(p: string): boolean {
 
 /**
  * package.json fields a dependency bump should not edit. Each controls code
- * execution or dependency sources: `scripts`, `packageManager`, `pnpm`, and
- * `overrides`/`resolutions`. Updates that need these changes must be deferred
- * to a human.
+ * execution or dependency sources: `scripts`, `packageManager`, `pnpm`,
+ * `overrides`/`resolutions`, bun's lifecycle-script allowlist
+ * (`trustedDependencies`) and patch list (`patchedDependencies`), and the
+ * workspace/catalog fields (`workspaces`, `catalog`, `catalogs`) — bun keeps
+ * catalogs in package.json, where pnpm's live in the denied
+ * pnpm-workspace.yaml. Updates that need these changes must be deferred to a
+ * human.
  */
-const GUARDED_FIELDS = ["scripts", "packageManager", "pnpm", "overrides", "resolutions"] as const;
+const GUARDED_FIELDS = [
+  "scripts",
+  "packageManager",
+  "pnpm",
+  "overrides",
+  "resolutions",
+  "trustedDependencies",
+  "patchedDependencies",
+  "workspaces",
+  "catalog",
+  "catalogs",
+] as const;
 
 /** A named field of a package.json source; undefined when absent/unparseable. */
 function fieldOf(source: string | null, field: string): unknown {
