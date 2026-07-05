@@ -10,9 +10,9 @@ API key: OpenAI, Anthropic, …) and ships as a GitHub Action. The final merge d
 stays with you.
 
 > **Status: alpha.** depvisor runs end-to-end on real repositories, but interfaces
-> and configuration are still evolving. It currently supports npm and pnpm projects
-> and updates direct dependencies only; yarn and bun stop with a clear error rather
-> than guessing.
+> and configuration are still evolving. It currently supports npm, pnpm, and bun
+> projects and updates direct dependencies only; yarn stops with a clear error
+> rather than guessing.
 
 ## Use it in your repository
 
@@ -76,8 +76,18 @@ jobs:
 - package.json defines at least one of `build` / `lint` / `test`, or the
   `verify_commands` input names your checks explicitly. These checks must pass
   on the base branch before depvisor runs.
-- The repo uses npm or pnpm, with a committed lockfile. Repos without a committed
-  lockfile must set `install_command` explicitly to a command that does not create one.
+- The repo uses npm, pnpm, or bun, with a committed lockfile. For npm/pnpm, a repo that
+  tracks no lockfile can still run by setting `install_command` explicitly to a command
+  that does not create one. bun has no such escape hatch — it computes updates from the
+  committed lockfile, not the installed tree, so a bun repo must commit `bun.lock` (or
+  `bun.lockb`) to be updatable at all.
+- bun repos additionally need the bun binary on the runner — GitHub-hosted runners do
+  not preinstall it, so add [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun)
+  before the depvisor step, and pin `bun-version`: depvisor parses `bun outdated`'s
+  table output (bun has no JSON mode), so an unpinned bun that drifts with releases is
+  a breakage risk. The legacy binary `bun.lockb` works, but the text `bun.lock` keeps
+  lockfile diffs reviewable (`bun install --save-text-lockfile --frozen-lockfile
+--lockfile-only` migrates).
 - `.gitignore` covers `node_modules/` and build output (depvisor refuses dirty trees).
 - You pay for the LLM calls with your own API key.
 - Note: PRs opened with the default `GITHUB_TOKEN` do not trigger your other

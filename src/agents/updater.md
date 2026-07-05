@@ -19,7 +19,8 @@ Rules:
   `.yarnrc`/`.yarnrc.yml`, `.pnpmfile.cjs`, `pnpm-workspace.yaml`, `.yarn/`,
   `bunfig.toml`).
 - Never change package.json's `scripts`, `packageManager`, `pnpm`, `overrides`,
-  or `resolutions` fields.
+  `resolutions`, `trustedDependencies`, `patchedDependencies`, `workspaces`,
+  `catalog`, or `catalogs` fields.
 - Do not change unrelated code.
 
 When finished, return the structured result you are asked for:

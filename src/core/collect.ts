@@ -66,19 +66,113 @@ export function parsePnpmOutdated(data: Record<string, unknown>): Candidate[] {
   return out;
 }
 
+// Pinned to `bun outdated`'s table as of bun 1.3 — any drift must throw, not
+// guess. A new column set (e.g. the Workspace column of `-r` mode) lands here.
+const BUN_COLUMNS = ["Package", "Current", "Update", "Latest"] as const;
+
+/**
+ * Pure half of the bun collector: parse the ASCII table `bun outdated` prints
+ * (it has no JSON output and exits 0 whether or not updates exist —
+ * oven-sh/bun#15648). Fail-closed: an unknown line, column set, or package
+ * annotation throws instead of yielding silently-wrong candidates, so a format
+ * change in a future bun version turns the run red. devDependencies carry a
+ * ` (dev)` suffix in the Package column; `latest` deliberately comes from the
+ * Latest column (registry latest, matching npm/pnpm semantics), not the
+ * range-bound Update column.
+ */
+export function parseBunOutdated(raw: string): Candidate[] {
+  const rows: string[][] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("bun outdated v")) continue; // blank / version banner
+    if (/^\|[-|]+\|$/.test(trimmed)) continue; // table border
+    if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) {
+      throw new Error(`unrecognized line in bun outdated output: "${trimmed.slice(0, 120)}"`);
+    }
+    rows.push(
+      trimmed
+        .slice(1, -1)
+        .split("|")
+        .map((cell) => cell.trim()),
+    );
+  }
+  const header = rows.shift();
+  if (!header) return []; // banner only — everything is current
+  if (header.join(",") !== BUN_COLUMNS.join(",")) {
+    throw new Error(`unexpected bun outdated columns: "${header.join(" | ")}"`);
+  }
+  const out: Candidate[] = [];
+  for (const row of rows) {
+    const [pkgCell = "", current = "", , latest = ""] = row;
+    if (row.length !== BUN_COLUMNS.length || !pkgCell) {
+      throw new Error(`malformed bun outdated row: "| ${row.join(" | ")} |"`);
+    }
+    const m = /^(\S+)(?: \((\w+)\))?$/.exec(pkgCell);
+    if (!m?.[1]) {
+      throw new Error(`malformed package cell in bun outdated output: "${pkgCell}"`);
+    }
+    if (m[2] !== undefined && m[2] !== "dev") {
+      // e.g. a future catalog marker — refuse to guess what it means.
+      throw new Error(`unknown package annotation in bun outdated output: "${pkgCell}"`);
+    }
+    if (!latest || latest === current) continue;
+    out.push({
+      name: m[1],
+      current,
+      latest,
+      kind: m[2] === "dev" ? "dev" : "prod",
+      updateType: classifyUpdate(current, latest),
+    });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
 /**
  * Collect outdated packages for a repo using the detected package manager's
  * outdated command. This is the deterministic, mechanical half of depvisor —
- * no LLM involved. `pm` must come from the preflight detection (see pm.ts):
- * both commands read the installed tree, and both exit 1 with JSON still on
- * stdout when updates exist.
+ * no LLM involved. `pm` must come from the preflight detection (see pm.ts).
+ * npm and pnpm read the installed tree (no install → candidates hidden) and
+ * exit 1 with JSON still on stdout when updates exist; bun reads the committed
+ * lockfile instead (no lockfile → error) and prints a table.
  */
 export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[] {
   const [cmd, ...args] = pm.outdatedArgv;
-  const res = spawnSync(cmd, args, { cwd: repoPath, encoding: "utf8" });
+  // FORCE_COLOR switches bun to box-drawing + ANSI output even without a TTY,
+  // and it beats NO_COLOR (verified against bun 1.3.14) — strip it so the
+  // table parser only ever sees the plain `|`-bordered form.
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+  delete env.FORCE_COLOR;
+  const res = spawnSync(cmd, args, { cwd: repoPath, encoding: "utf8", env });
   if (res.error) throw new Error(`${pm.name} outdated failed to run: ${res.error.message}`);
+
+  // bun exits 0 whether or not updates exist (oven-sh/bun#15648), so — unlike
+  // npm/pnpm, whose normal "updates exist" path is exit 1 — a non-zero bun exit
+  // is unambiguously an error (e.g. a missing/broken lockfile, whose stdout is
+  // just the version banner and would otherwise parse to an empty, silently
+  // wrong "no updates"). Fail closed before the banner ever reaches the parser.
+  if (pm.name === "bun" && res.status !== 0) {
+    const stderr = (res.stderr ?? "").trim();
+    throw new Error(
+      `bun outdated failed (exit ${res.status})` + (stderr ? `: ${stderr.slice(0, 200)}` : ""),
+    );
+  }
+
   const raw = (res.stdout || "").trim();
   if (!raw) return [];
+
+  if (pm.name === "bun") {
+    try {
+      return parseBunOutdated(raw);
+    } catch (err) {
+      const stderr = (res.stderr ?? "").trim();
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `bun outdated output was not parseable (exit ${res.status}): ${message}` +
+          (stderr ? ` — stderr: ${stderr.slice(0, 200)}` : ""),
+      );
+    }
+  }
 
   let data: Record<string, unknown>;
   try {

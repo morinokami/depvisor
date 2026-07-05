@@ -16,10 +16,12 @@ import { join } from "node:path";
 type PmName = "npm" | "pnpm" | "yarn" | "bun";
 
 export interface PmToolchain {
-  name: "npm" | "pnpm";
+  name: "npm" | "pnpm" | "bun";
   /**
-   * argv for the outdated check (spawned without a shell). Both npm and pnpm
-   * exit 1 when updates exist, with the JSON still on stdout.
+   * argv for the outdated check (spawned without a shell). npm and pnpm exit 1
+   * when updates exist, with the JSON still on stdout; bun always exits 0 and
+   * prints an ASCII table instead — it has no JSON mode (oven-sh/bun#15648),
+   * so collect.ts parses the table fail-closed.
    */
   outdatedArgv: readonly [string, ...string[]];
   /** Shell command that runs a package.json script. */
@@ -38,8 +40,11 @@ export interface PmToolchain {
    * lockfile-less repo sets as its explicit install_command.
    * Only used in guidance messages; a bare `npm install`/`pnpm install`
    * would create the lockfile and dirty the pre-agent tree.
+   * `null` when the PM has no such escape hatch: bun reads the committed
+   * lockfile (not the installed tree) to compute outdated candidates, so a
+   * lockfile-less bun repo cannot be updated at all — no install flag helps.
    */
-  noLockfileInstall: string;
+  noLockfileInstall: string | null;
   /**
    * Install command for `install_command: auto`, or null when the repo has no
    * committed lockfile. Auto fails closed there because a bare install would
@@ -51,6 +56,10 @@ export interface PmToolchain {
 
 const NPM_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json"] as const;
 const PNPM_LOCKFILES = ["pnpm-lock.yaml"] as const;
+// bun.lock is the textual default since bun 1.2; the legacy binary bun.lockb
+// is still read (and both may coexist — bun.lock wins), so both count for
+// detection, frozen installs, and the mechanical bump commit.
+const BUN_LOCKFILES = ["bun.lock", "bun.lockb"] as const;
 
 export const npmToolchain: PmToolchain = {
   name: "npm",
@@ -80,9 +89,32 @@ export const pnpmToolchain: PmToolchain = {
       : null,
 };
 
+export const bunToolchain: PmToolchain = {
+  name: "bun",
+  outdatedArgv: ["bun", "outdated"],
+  runScript: (script) => `bun run ${script}`,
+  // The explicit `^` matters: bun preserves the given specifier verbatim, so a
+  // bare `bun add name@1.2.3` would write an exact pin where npm/pnpm write a
+  // caret range (verified against bun 1.3.14).
+  updateInstruction:
+    "Use `bun add <name>@^<version>` (`bun add -d <name>@^<version>` for dev dependencies).",
+  manifests: ["package.json", "bun.lock", "bun.lockb"],
+  lockfiles: BUN_LOCKFILES,
+  // No escape hatch: `bun outdated` reads the committed lockfile, not the
+  // installed tree, so `bun install --no-save` (which writes no lockfile)
+  // leaves it erroring with "missing lockfile" — a lockfile-less bun repo
+  // simply cannot be updated. See noLockfileInstall's doc on PmToolchain.
+  noLockfileInstall: null,
+  installCommand: (repoPath) =>
+    BUN_LOCKFILES.some((f) => existsSync(join(repoPath, f)))
+      ? "bun install --frozen-lockfile"
+      : null,
+};
+
 const TOOLCHAINS: Partial<Record<PmName, PmToolchain>> = {
   npm: npmToolchain,
   pnpm: pnpmToolchain,
+  bun: bunToolchain,
 };
 
 /** Lockfile → PM, in detection order. */
@@ -122,8 +154,8 @@ function toolchainFor(name: PmName, source: string): PmDetection {
       status: "unsupported-package-manager",
       summary:
         `This repository uses ${name} (detected via ${source}), which depvisor does not ` +
-        "support yet — currently npm and pnpm. No update run was attempted, so nothing " +
-        "half-updated was left behind.",
+        "support yet — currently npm, pnpm, and bun. No update run was attempted, so " +
+        "nothing half-updated was left behind.",
     };
   }
   return { ok: true, pm, source };

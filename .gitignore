@@ -7,3 +7,4 @@ dist/
 pr-preview/
 fixtures/sample-app/
 fixtures/sample-app-pnpm/
+fixtures/sample-app-bun/

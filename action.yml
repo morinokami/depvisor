@@ -14,7 +14,7 @@ inputs:
     description: Model specifier for the provider, e.g. openai/gpt-5.5.
     required: true
   install_command:
-    description: Dependency install command; use "auto" for npm/pnpm lockfile installs or "skip" if already installed.
+    description: Dependency install command; use "auto" for npm/pnpm/bun lockfile installs or "skip" if already installed.
     required: false
     default: auto
   llm_api_key_env:

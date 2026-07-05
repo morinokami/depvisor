@@ -84,6 +84,24 @@ test("guarded fields: packageManager, pnpm, and override fields are tamper-check
   assert.deepEqual(packageJsonGuardedFieldChanges(base, resolutions), ["resolutions"]);
 });
 
+test("guarded fields: bun's trust, patch, and catalog fields are tamper-checked", () => {
+  const base = `{"name":"x","dependencies":{"dep":"1.0.0"}}`;
+
+  // Grants install-time code execution to a dependency.
+  const trusted = `{"name":"x","dependencies":{"dep":"2.0.0"},"trustedDependencies":["dep"]}`;
+  assert.deepEqual(packageJsonGuardedFieldChanges(base, trusted), ["trustedDependencies"]);
+
+  // Injects arbitrary code into an installed dependency.
+  const patched = `{"name":"x","dependencies":{"dep":"2.0.0"},"patchedDependencies":{"dep@2.0.0":"patches/dep.patch"}}`;
+  assert.deepEqual(packageJsonGuardedFieldChanges(base, patched), ["patchedDependencies"]);
+
+  // bun keeps catalogs in package.json — under workspaces or at the top level.
+  const nested = `{"name":"x","dependencies":{"dep":"2.0.0"},"workspaces":{"catalog":{"dep":"2.0.0"}}}`;
+  assert.deepEqual(packageJsonGuardedFieldChanges(base, nested), ["workspaces"]);
+  const topLevel = `{"name":"x","dependencies":{"dep":"2.0.0"},"catalog":{"dep":"2.0.0"},"catalogs":{"grp":{"dep":"2.0.0"}}}`;
+  assert.deepEqual(packageJsonGuardedFieldChanges(base, topLevel), ["catalog", "catalogs"]);
+});
+
 test("guarded fields: key reordering alone is not a change", () => {
   const base = `{"scripts":{"build":"tsc","test":"node --test"},"pnpm":{"overrides":{"a":"1","b":"2"}}}`;
   const reordered = `{"pnpm":{"overrides":{"b":"2","a":"1"}},"scripts":{"test":"node --test","build":"tsc"}}`;
