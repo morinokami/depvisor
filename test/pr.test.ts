@@ -15,6 +15,7 @@ const cand = (name: string, current: string, latest: string): Candidate => ({
   latest,
   kind: "dev",
   updateType: "major",
+  locations: [""],
 });
 const depvisorFooter = "_Opened by [depvisor](https://github.com/morinokami/depvisor)._";
 

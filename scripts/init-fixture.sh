@@ -5,18 +5,21 @@
 # branches/commits inside it), so it cannot be tracked by the depvisor repo —
 # it is gitignored and recreated on demand with this script.
 #
-#   init-fixture.sh [--pm npm|pnpm|bun] [dest]
+#   init-fixture.sh [--pm npm|pnpm|bun] [--workspaces] [dest]
 #
 # --pm pnpm creates the pnpm variant (default dest fixtures/sample-app-pnpm):
 # same template, but with a pnpm-lock.yaml instead of the template's committed
 # package-lock.json, so package-manager detection resolves to pnpm.
 # --pm bun does the same with a bun.lock (default dest fixtures/sample-app-bun).
+# --workspaces creates the npm-workspaces monorepo variant from a separate
+# template (default dest fixtures/sample-app-workspaces): two packages that
+# share a dependency, so it exercises workspace collection and -w-scoped updates.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-template="$root/fixtures/sample-app.template"
 
 pm="npm"
+ws=0
 dest=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,21 +27,38 @@ while [ $# -gt 0 ]; do
       pm="$2"
       shift 2
       ;;
+    --workspaces)
+      ws=1
+      shift
+      ;;
     *)
       dest="$1"
       shift
       ;;
   esac
 done
-case "$pm" in
-  npm) dest="${dest:-$root/fixtures/sample-app}" ;;
-  pnpm) dest="${dest:-$root/fixtures/sample-app-pnpm}" ;;
-  bun) dest="${dest:-$root/fixtures/sample-app-bun}" ;;
-  *)
-    echo "unsupported --pm '$pm' (npm|pnpm|bun)" >&2
+
+if [ "$ws" = "1" ]; then
+  # The monorepo variant is npm-only for now (bun/yarn workspaces are out of
+  # scope; a pnpm-workspaces variant would need its own workspace declaration).
+  if [ "$pm" != "npm" ]; then
+    echo "--workspaces currently supports only --pm npm" >&2
     exit 1
-    ;;
-esac
+  fi
+  template="$root/fixtures/sample-app-workspaces.template"
+  dest="${dest:-$root/fixtures/sample-app-workspaces}"
+else
+  template="$root/fixtures/sample-app.template"
+  case "$pm" in
+    npm) dest="${dest:-$root/fixtures/sample-app}" ;;
+    pnpm) dest="${dest:-$root/fixtures/sample-app-pnpm}" ;;
+    bun) dest="${dest:-$root/fixtures/sample-app-bun}" ;;
+    *)
+      echo "unsupported --pm '$pm' (npm|pnpm|bun)" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if [ -e "$dest/.git" ]; then
   echo "fixture already initialized at $dest — nothing to do."
@@ -49,7 +69,18 @@ fi
 mkdir -p "$dest"
 cp -R "$template/." "$dest/"
 cd "$dest"
-if [ "$pm" = "pnpm" ]; then
+if [ "$ws" = "1" ]; then
+  # npm workspaces: the template ships no lockfile, so generate the single root
+  # package-lock.json BEFORE the baseline commit (like the pnpm/bun variants),
+  # leaving a clean, lockfile-complete tree. `npm install` at the root installs
+  # every workspace; the root scripts fan build/test out across them.
+  npm install --no-audit --no-fund
+  git init -q -b main
+  git add -A
+  git -c user.email=fixture@depvisor.dev -c user.name=depvisor-fixture \
+    commit -qm 'baseline: sample-workspaces (deps intentionally outdated)'
+  npm run build >/dev/null
+elif [ "$pm" = "pnpm" ]; then
   # The template ships npm's lockfile; the pnpm variant must generate its own
   # BEFORE the baseline commit so pnpm-lock.yaml is part of the green baseline.
   rm package-lock.json
@@ -83,4 +114,6 @@ else
   npm install --no-audit --no-fund
   npm run build >/dev/null
 fi
-echo "fixture ready at $dest (green baseline on branch main, $pm)."
+label="$pm"
+[ "$ws" = "1" ] && label="npm-workspaces"
+echo "fixture ready at $dest (green baseline on branch main, $label)."

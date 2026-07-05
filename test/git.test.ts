@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   commitAll,
   discardWorkPast,
   isRepoRoot,
+  manifestBumpPaths,
   refExists,
 } from "../src/core/git.ts";
 
@@ -74,6 +75,49 @@ test("commitPaths/commitAll split manifests from code fixes", () => {
   // Nothing left → both are null on a second call.
   assert.equal(commitPaths(repo, ["package.json"], "x"), null);
   assert.equal(commitAll(repo, "x"), null);
+});
+
+test("manifestBumpPaths selects every package.json and lockfile by basename (workspaces)", () => {
+  const repo = tempRepo();
+  mkdirSync(join(repo, "packages/a"), { recursive: true });
+  writeFileSync(join(repo, "packages/a/package.json"), "{}\n");
+  execSync("git add -A && git -c user.email=t@t -c user.name=t commit -qm ws", { cwd: repo });
+
+  // A monorepo bump touches the root manifest + lockfile AND a workspace manifest,
+  // plus source the agent fixed.
+  writeFileSync(join(repo, "package.json"), '{"v":2}\n');
+  writeFileSync(join(repo, "package-lock.json"), '{"v":2}\n');
+  writeFileSync(join(repo, "packages/a/package.json"), '{"v":2}\n');
+  writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
+
+  // Nested workspace manifest is picked up; src.ts is not.
+  assert.deepEqual(manifestBumpPaths(repo, ["package-lock.json", "npm-shrinkwrap.json"]).sort(), [
+    "package-lock.json",
+    "package.json",
+    "packages/a/package.json",
+  ]);
+
+  const bump = commitPaths(
+    repo,
+    manifestBumpPaths(repo, ["package-lock.json", "npm-shrinkwrap.json"]),
+    "deps: bump",
+  );
+  assert.ok(bump);
+  const bumpFiles = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
+    .trim()
+    .split("\n");
+  assert.deepEqual(bumpFiles.sort(), [
+    "package-lock.json",
+    "package.json",
+    "packages/a/package.json",
+  ]);
+  // The agent's code fix stays in the second commit.
+  const fix = commitAll(repo, "fix: adapt");
+  assert.ok(fix);
+  const fixFiles = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
+    .trim()
+    .split("\n");
+  assert.deepEqual(fixFiles, ["src.ts"]);
 });
 
 test("discardWorkPast drops commits, tracked edits, and untracked files", () => {

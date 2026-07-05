@@ -88,6 +88,12 @@ jobs:
   a breakage risk. The legacy binary `bun.lockb` works, but the text `bun.lock` keeps
   lockfile diffs reviewable (`bun install --save-text-lockfile --frozen-lockfile
 --lockfile-only` migrates).
+- **Workspace monorepos** (npm and pnpm `workspaces`) are supported: depvisor
+  updates each dependency in the workspace(s) that already declare it, never the
+  root. This needs the single shared lockfile at the repo root, and verification
+  that runs from the root — a root `build`/`lint`/`test` script that exercises the
+  workspaces (e.g. via `turbo`/`nx` or `--workspaces`), or explicit
+  `verify_commands`. bun and yarn workspaces are not supported.
 - `.gitignore` covers `node_modules/` and build output (depvisor refuses dirty trees).
 - You pay for the LLM calls with your own API key.
 - Note: PRs opened with the default `GITHUB_TOKEN` do not trigger your other

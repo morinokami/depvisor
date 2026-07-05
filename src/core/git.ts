@@ -184,6 +184,22 @@ function commitStaged(repo: string, message: string): string {
 }
 
 /**
+ * The changed paths that make up the mechanical dependency bump: every
+ * `package.json` (root or workspace) and the given package-manager lockfile(s),
+ * matched by basename so nested workspace manifests are included without
+ * enumerating workspaces. Feeds `commitPaths` for the first of the two commits;
+ * the split is cosmetic (both commits land in the same PR), so this carries no
+ * trust boundary.
+ */
+export function manifestBumpPaths(repo: string, lockfiles: readonly string[]): string[] {
+  const lock = new Set(lockfiles);
+  return changedPaths(repo).filter((p) => {
+    const base = p.slice(p.lastIndexOf("/") + 1);
+    return base === "package.json" || lock.has(base);
+  });
+}
+
+/**
  * Stage changed paths from the given list and commit. The split keeps the
  * mechanical manifest bump separate from source fixes.
  */

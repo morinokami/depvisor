@@ -9,6 +9,7 @@ function c(partial: Partial<Candidate> & { name: string }): Candidate {
     latest: "1.1.0",
     kind: "prod",
     updateType: "minor",
+    locations: [""],
     ...partial,
   };
 }

@@ -4,6 +4,18 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bunToolchain, detectPackageManager, npmToolchain, pnpmToolchain } from "../src/core/pm.ts";
+import type { Candidate } from "../src/core/types.ts";
+
+function cand(partial: Partial<Candidate> & { name: string }): Candidate {
+  return {
+    current: "1.0.0",
+    latest: "2.0.0",
+    kind: "prod",
+    updateType: "major",
+    locations: [""],
+    ...partial,
+  };
+}
 
 function repoWith(files: Record<string, string>): string {
   const repo = mkdtempSync(join(tmpdir(), "depvisor-pm-"));
@@ -109,14 +121,62 @@ test("installCommand: requires a committed lockfile (null = auto must fail close
   assert.equal(bunToolchain.noLockfileInstall, null);
 });
 
-test("toolchains: per-PM commands and manifest sets", () => {
+test("toolchains: per-PM commands and lockfile sets", () => {
   assert.equal(npmToolchain.runScript("test"), "npm run test");
   assert.equal(pnpmToolchain.runScript("test"), "pnpm run test");
   assert.equal(bunToolchain.runScript("test"), "bun run test");
-  assert.ok(npmToolchain.manifests.includes("package-lock.json"));
-  assert.ok(pnpmToolchain.manifests.includes("pnpm-lock.yaml"));
-  assert.ok(!pnpmToolchain.manifests.includes("package-lock.json"));
+  // lockfiles drive the mechanical bump commit (with every package.json).
+  assert.ok(npmToolchain.lockfiles.includes("package-lock.json"));
+  assert.ok(pnpmToolchain.lockfiles.includes("pnpm-lock.yaml"));
+  assert.ok(!pnpmToolchain.lockfiles.includes("package-lock.json"));
   // Both lockfile forms: whichever one `bun add` touches must be committed.
-  assert.ok(bunToolchain.manifests.includes("bun.lock"));
-  assert.ok(bunToolchain.manifests.includes("bun.lockb"));
+  assert.ok(bunToolchain.lockfiles.includes("bun.lock"));
+  assert.ok(bunToolchain.lockfiles.includes("bun.lockb"));
+});
+
+test("outdatedArgv: workspace-aware flags", () => {
+  // --long carries per-entry type + dependedByLocation; -r reports workspaces.
+  assert.deepEqual(npmToolchain.outdatedArgv, ["npm", "outdated", "--json", "--long"]);
+  assert.deepEqual(pnpmToolchain.outdatedArgv, ["pnpm", "outdated", "-r", "--format", "json"]);
+});
+
+test("npm updateInstruction: single-package uses no -w, -D marks dev deps", () => {
+  const out = npmToolchain.updateInstruction([
+    cand({ name: "left-pad", latest: "1.3.0" }),
+    cand({ name: "eslint", latest: "9.0.0", kind: "dev" }),
+  ]);
+  assert.match(out, /npm install left-pad@1\.3\.0(\n|$)/);
+  assert.match(out, /npm install -D eslint@9\.0\.0(\n|$)/);
+  assert.doesNotMatch(out, /-w /); // no workspace flags for root-only deps
+});
+
+test("npm updateInstruction: scopes -w to declaring workspaces, root gets its own line", () => {
+  const out = npmToolchain.updateInstruction([
+    cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
+    cand({ name: "ms", latest: "2.1.3", locations: ["", "packages/a"] }),
+  ]);
+  assert.match(out, /npm install left-pad@1\.3\.0 -w packages\/a -w packages\/b/);
+  // Declared in both root and a workspace → two commands, one scoped, one not.
+  assert.match(out, /npm install ms@2\.1\.3(\n|$)/);
+  assert.match(out, /npm install ms@2\.1\.3 -w packages\/a/);
+});
+
+test("pnpm updateInstruction: a single recursive command covers every workspace", () => {
+  const out = pnpmToolchain.updateInstruction([
+    cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
+    cand({ name: "isarray", latest: "2.0.5", kind: "dev", locations: ["packages/a"] }),
+  ]);
+  // One command, no -w, no -D: pnpm -r update preserves each dep's section.
+  assert.match(out, /pnpm -r update left-pad@1\.3\.0 isarray@2\.0\.5/);
+  assert.doesNotMatch(out, /-w /);
+  assert.doesNotMatch(out, /-D /);
+});
+
+test("bun updateInstruction: keeps the caret, -d marks dev deps", () => {
+  const out = bunToolchain.updateInstruction([
+    cand({ name: "chalk", latest: "5.0.0" }),
+    cand({ name: "@types/node", latest: "22.0.0", kind: "dev" }),
+  ]);
+  assert.match(out, /bun add chalk@\^5\.0\.0(\n|$)/);
+  assert.match(out, /bun add -d @types\/node@\^22\.0\.0(\n|$)/);
 });
