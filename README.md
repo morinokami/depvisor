@@ -28,8 +28,7 @@ on:
 
 permissions:
   contents: write # push the update branch
-  pull-requests: write # open the PR
-  issues: write # create the PR labels (semver:*, security, ...); omit to skip label creation
+  pull-requests: write # open the PR (and create/apply its labels)
 
 concurrency:
   group: depvisor # runs must not race on force-push
@@ -271,12 +270,14 @@ data the PR body shows:
   [Security prioritization](#security-prioritization)).
 - `dev-dependencies` — every package in the PR is a dev dependency.
 
-Labeling is **fail-soft**: it happens after the PR is opened and never blocks
-it. depvisor creates any missing label (without overwriting a same-named label
-you already have), which needs the `issues: write` permission shown above — drop
-that permission and depvisor still opens the PR and applies whichever of these
-labels already exist in your repo, it just won't create new ones. Label names
-are a fixed set today; a configurable/opt-out input may come later.
+Labeling needs no permission beyond the `pull-requests: write` you already grant
+to open the PR — GitHub's label API accepts either `issues` or `pull-requests`
+write, so depvisor creates any missing label (without overwriting a same-named
+label you already have) and applies it with that scope alone. It is also
+**fail-soft**: labeling happens after the PR is opened and never blocks it, and a
+label that somehow cannot be applied is logged and skipped rather than failing
+the run. Label names are a fixed set today; a configurable/opt-out input may come
+later.
 
 ### When the agent changes tests
 
