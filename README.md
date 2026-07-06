@@ -299,6 +299,25 @@ what counts as a test). An empty section is therefore not a guarantee that no te
 was touched — but on the vast majority of updates the agent changes no tests at
 all, and then no warning appears.
 
+### When a dependency's license changes
+
+A version bump can quietly carry a **relicense** (MIT → BUSL-1.1 and similar
+source-available/copyleft moves are common in practice), which is among the
+easiest changes to miss in review because it lives in metadata, not code. depvisor
+compares the npm registry's per-version `license` field for the current and target
+version of each package, and when they differ it adds a **⚠️ License changed
+between versions** section to the PR body listing `package: from → to`. The
+packument this reads is the one already fetched for the cooldown / source links,
+so it costs no extra registry requests.
+
+This is **plain string comparison only** — depvisor makes no judgment about
+whether the new license is more or less permissive (that reading is yours), it
+just surfaces that the label changed. It is display-only and **fail-open**: a
+license it cannot read as a clean string on both sides (the deprecated object
+form, the ancient `licenses` array, a missing field, a private-registry package,
+or a registry hiccup) simply shows nothing rather than blocking a PR, so an empty
+section is not a guarantee that no license changed.
+
 ### Reading the Actions result
 
 depvisor writes a job summary and an annotation for every known outcome, at both

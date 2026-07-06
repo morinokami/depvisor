@@ -450,6 +450,71 @@ test("buildPrPayload drops unsafe test paths from the list but still counts them
   assert.ok(!clean.includes("ev`il"));
 });
 
+test("buildPrPayload omits the license warning when no license changed", () => {
+  const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const withoutArg = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates,
+    narrative: narrative("Bump."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  const withEmpty = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates,
+    licenseChanges: [],
+    narrative: narrative("Bump."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(!withoutArg.body.includes("License changed"));
+  assert.ok(!withEmpty.body.includes("License changed"));
+});
+
+test("buildPrPayload warns when a package's declared license changed", () => {
+  const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const p = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates,
+    licenseChanges: [{ name: "lru-cache", from: "ISC", to: "BUSL-1.1" }],
+    narrative: narrative("Bump lru-cache."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(p.body.includes("## ⚠️ License changed between versions"));
+  assert.ok(p.body.includes("changed for 1 package(s)"));
+  assert.ok(p.body.includes("| `lru-cache` | `ISC` | `BUSL-1.1` |"));
+  // No claim about permissiveness — the reading is left to the human.
+  assert.ok(p.body.includes("no judgment about whether the new license is"));
+  // The warning sits above "What changed" so reviewers see it first.
+  assert.ok(p.body.indexOf("License changed") < p.body.indexOf("## What changed"));
+  // And it survives the exit re-sanitize unbroken (code spans preserved).
+  assert.ok(sanitizePrBody(p.body).includes("| `lru-cache` | `ISC` | `BUSL-1.1` |"));
+});
+
+test("buildPrPayload drops license changes with unsafe values but still counts them", () => {
+  const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const p = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates,
+    // A backtick in the license string would break out of the code span.
+    licenseChanges: [
+      { name: "safe", from: "MIT", to: "Apache-2.0" },
+      { name: "evil", from: "MIT", to: "BUSL`-1.1" },
+    ],
+    narrative: narrative("Bump."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  const clean = sanitizePrBody(p.body);
+  // The count reflects both changes, but only the safe one is listed.
+  assert.ok(clean.includes("changed for 2 package(s)"));
+  assert.ok(clean.includes("| `safe` | `MIT` | `Apache-2.0` |"));
+  assert.ok(clean.includes("1 license change(s) with values that cannot be safely displayed"));
+  // The dangerous raw value never reaches the rendered body.
+  assert.ok(!clean.includes("BUSL`-1.1"));
+});
+
 test("buildPrPayload renders notable changes only for packages in the update", () => {
   const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
   const p = buildPrPayload({
