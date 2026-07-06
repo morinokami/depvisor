@@ -187,9 +187,13 @@ scheduled run and burns an agent investigation only to fail or defer again. The
 
 ```yaml
 ignore: |
-  left-pad          # never update this package
-  lru-cache@11      # allow updates, but not to the v11 major
+  left-pad
+  lru-cache@11
 ```
+
+(`left-pad` is never updated; `lru-cache` keeps updating, just not to the `11.x`
+major — comments are not supported inside `ignore`, since each line is parsed
+verbatim as `name` or `name@<major>`.)
 
 Details worth knowing:
 
