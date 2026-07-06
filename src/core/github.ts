@@ -214,13 +214,18 @@ function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | Open
  * labels are applied AFTER `gh pr create`, never passed to it: `gh pr create
  * --label <unknown>` aborts creation, turning a missing label into a lost PR.
  *
- * Each label is ensured first (`gh label create`, no `--force` so a user's
- * existing same-named label keeps its color/description; "already exists" is the
- * expected idempotent case) because `gh pr edit --add-label` — like create —
- * errors on an unknown label. Ensuring a new label needs `issues: write`; adding
- * an existing label to a PR needs only `pull-requests: write`. Without
- * `issues: write` the ensure is a no-op and only pre-existing labels get applied
- * — degraded, never fatal. All `gh` calls go through the scrubbed-env helper.
+ * Each label is ensured (`gh label create`, no `--force` so a user's existing
+ * same-named label keeps its color/description; "already exists" is the expected
+ * idempotent case) and then added ON ITS OWN. Per-label edits are deliberate:
+ * `gh pr edit --add-label` resolves every requested name up front and, like
+ * create, errors on ANY unknown one — so a single edit batching several labels
+ * is all-or-nothing and one missing label would drop even the labels that exist.
+ * That would break the documented degradation ("apply whatever already exists")
+ * whenever `issues: write` is absent (every `gh label create` no-ops) or a
+ * create fails midway. Ensuring a new label needs `issues: write`; adding an
+ * existing label to a PR needs only `pull-requests: write`. All `gh` calls go
+ * through the scrubbed-env helper. A label that still cannot be applied is logged
+ * (gh's error carries no secret — just "label not found"/auth) and skipped.
  */
 function applyLabels(
   env: NodeJS.ProcessEnv,
@@ -228,9 +233,15 @@ function applyLabels(
   branch: string,
   labels: string[],
 ): void {
-  if (labels.length === 0) return;
-  for (const label of labels) gh(env, clone, ["label", "create", label]);
-  gh(env, clone, ["pr", "edit", branch, ...labels.flatMap((l) => ["--add-label", l])]);
+  for (const label of labels) {
+    // Ensure first; a failure here is fine as long as the label pre-exists
+    // (no issues: write) — the add below is what actually decides the outcome.
+    gh(env, clone, ["label", "create", label]);
+    const added = gh(env, clone, ["pr", "edit", branch, "--add-label", label]);
+    if (added.code !== 0) {
+      console.warn(`note: could not apply label '${label}' to ${branch}: ${added.err}`);
+    }
+  }
 }
 
 /**
