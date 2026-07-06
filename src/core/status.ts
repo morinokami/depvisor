@@ -67,9 +67,11 @@ export interface GroupResult {
   /**
    * Token/cost usage for this group's agent session (visibility only). Absent
    * for outcomes that never ran the agent (skip/held-back/branch-collision/
-   * release-age-unavailable) or where Flue threw before returning a response
-   * (`no-structured-result`). Record-only, like `testChanges` — NOT in
-   * RUN_OUTPUT_SCHEMA.
+   * release-age-unavailable) and for the `no-structured-result` case where the
+   * prompt threw before returning a response (`ResultUnavailableError`); the
+   * other `no-structured-result` case — a returned response whose defensive
+   * re-parse rejected — does carry usage (tokens were spent). Record-only, like
+   * `testChanges` — NOT in RUN_OUTPUT_SCHEMA.
    */
   usage?: GroupUsage;
   prUrl: string | null;

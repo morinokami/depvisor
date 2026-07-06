@@ -589,10 +589,12 @@ export default defineWorkflow({
         const verifyCmds = verifySteps.map((s) => `\`${s.run}\``).join(", ");
 
         let result: v.InferOutput<typeof UpdateResult>;
-        // Token/cost usage for this group's session (visibility only). Set once
-        // the prompt returns, BEFORE the verdict branch, so a defer — which still
-        // burned tokens — reports them too. Stays undefined only when Flue threw
-        // before returning (no-structured-result), where no usage exists to read.
+        // Token/cost usage for this group's session (visibility only). Captured
+        // the moment the prompt returns — before both the defensive re-parse and
+        // the verdict branch — so every outcome that actually ran the agent
+        // reports what it burned: a defer, and a no-structured-result caused by
+        // the re-parse rejecting a returned response. Stays undefined only when
+        // the prompt itself threw (ResultUnavailableError): no response to read.
         let usage: GroupUsage | undefined;
         try {
           log.info(`agent session starting for ${describeMembers(members)}`);
@@ -615,9 +617,11 @@ export default defineWorkflow({
               "and leave no half-finished changes).",
             { result: UpdateResult },
           );
-          result = v.parse(UpdateResult, response.data);
           // Structural projection of Flue's PromptResultResponse.usage/.model —
           // core stays Flue-free, so the mapping lives here (see GroupUsage).
+          // Assigned before the defensive re-parse below: the response (and the
+          // tokens it already cost) exists even if that re-parse rejects, so a
+          // no-structured-result on that path still reports what it burned.
           usage = {
             input: response.usage.input,
             output: response.usage.output,
@@ -627,6 +631,7 @@ export default defineWorkflow({
             costUsd: response.usage.cost.total,
             model: `${response.model.provider}/${response.model.id}`,
           };
+          result = v.parse(UpdateResult, response.data);
           log.info(
             `agent structured result received: verdict=${result.verdict} ` +
               `(${usage.totalTokens} tokens, est. $${usage.costUsd.toFixed(4)})`,
@@ -645,6 +650,9 @@ export default defineWorkflow({
               packages,
               verification: [],
               prUrl: null,
+              // usage exists on the ValiError path (a response came back, then
+              // its re-parse rejected); absent on the ResultUnavailableError path.
+              ...(usage ? { usage } : {}),
             });
             continue;
           }
