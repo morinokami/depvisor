@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_EMAIL, NO_HOOKS } from "./git.ts";
-import { type PrPayload, sanitizePrBody, sanitizeSummary } from "./pr.ts";
+import { type PrPayload, sanitizeLabels, sanitizePrBody, sanitizeSummary } from "./pr.ts";
 
 export interface OpenPrResult {
   ok: boolean;
@@ -208,6 +208,45 @@ function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | Open
 }
 
 /**
+ * Apply depvisor's deterministic labels to the PR, entirely fail-soft.
+ *
+ * The main objective is the PR itself, so nothing here may fail it — that is why
+ * labels are applied AFTER `gh pr create`, never passed to it: `gh pr create
+ * --label <unknown>` aborts creation, turning a missing label into a lost PR.
+ *
+ * Both creating a label and applying it need only `pull-requests: write` (the
+ * scope that already opened the PR): GitHub's label REST endpoint accepts either
+ * `issues` or `pull-requests` write, verified empirically against the standard
+ * `GITHUB_TOKEN` — no `issues: write` is required.
+ *
+ * Each label is ensured (`gh label create`, no `--force` so a user's existing
+ * same-named label keeps its color/description; "already exists" is the expected
+ * idempotent case) and then added ON ITS OWN. Per-label edits are deliberate:
+ * `gh pr edit --add-label` resolves every requested name up front and, like
+ * create, errors on ANY unknown one — so a single edit batching several labels
+ * is all-or-nothing, and one label a transient `gh label create` failure left
+ * missing would drop even the labels that do exist. All `gh` calls go through the
+ * scrubbed-env helper. A label that still cannot be applied is logged (gh's error
+ * carries no secret — just "label not found"/auth) and skipped, never fatal.
+ */
+function applyLabels(
+  env: NodeJS.ProcessEnv,
+  clone: string,
+  branch: string,
+  labels: string[],
+): void {
+  for (const label of labels) {
+    // Ensure first; a failure here (e.g. it already exists, or a transient
+    // registry hiccup) is fine — the add below is what decides the outcome.
+    gh(env, clone, ["label", "create", label]);
+    const added = gh(env, clone, ["pr", "edit", branch, "--add-label", label]);
+    if (added.code !== 0) {
+      console.warn(`note: could not apply label '${label}' to ${branch}: ${added.err}`);
+    }
+  }
+}
+
+/**
  * Push the update branch and open (or refresh) the PR via the `gh` CLI.
  *
  * This is the only code that touches a token, and it runs in a separate
@@ -224,10 +263,11 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
   if (!("clone" in prepared)) return prepared;
   const { clone, workDir, env, branchSha } = prepared;
 
-  // The tokenless step writes the payload; re-sanitize title/body at the exit
-  // boundary in case payload.json was changed after buildPrPayload.
+  // The tokenless step writes the payload; re-sanitize title/body/labels at the
+  // exit boundary in case payload.json was changed after buildPrPayload.
   const title = sanitizeSummary(payload.title);
   const body = sanitizePrBody(payload.body);
+  const labels = sanitizeLabels(payload.labels);
 
   try {
     // Prefer the trusted URL; only fall back to target config for local dev.
@@ -292,6 +332,7 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       body,
     ]);
     if (create.code === 0) {
+      applyLabels(env, clone, payload.branch, labels);
       return { ok: true, action: "created", url: create.out, error: null };
     }
 
@@ -310,8 +351,12 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       ".[0].url",
     ]);
     if (existing.code === 0 && existing.out) {
-      // Keep title/body in sync with the fresh payload.
+      // Keep title/body in sync with the fresh payload, then reconcile labels
+      // (fail-soft, separate from the title/body edit so a label hiccup cannot
+      // undo it). --add-label only adds, so a group whose top semver level rose
+      // between runs may briefly carry both the old and new semver:* label.
       gh(env, clone, ["pr", "edit", payload.branch, "--title", title, "--body", body]);
+      applyLabels(env, clone, payload.branch, labels);
       return { ok: true, action: "updated", url: existing.out, error: null };
     }
 

@@ -7,8 +7,10 @@ import {
   branchNameForGroup,
   buildPrPayload,
   clearPrPreview,
+  deriveLabels,
   emitPrPayload,
   PR_PAYLOADS_DIR,
+  sanitizeLabels,
   sanitizePrBody,
   sanitizeSummary,
   versionsMarker,
@@ -469,4 +471,94 @@ test("buildPrPayload renders notable changes only for packages in the update", (
   assert.ok(p.body.includes("- `lru-cache`: The default export was removed"));
   assert.ok(!p.body.includes("<img")); // note text is sanitized
   assert.ok(!p.body.includes("left-pad")); // foreign packages are dropped deterministically
+});
+
+const mk = (over: Partial<Candidate> = {}): Candidate => ({
+  name: "pkg",
+  current: "1.0.0",
+  latest: "2.0.0",
+  kind: "prod",
+  updateType: "minor",
+  locations: [""],
+  ...over,
+});
+
+test("deriveLabels tags depvisor plus the group's highest semver level", () => {
+  // A group mixing patch and minor takes the higher level.
+  assert.deepEqual(deriveLabels([mk({ updateType: "patch" }), mk({ name: "b" })]), [
+    "depvisor",
+    "semver:minor",
+  ]);
+  assert.deepEqual(deriveLabels([mk({ updateType: "major" })]), ["depvisor", "semver:major"]);
+  assert.deepEqual(deriveLabels([mk({ updateType: "patch" })]), ["depvisor", "semver:patch"]);
+});
+
+test("deriveLabels omits semver when the only update type is unknown", () => {
+  assert.deepEqual(deriveLabels([mk({ updateType: "unknown" })]), ["depvisor"]);
+});
+
+test("deriveLabels adds dev-dependencies only when every member is a dev dep", () => {
+  assert.ok(
+    deriveLabels([mk({ kind: "dev" }), mk({ name: "b", kind: "dev" })]).includes(
+      "dev-dependencies",
+    ),
+  );
+  assert.ok(
+    !deriveLabels([mk({ kind: "dev" }), mk({ name: "b", kind: "prod" })]).includes(
+      "dev-dependencies",
+    ),
+  );
+});
+
+test("deriveLabels adds security only for a member that resolves a real advisory", () => {
+  const adv = new Map([["lodash", ["GHSA-35jh-r3h4-6jhm"]]]);
+  assert.ok(deriveLabels([mk({ name: "lodash" })], adv).includes("security"));
+  // An empty advisory list does not count, nor does an absent map.
+  assert.ok(
+    !deriveLabels([mk({ name: "lodash" })], new Map([["lodash", []]])).includes("security"),
+  );
+  assert.ok(!deriveLabels([mk({ name: "lodash" })]).includes("security"));
+});
+
+test("buildPrPayload attaches the deterministic label set to the payload", () => {
+  // cand() is a dev/major candidate; with a resolved advisory it earns all four.
+  const candidates = [cand("lodash", "4.17.15", "4.17.21")];
+  const p = buildPrPayload({
+    branch: "depvisor/major-lodash",
+    base: "main",
+    candidates,
+    advisories: new Map([["lodash", ["GHSA-35jh-r3h4-6jhm"]]]),
+    narrative: narrative("Bump lodash."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.deepEqual(p.labels.sort(), ["depvisor", "dev-dependencies", "security", "semver:major"]);
+});
+
+test("sanitizeLabels keeps only the fixed vocabulary, deduping and stabilizing", () => {
+  assert.deepEqual(
+    sanitizeLabels(["semver:minor", "depvisor", "semver:minor", "security", "dev-dependencies"]),
+    ["depvisor", "dev-dependencies", "security", "semver:minor"],
+  );
+});
+
+test("sanitizeLabels drops anything outside the allowlist (injection-safe)", () => {
+  // Unknown names, flag-shaped strings, shell metacharacters, and non-strings
+  // must never reach the `gh` command line.
+  assert.deepEqual(
+    sanitizeLabels([
+      "evil",
+      "semver:huge",
+      "--add-label",
+      "-X",
+      "depvisor; rm -rf /",
+      "semver:minor ",
+      1,
+      null,
+      "depvisor",
+    ]),
+    ["depvisor"],
+  );
+  // A tampered payload with a non-array labels field yields no labels.
+  assert.deepEqual(sanitizeLabels("depvisor"), []);
+  assert.deepEqual(sanitizeLabels(undefined), []);
 });

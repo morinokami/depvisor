@@ -12,6 +12,14 @@ export interface PrPayload {
   base: string;
   title: string;
   body: string;
+  /**
+   * Deterministic labels applied to the PR by the token-holding open-pr step
+   * (`depvisor`, `semver:*`, `security`, `dev-dependencies`). Derived from the
+   * group members here, in the tokenless step; the exit boundary re-validates
+   * every entry against a fixed allowlist (`sanitizeLabels`) because the payload
+   * file is untrusted when open-pr reads it back.
+   */
+  labels: string[];
 }
 
 /**
@@ -162,6 +170,64 @@ export function sanitizePrBody(body: string): string {
   const marker = body.match(VERSIONS_MARKER_RE)?.[0];
   const clean = sanitizeSummary(body);
   return marker ? `${clean}\n\n${marker}` : clean;
+}
+
+/**
+ * The complete, fixed label vocabulary depvisor applies. Deterministic and
+ * closed on purpose: the open-pr step ensures each label exists and adds it via
+ * `gh`, so an arbitrary agent-supplied string must never reach that command.
+ * Any label not on this allowlist is dropped at the exit boundary.
+ */
+const LABEL_RE = /^(?:depvisor|security|dev-dependencies|semver:(?:patch|minor|major))$/;
+
+/**
+ * Exit-boundary validation for PR labels, mirroring sanitizePrBody: the tokenless
+ * step writes the payload, so the token-holding open-pr step re-validates the
+ * labels before passing them to `gh`. Labels are a fixed vocabulary, so anything
+ * outside LABEL_RE is dropped; duplicates collapse and order is stabilized so the
+ * applied set is deterministic regardless of payload tampering.
+ */
+export function sanitizeLabels(labels: unknown): string[] {
+  if (!Array.isArray(labels)) return [];
+  const kept = new Set<string>();
+  for (const label of labels) {
+    if (typeof label === "string" && LABEL_RE.test(label)) kept.add(label);
+  }
+  return [...kept].sort();
+}
+
+// Highest update level in a group decides its single semver:* label; major is
+// isolated per package by grouping, so a group mixes at most minor and patch.
+const SEMVER_RANK = { patch: 0, minor: 1, major: 2 } as const;
+
+/**
+ * Derive the deterministic label set for a group: `depvisor` always, the group's
+ * top `semver:<level>`, `security` when any member resolves an advisory, and
+ * `dev-dependencies` when every member is a dev dependency. LLM-free and keyed
+ * only on the same inputs the version table uses, so labels can never drift from
+ * what the PR shows. Ordering-only advisory data feeds `security`, so a promoted
+ * security group and its label stay in lockstep.
+ */
+export function deriveLabels(
+  candidates: readonly Candidate[],
+  advisories?: ReadonlyMap<string, string[]>,
+): string[] {
+  const labels = ["depvisor"];
+
+  let top: keyof typeof SEMVER_RANK | null = null;
+  for (const c of candidates) {
+    if (c.updateType === "unknown") continue;
+    if (top === null || SEMVER_RANK[c.updateType] > SEMVER_RANK[top]) top = c.updateType;
+  }
+  if (top) labels.push(`semver:${top}`);
+
+  if (candidates.some((c) => (advisories?.get(c.name)?.length ?? 0) > 0)) labels.push("security");
+
+  if (candidates.length > 0 && candidates.every((c) => c.kind === "dev")) {
+    labels.push("dev-dependencies");
+  }
+
+  return labels;
 }
 
 /** Render a titled bullet list, sanitizing items and collapsing newlines so an
@@ -345,7 +411,7 @@ export function buildPrPayload(args: {
     versionsMarker(candidates),
   ].join("\n");
 
-  return { branch, base, title, body };
+  return { branch, base, title, body, labels: deriveLabels(candidates, advisories) };
 }
 
 /**
