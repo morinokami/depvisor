@@ -67,6 +67,7 @@ import {
   statusPackages,
   toRunOutput,
   type GroupResult,
+  type GroupUsage,
   type RunStatus,
 } from "../core/status.ts";
 import { REPO } from "../shared/target.ts";
@@ -588,6 +589,11 @@ export default defineWorkflow({
         const verifyCmds = verifySteps.map((s) => `\`${s.run}\``).join(", ");
 
         let result: v.InferOutput<typeof UpdateResult>;
+        // Token/cost usage for this group's session (visibility only). Set once
+        // the prompt returns, BEFORE the verdict branch, so a defer — which still
+        // burned tokens — reports them too. Stays undefined only when Flue threw
+        // before returning (no-structured-result), where no usage exists to read.
+        let usage: GroupUsage | undefined;
         try {
           log.info(`agent session starting for ${describeMembers(members)}`);
           const response = await session.prompt(
@@ -610,7 +616,21 @@ export default defineWorkflow({
             { result: UpdateResult },
           );
           result = v.parse(UpdateResult, response.data);
-          log.info(`agent structured result received: verdict=${result.verdict}`);
+          // Structural projection of Flue's PromptResultResponse.usage/.model —
+          // core stays Flue-free, so the mapping lives here (see GroupUsage).
+          usage = {
+            input: response.usage.input,
+            output: response.usage.output,
+            cacheRead: response.usage.cacheRead,
+            cacheWrite: response.usage.cacheWrite,
+            totalTokens: response.usage.totalTokens,
+            costUsd: response.usage.cost.total,
+            model: `${response.model.provider}/${response.model.id}`,
+          };
+          log.info(
+            `agent structured result received: verdict=${result.verdict} ` +
+              `(${usage.totalTokens} tokens, est. $${usage.costUsd.toFixed(4)})`,
+          );
         } catch (err) {
           // The agent could not produce a validated result — whether Flue gave up
           // (ResultUnavailableError) or the defensive re-parse rejected the data
@@ -650,6 +670,7 @@ export default defineWorkflow({
             packages,
             verification: [],
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -666,6 +687,7 @@ export default defineWorkflow({
             packages,
             verification: [],
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -679,6 +701,7 @@ export default defineWorkflow({
             packages,
             verification: [],
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -693,6 +716,7 @@ export default defineWorkflow({
             packages,
             verification,
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -705,6 +729,7 @@ export default defineWorkflow({
             packages,
             verification,
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -776,6 +801,7 @@ export default defineWorkflow({
           verification,
           prUrl: null,
           ...(testChanges.length > 0 ? { testChanges } : {}),
+          ...(usage ? { usage } : {}),
         });
         // A newly prepared PR consumes a slot; refreshing an existing one does not.
         if (disposition === "open-new") newSlots -= 1;

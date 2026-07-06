@@ -18,6 +18,38 @@ export interface StatusPackage {
   updateType: Candidate["updateType"];
 }
 
+/**
+ * Token/cost usage for the agent session that processed one group, projected
+ * from Flue's `PromptResultResponse.usage`/`.model` at the workflow boundary
+ * (kept structural, so core stays Flue-free). Numbers only — no untrusted text,
+ * so it never touches token separation or the gates. `costUsd` is Flue's
+ * provider-priced estimate (BYOK-approximate), not an invoice.
+ */
+export interface GroupUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  costUsd: number;
+  /** `provider/id` of the model that did the work (from `response.model`). */
+  model: string;
+}
+
+/** Run-level usage: the sum of every group whose agent actually ran. */
+export interface RunUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  costUsd: number;
+  /** Distinct models seen across the summed groups (usually one). */
+  models: string[];
+  /** How many groups contributed usage (i.e. actually ran the agent). */
+  groupCount: number;
+}
+
 /** One group's outcome within a run — the unit the PR/annotation UX renders. */
 export interface GroupResult {
   status: string;
@@ -32,6 +64,14 @@ export interface GroupResult {
    * record-only, so it is deliberately NOT in RUN_OUTPUT_SCHEMA below.
    */
   testChanges?: NumstatEntry[];
+  /**
+   * Token/cost usage for this group's agent session (visibility only). Absent
+   * for outcomes that never ran the agent (skip/held-back/branch-collision/
+   * release-age-unavailable) or where Flue threw before returning a response
+   * (`no-structured-result`). Record-only, like `testChanges` — NOT in
+   * RUN_OUTPUT_SCHEMA.
+   */
+  usage?: GroupUsage;
   prUrl: string | null;
 }
 
@@ -102,6 +142,39 @@ export function statusPackages(candidates: Candidate[]): StatusPackage[] {
   }));
 }
 
+/**
+ * Sum the per-group usage of every group whose agent ran (groups without
+ * `usage` — skips, hold-backs, no-structured-result — contribute nothing).
+ * Returns null when no group ran the agent, so callers render nothing rather
+ * than a misleading zero-token row.
+ */
+export function sumGroupUsage(groups: GroupResult[]): RunUsage | null {
+  const withUsage = groups.flatMap((g) => (g.usage ? [g.usage] : []));
+  if (withUsage.length === 0) return null;
+  const models = new Set<string>();
+  const total: RunUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    models: [],
+    groupCount: withUsage.length,
+  };
+  for (const u of withUsage) {
+    total.input += u.input;
+    total.output += u.output;
+    total.cacheRead += u.cacheRead;
+    total.cacheWrite += u.cacheWrite;
+    total.totalTokens += u.totalTokens;
+    total.costUsd += u.costUsd;
+    if (u.model) models.add(u.model);
+  }
+  total.models = [...models];
+  return total;
+}
+
 export function statusPath(outDir: string): string {
   return join(outDir, RUN_STATUS_FILE);
 }
@@ -129,7 +202,29 @@ function parseGroup(raw: Partial<GroupResult>): GroupResult {
   if (Array.isArray(raw.testChanges) && raw.testChanges.length > 0) {
     group.testChanges = raw.testChanges as NumstatEntry[];
   }
+  // Same round-trip concern for usage — a numeric-only record, re-normalized
+  // defensively (a hand-edited/truncated status file must not crash the report).
+  const usage = parseUsage(raw.usage);
+  if (usage) group.usage = usage;
   return group;
+}
+
+function num(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function parseUsage(raw: unknown): GroupUsage | null {
+  if (!raw || typeof raw !== "object") return null;
+  const u = raw as Partial<GroupUsage>;
+  return {
+    input: num(u.input),
+    output: num(u.output),
+    cacheRead: num(u.cacheRead),
+    cacheWrite: num(u.cacheWrite),
+    totalTokens: num(u.totalTokens),
+    costUsd: num(u.costUsd),
+    model: typeof u.model === "string" ? u.model : "",
+  };
 }
 
 export function readRunStatus(file: string): RunStatus | null {
@@ -196,6 +291,8 @@ export function runLogLine(status: RunStatus): string {
     const breakdown = [...counts.entries()].map(([s, n]) => `${s}=${n}`).join(", ");
     parts.push(`groups=${status.groups.length} (${breakdown})`);
   }
+  const usage = sumGroupUsage(status.groups);
+  if (usage) parts.push(`tokens=${usage.totalTokens} cost=${fmtCost(usage.costUsd)}`);
   const summary = oneLine(status.summary);
   return summary ? `${parts.join(" ")} - ${summary}` : parts.join(" ");
 }
@@ -214,6 +311,31 @@ function mdCell(value: unknown): string {
   return sanitizeSummary(String(value ?? ""))
     .replace(/\s*\r?\n\s*/g, " ")
     .replace(/\|/g, "\\|");
+}
+
+function fmtTokens(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+/** Provider-priced estimate, so signal it: `~$0.1234` (BYOK-approximate). */
+function fmtCost(n: number): string {
+  return `~$${n.toFixed(4)}`;
+}
+
+/**
+ * One-line token/cost digest shared by the run header and per-group tables. The
+ * numbers are Flue-provided (no user input); the model id is charset-escaped via
+ * mdCell at the call site.
+ */
+function usageDigest(u: {
+  totalTokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  costUsd: number;
+}): string {
+  const cache = u.cacheRead > 0 ? ` · cache read ${fmtTokens(u.cacheRead)}` : "";
+  return `${fmtTokens(u.totalTokens)} tokens (in ${fmtTokens(u.input)} · out ${fmtTokens(u.output)}${cache}), est. ${fmtCost(u.costUsd)}`;
 }
 
 function packageTable(packages: StatusPackage[]): string {
@@ -270,6 +392,9 @@ function renderGroup(group: GroupResult): string {
   const heading = `### Group \`${mdCell(group.group ?? "?")}\` — \`${mdCell(group.status)}\``;
   const rows = [`| Branch | ${group.branch ? `\`${mdCell(group.branch)}\`` : "none"} |`];
   if (group.prUrl) rows.push(`| PR | ${mdCell(group.prUrl)} |`);
+  if (group.usage) {
+    rows.push(`| LLM usage | ${usageDigest(group.usage)} — \`${mdCell(group.usage.model)}\` |`);
+  }
   return [
     heading,
     "",
@@ -288,6 +413,7 @@ function renderGroup(group: GroupResult): string {
 }
 
 export function renderStepSummary(status: RunStatus): string {
+  const usage = sumGroupUsage(status.groups);
   const header = [
     "## depvisor",
     "",
@@ -296,6 +422,9 @@ export function renderStepSummary(status: RunStatus): string {
     `| Status | \`${mdCell(status.status)}\` |`,
     `| Base | ${status.base ? `\`${mdCell(status.base)}\`` : "none"} |`,
     `| Groups | ${status.groups.length} |`,
+    ...(usage
+      ? [`| LLM usage | ${usageDigest(usage)} — \`${mdCell(usage.models.join(", "))}\` |`]
+      : []),
     "",
     "### Summary",
     "",

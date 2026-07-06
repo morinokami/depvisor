@@ -339,3 +339,10 @@ The step summary has a section per group depvisor touched, each with its branch,
 package version table, verification results, and the PR URL when one was created
 or refreshed. Baseline and post-update verification output is grouped in the log
 so repeated test output is easier to scan.
+
+Each group that ran the agent also reports its LLM token usage and an estimated
+cost (with the model name), and the run header shows the total across all groups
+— handy under BYOK, where you pay per run, and when raising `max_prs`, since cost
+scales with the number of groups. The cost is a provider-priced estimate (shown
+`est. ~$…`), not an invoice; groups that opened no agent session (skipped,
+held back, or dropped before the agent) contribute nothing.
