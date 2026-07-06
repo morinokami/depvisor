@@ -304,11 +304,14 @@ all, and then no warning appears.
 A version bump can quietly carry a **relicense** (MIT → BUSL-1.1 and similar
 source-available/copyleft moves are common in practice), which is among the
 easiest changes to miss in review because it lives in metadata, not code. depvisor
-compares the npm registry's per-version `license` field for the current and target
-version of each package, and when they differ it adds a **⚠️ License changed
-between versions** section to the PR body listing `package: from → to`. The
-packument this reads is the one already fetched for the cooldown / source links,
-so it costs no extra registry requests.
+compares the npm registry's per-version `license` field against the target
+version, and when they differ it adds a **⚠️ License changed between versions**
+section to the PR body listing `package: from → to`. In a workspace monorepo a
+package can be installed at several versions at once, so it checks _every_ current
+version the package is declared at — not just the lowest — and lists one row per
+distinct license change, so a relicense crossed by only one workspace is not
+hidden behind another. The packument this reads is the one already fetched for the
+cooldown / source links, so it costs no extra registry requests.
 
 This is **plain string comparison only** — depvisor makes no judgment about
 whether the new license is more or less permissive (that reading is yours), it
