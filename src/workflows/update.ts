@@ -67,6 +67,7 @@ import {
   statusPackages,
   toRunOutput,
   type GroupResult,
+  type GroupUsage,
   type RunStatus,
 } from "../core/status.ts";
 import { REPO } from "../shared/target.ts";
@@ -588,6 +589,13 @@ export default defineWorkflow({
         const verifyCmds = verifySteps.map((s) => `\`${s.run}\``).join(", ");
 
         let result: v.InferOutput<typeof UpdateResult>;
+        // Token/cost usage for this group's session (visibility only). Captured
+        // the moment the prompt returns — before both the defensive re-parse and
+        // the verdict branch — so every outcome that actually ran the agent
+        // reports what it burned: a defer, and a no-structured-result caused by
+        // the re-parse rejecting a returned response. Stays undefined only when
+        // the prompt itself threw (ResultUnavailableError): no response to read.
+        let usage: GroupUsage | undefined;
         try {
           log.info(`agent session starting for ${describeMembers(members)}`);
           const response = await session.prompt(
@@ -609,8 +617,25 @@ export default defineWorkflow({
               "and leave no half-finished changes).",
             { result: UpdateResult },
           );
+          // Structural projection of Flue's PromptResultResponse.usage/.model —
+          // core stays Flue-free, so the mapping lives here (see GroupUsage).
+          // Assigned before the defensive re-parse below: the response (and the
+          // tokens it already cost) exists even if that re-parse rejects, so a
+          // no-structured-result on that path still reports what it burned.
+          usage = {
+            input: response.usage.input,
+            output: response.usage.output,
+            cacheRead: response.usage.cacheRead,
+            cacheWrite: response.usage.cacheWrite,
+            totalTokens: response.usage.totalTokens,
+            costUsd: response.usage.cost.total,
+            model: `${response.model.provider}/${response.model.id}`,
+          };
           result = v.parse(UpdateResult, response.data);
-          log.info(`agent structured result received: verdict=${result.verdict}`);
+          log.info(
+            `agent structured result received: verdict=${result.verdict} ` +
+              `(${usage.totalTokens} tokens, est. $${usage.costUsd.toFixed(4)})`,
+          );
         } catch (err) {
           // The agent could not produce a validated result — whether Flue gave up
           // (ResultUnavailableError) or the defensive re-parse rejected the data
@@ -625,6 +650,9 @@ export default defineWorkflow({
               packages,
               verification: [],
               prUrl: null,
+              // usage exists on the ValiError path (a response came back, then
+              // its re-parse rejected); absent on the ResultUnavailableError path.
+              ...(usage ? { usage } : {}),
             });
             continue;
           }
@@ -650,6 +678,7 @@ export default defineWorkflow({
             packages,
             verification: [],
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -666,6 +695,7 @@ export default defineWorkflow({
             packages,
             verification: [],
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -679,6 +709,7 @@ export default defineWorkflow({
             packages,
             verification: [],
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -693,6 +724,7 @@ export default defineWorkflow({
             packages,
             verification,
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -705,6 +737,7 @@ export default defineWorkflow({
             packages,
             verification,
             prUrl: null,
+            ...(usage ? { usage } : {}),
           });
           continue;
         }
@@ -776,6 +809,7 @@ export default defineWorkflow({
           verification,
           prUrl: null,
           ...(testChanges.length > 0 ? { testChanges } : {}),
+          ...(usage ? { usage } : {}),
         });
         // A newly prepared PR consumes a slot; refreshing an existing one does not.
         if (disposition === "open-new") newSlots -= 1;
