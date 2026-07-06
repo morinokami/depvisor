@@ -170,21 +170,21 @@ test("resetToBase returns to base, discards work, and keeps ignored files + the 
   assert.equal(refExists(repo, "depvisor/prod-x"), true);
 });
 
-test("diffNumstat parses normal, binary, rename and awkward filenames from base..HEAD", () => {
+test("diffNumstat parses normal, binary and awkward filenames, decomposing moves (--no-renames)", () => {
   const repo = tempRepo();
   const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
   const base = sh("git rev-parse --abbrev-ref HEAD").trim();
-  // Seed a file to rename and a binary blob at the base.
-  writeFileSync(join(repo, "to-rename.txt"), "old\nkeep\n");
+  // Seed a file to move and a binary blob at the base.
+  writeFileSync(join(repo, "to-move.txt"), "old\nkeep\n");
   writeFileSync(join(repo, "blob.bin"), Buffer.from([0, 1, 2, 3, 0]));
   sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm seed");
 
   sh("git checkout -q -b depvisor/prod-x");
-  // Normal edit (2 added, 1 removed), a rename with an edit, a binary change, and
+  // Normal edit (2 added, 1 removed), a move with an edit, a binary change, and
   // filenames git can legitimately produce that would break naive markdown parsing.
   writeFileSync(join(repo, "src.ts"), "export const a = 1;\nexport const b = 2;\n");
-  sh("git mv to-rename.txt renamed.txt");
-  writeFileSync(join(repo, "renamed.txt"), "old\nkeep\nappended\n");
+  sh("git mv to-move.txt moved.txt");
+  writeFileSync(join(repo, "moved.txt"), "old\nkeep\nappended\n");
   writeFileSync(join(repo, "blob.bin"), Buffer.from([0, 1, 2, 3, 4, 5]));
   writeFileSync(join(repo, "a b.txt"), "x\n");
   writeFileSync(join(repo, "back`tick.txt"), "y\n");
@@ -194,12 +194,37 @@ test("diffNumstat parses normal, binary, rename and awkward filenames from base.
   assert.deepEqual(byPath.get("src.ts"), { path: "src.ts", added: 2, removed: 1 });
   // Binary files report null counts (git prints "-").
   assert.deepEqual(byPath.get("blob.bin"), { path: "blob.bin", added: null, removed: null });
-  // A rename keeps the destination path, never the source.
-  assert.ok(byPath.has("renamed.txt"), "rename destination is present");
-  assert.ok(!byPath.has("to-rename.txt"), "rename source is not double-counted");
+  // --no-renames: a move is a delete of the old path PLUS an add of the new one,
+  // so BOTH sides surface (this is what keeps a moved-out test visible).
+  assert.deepEqual(byPath.get("to-move.txt"), { path: "to-move.txt", added: 0, removed: 2 });
+  assert.deepEqual(byPath.get("moved.txt"), { path: "moved.txt", added: 3, removed: 0 });
   // -z keeps unquoted paths verbatim, including spaces and backticks.
   assert.deepEqual(byPath.get("a b.txt"), { path: "a b.txt", added: 1, removed: 0 });
   assert.deepEqual(byPath.get("back`tick.txt"), { path: "back`tick.txt", added: 1, removed: 0 });
+});
+
+test("diffNumstat surfaces a test moved out of the test dir via its old path", () => {
+  // The evasion this guards: renaming test/x.test.ts to src/x.ts drops it out of
+  // the test globs (silently disabling the test) while verification still passes.
+  // --no-renames means the delete of the test path is always emitted, so the
+  // downstream classifier can still flag it — a rename record would have shown
+  // only the non-test destination.
+  const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  const base = sh("git rev-parse --abbrev-ref HEAD").trim();
+  mkdirSync(join(repo, "test"), { recursive: true });
+  writeFileSync(join(repo, "test/x.test.ts"), "assert(true);\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm seed");
+
+  sh("git checkout -q -b depvisor/prod-x");
+  mkdirSync(join(repo, "src"), { recursive: true });
+  sh("git mv test/x.test.ts src/x.ts");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm 'move test out'");
+
+  const paths = diffNumstat(repo, base, "HEAD")
+    .map((e) => e.path)
+    .sort();
+  assert.deepEqual(paths, ["src/x.ts", "test/x.test.ts"]);
 });
 
 test("diffNumstat returns [] for an empty diff", () => {

@@ -184,7 +184,7 @@ export function changedPaths(repo: string): string[] {
 
 /** Per-file line-change counts for a committed diff. */
 export interface NumstatEntry {
-  /** Repo-relative path (the destination path for renames). */
+  /** Repo-relative path. */
   path: string;
   /** Added lines, or null for binary files (git prints `-`). */
   added: number | null;
@@ -194,48 +194,40 @@ export interface NumstatEntry {
 
 /**
  * Per-file line counts for the committed diff `from..to`, parsed from
- * `git diff --numstat -z`. `-z` is essential: it leaves paths unquoted/unmangled
- * (so a filename with tabs, spaces, or backticks arrives verbatim) and gives
- * renames an unambiguous shape. The `-z` records are:
- *   - normal: `added\tremoved\tpath\0`
- *   - binary: `-\t-\tpath\0`            (counts become null)
- *   - rename: `added\tremoved\t\0old\0new\0`  (empty path, then two NUL fields; keep new)
- * Goes through `run()` (not `git()`, which trims) so raw NULs survive, and
- * throws on a non-zero exit so a failed diff cannot masquerade as "no changes".
+ * `git diff --numstat --no-renames -z`.
+ *
+ * `--no-renames` is deliberate. A moved file is reported as a delete of its old
+ * path PLUS an add of the new one, never collapsed into one rename record.
+ * Test-change visibility depends on this: moving `test/a.test.ts` to `src/a.ts`
+ * drops the file out of the test globs (silently disabling the test), and only
+ * the delete side carries the `test/…` path that must be flagged — a rename
+ * record would surface just the non-test destination and the signal would be
+ * lost. It also means a newly added test surfaces its own path.
+ *
+ * `-z` leaves paths unquoted/unmangled, so a filename with tabs, spaces, or
+ * backticks arrives verbatim. Every record is `added\tremoved\tpath\0` (or
+ * `-\t-\tpath\0` for binary → null counts); slicing past the second tab keeps a
+ * tab that is part of the filename. Goes through `run()` (not `git()`, which
+ * trims) so raw NULs survive, and throws on a non-zero exit so a failed diff
+ * cannot masquerade as "no changes".
  */
 export function diffNumstat(repo: string, from: string, to: string): NumstatEntry[] {
-  const res = run(repo, ["diff", "--numstat", "-z", from, to]);
+  const res = run(repo, ["diff", "--numstat", "--no-renames", "-z", from, to]);
   if (res.code !== 0) {
     throw new GitError(`git diff --numstat ${from} ${to} failed (exit ${res.code}): ${res.err}`);
   }
-  const tokens = res.out.split("\0");
   const num = (s: string): number | null => (s === "-" ? null : Number(s));
   const entries: NumstatEntry[] = [];
-  let i = 0;
-  while (i < tokens.length) {
-    const head = tokens[i] ?? "";
-    if (head === "") {
-      i += 1; // trailing NUL leaves a final empty token
-      continue;
-    }
-    const t1 = head.indexOf("\t");
-    const t2 = t1 === -1 ? -1 : head.indexOf("\t", t1 + 1);
-    if (t1 === -1 || t2 === -1) {
-      i += 1; // malformed record; skip defensively rather than mis-slice
-      continue;
-    }
-    const added = num(head.slice(0, t1));
-    const removed = num(head.slice(t1 + 1, t2));
-    const inlinePath = head.slice(t2 + 1);
-    if (inlinePath === "") {
-      // Rename: the next two NUL fields are old and new; keep the destination.
-      const dest = tokens[i + 2] ?? "";
-      if (dest) entries.push({ path: dest, added, removed });
-      i += 3;
-    } else {
-      entries.push({ path: inlinePath, added, removed });
-      i += 1;
-    }
+  for (const record of res.out.split("\0")) {
+    if (record === "") continue; // trailing NUL leaves a final empty token
+    const t1 = record.indexOf("\t");
+    const t2 = t1 === -1 ? -1 : record.indexOf("\t", t1 + 1);
+    if (t1 === -1 || t2 === -1) continue; // malformed record; skip rather than mis-slice
+    entries.push({
+      path: record.slice(t2 + 1),
+      added: num(record.slice(0, t1)),
+      removed: num(record.slice(t1 + 1, t2)),
+    });
   }
   return entries;
 }
