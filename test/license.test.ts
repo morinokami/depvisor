@@ -77,6 +77,65 @@ test("classifyLicenseChanges reports only members whose known license changed", 
   ]);
 });
 
+test("classifyLicenseChanges checks every workspace-current, not just the lowest", () => {
+  // foo is MIT at 1.0.0 in one workspace and GPL at 2.0.0 in another, both moving
+  // to 3.0.0 (MIT). Comparing only `current` (1.0.0 MIT -> 3.0.0 MIT) would miss
+  // the relicense the GPL workspace crosses — mirror the advisory path's currents.
+  const p = packument({
+    "1.0.0": { license: "MIT" },
+    "2.0.0": { license: "GPL-3.0-only" },
+    "3.0.0": { license: "MIT" },
+  });
+  const member = cand({
+    name: "foo",
+    current: "1.0.0",
+    latest: "3.0.0",
+    currents: ["1.0.0", "2.0.0"],
+  });
+  assert.deepEqual(classifyLicenseChanges([member], new Map([["foo", p]])), [
+    { name: "foo", from: "GPL-3.0-only", to: "MIT" },
+  ]);
+});
+
+test("classifyLicenseChanges dedupes repeated from->to across workspace-currents", () => {
+  // Two workspace-currents share the same MIT license; only one row is emitted.
+  const p = packument({
+    "1.0.0": { license: "MIT" },
+    "1.5.0": { license: "MIT" },
+    "2.0.0": { license: "BUSL-1.1" },
+  });
+  const member = cand({
+    name: "foo",
+    current: "1.0.0",
+    latest: "2.0.0",
+    currents: ["1.0.0", "1.5.0"],
+  });
+  assert.deepEqual(classifyLicenseChanges([member], new Map([["foo", p]])), [
+    { name: "foo", from: "MIT", to: "BUSL-1.1" },
+  ]);
+});
+
+test("describeLicenseChanges control-sanitizes registry license strings for the log", () => {
+  const nl = String.fromCharCode(10); // LF
+  const cr = String.fromCharCode(13); // CR
+  const del = String.fromCharCode(127); // C0/C1 control
+  // A hostile license: an embedded newline before Actions-command-looking text.
+  const evil = `MIT${nl}::error::pwned${cr}${del}x`;
+  const line = describeLicenseChanges([{ name: "foo", from: evil, to: "GPL-3.0" }]);
+  // Single line: no raw CR/LF/control survives to split the log or begin a command.
+  assert.ok(!line.includes(nl));
+  assert.ok(!line.includes(cr));
+  assert.ok(!line.includes(del));
+  // Content is collapsed to spaces, not dropped entirely — still legible.
+  assert.ok(line.includes("foo MIT ::error::pwned x -> GPL-3.0"));
+});
+
+test("describeLicenseChanges caps an over-long license string", () => {
+  const line = describeLicenseChanges([{ name: "foo", from: "A".repeat(200), to: "MIT" }]);
+  assert.ok(line.includes("A".repeat(60)));
+  assert.ok(!line.includes("A".repeat(61)));
+});
+
 test("describeLicenseChanges is empty when nothing changed and lists changes otherwise", () => {
   assert.equal(describeLicenseChanges([]), "");
   assert.equal(

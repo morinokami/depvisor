@@ -56,11 +56,24 @@ export interface LicenseChange {
   to: string;
 }
 
+/** Distinct `current` versions to check for a member (Candidate.currents, or its
+ * lowest), mirroring advisories.ts: in a workspace repo `current` is only the
+ * LOWEST merged version, so a relicense carried by a higher-versioned workspace
+ * (e.g. 2.0.0 GPL alongside 1.0.0 MIT, both moving to 3.0.0 MIT) would be missed
+ * if we compared only `current`. npm/bun report every occurrence; pnpm collapses
+ * them (same limitation as advisory matching). */
+function memberCurrents(c: Candidate): string[] {
+  const cs = c.currents && c.currents.length > 0 ? c.currents : [c.current];
+  return [...new Set(cs.filter((v) => v.length > 0))];
+}
+
 /**
- * For each member whose current and target versions both record a KNOWN license
- * string that differs, one LicenseChange (input order). Members without a cached
- * packument, or without a clean string license on either side, are skipped
- * (fail-open). Comparison is exact string equality after trimming.
+ * For each member, one LicenseChange per DISTINCT `from -> to` license pair where
+ * the target and that workspace-current both record a KNOWN string license that
+ * differs (input order; repeated `from` licenses across workspaces deduped, since
+ * `to` is fixed per member). Members without a cached packument, or without a
+ * clean string license on either side, are skipped (fail-open). Comparison is
+ * exact string equality after trimming.
  */
 export function classifyLicenseChanges(
   members: readonly Candidate[],
@@ -70,20 +83,44 @@ export function classifyLicenseChanges(
   for (const m of members) {
     const packument = packuments.get(m.name);
     if (!packument) continue;
-    const from = versionLicense(packument, m.current);
     const to = versionLicense(packument, m.latest);
-    if (from === null || to === null || from === to) continue;
-    changes.push({ name: m.name, from, to });
+    if (to === null) continue;
+    const seen = new Set<string>();
+    for (const cur of memberCurrents(m)) {
+      const from = versionLicense(packument, cur);
+      if (from === null || from === to || seen.has(from)) continue;
+      seen.add(from);
+      changes.push({ name: m.name, from, to });
+    }
   }
   return changes;
 }
 
 /**
+ * Collapse a registry-derived license string to a single-line, length-capped
+ * form safe for the CI log. Unlike the PR body (charset-gated in pr.ts), the log
+ * is a raw stdout stream: an embedded newline could split the line so a
+ * `::`-prefixed fragment is read as a GitHub Actions workflow command (a fake
+ * annotation), and an unbounded string could flood the log. Control characters
+ * (\p{Cc}, incl. CR/LF and the C1 block) become spaces, runs collapse, capped.
+ */
+function logSafeLicense(license: string): string {
+  const collapsed = license
+    .replace(/\p{Cc}+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return collapsed.length > 60 ? `${collapsed.slice(0, 60)}…` : collapsed;
+}
+
+/**
  * One-line note for the run log — never silent, matching describeReleaseAge /
- * describeAdvisories. "" when nothing changed.
+ * describeAdvisories. "" when nothing changed. License strings are control-
+ * sanitized (see logSafeLicense) because they are untrusted registry data.
  */
 export function describeLicenseChanges(changes: readonly LicenseChange[]): string {
   if (changes.length === 0) return "";
-  const list = changes.map((c) => `${c.name} ${c.from} -> ${c.to}`).join(", ");
+  const list = changes
+    .map((c) => `${c.name} ${logSafeLicense(c.from)} -> ${logSafeLicense(c.to)}`)
+    .join(", ");
   return `license change(s) detected: ${list}.`;
 }
