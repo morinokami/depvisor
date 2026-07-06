@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_EMAIL, NO_HOOKS } from "./git.ts";
-import { type PrPayload, sanitizePrBody, sanitizeSummary } from "./pr.ts";
+import { type PrPayload, sanitizeLabels, sanitizePrBody, sanitizeSummary } from "./pr.ts";
 
 export interface OpenPrResult {
   ok: boolean;
@@ -208,6 +208,32 @@ function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | Open
 }
 
 /**
+ * Apply depvisor's deterministic labels to the PR, entirely fail-soft.
+ *
+ * The main objective is the PR itself, so nothing here may fail it — that is why
+ * labels are applied AFTER `gh pr create`, never passed to it: `gh pr create
+ * --label <unknown>` aborts creation, turning a missing label into a lost PR.
+ *
+ * Each label is ensured first (`gh label create`, no `--force` so a user's
+ * existing same-named label keeps its color/description; "already exists" is the
+ * expected idempotent case) because `gh pr edit --add-label` — like create —
+ * errors on an unknown label. Ensuring a new label needs `issues: write`; adding
+ * an existing label to a PR needs only `pull-requests: write`. Without
+ * `issues: write` the ensure is a no-op and only pre-existing labels get applied
+ * — degraded, never fatal. All `gh` calls go through the scrubbed-env helper.
+ */
+function applyLabels(
+  env: NodeJS.ProcessEnv,
+  clone: string,
+  branch: string,
+  labels: string[],
+): void {
+  if (labels.length === 0) return;
+  for (const label of labels) gh(env, clone, ["label", "create", label]);
+  gh(env, clone, ["pr", "edit", branch, ...labels.flatMap((l) => ["--add-label", l])]);
+}
+
+/**
  * Push the update branch and open (or refresh) the PR via the `gh` CLI.
  *
  * This is the only code that touches a token, and it runs in a separate
@@ -224,10 +250,11 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
   if (!("clone" in prepared)) return prepared;
   const { clone, workDir, env, branchSha } = prepared;
 
-  // The tokenless step writes the payload; re-sanitize title/body at the exit
-  // boundary in case payload.json was changed after buildPrPayload.
+  // The tokenless step writes the payload; re-sanitize title/body/labels at the
+  // exit boundary in case payload.json was changed after buildPrPayload.
   const title = sanitizeSummary(payload.title);
   const body = sanitizePrBody(payload.body);
+  const labels = sanitizeLabels(payload.labels);
 
   try {
     // Prefer the trusted URL; only fall back to target config for local dev.
@@ -292,6 +319,7 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       body,
     ]);
     if (create.code === 0) {
+      applyLabels(env, clone, payload.branch, labels);
       return { ok: true, action: "created", url: create.out, error: null };
     }
 
@@ -310,8 +338,12 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       ".[0].url",
     ]);
     if (existing.code === 0 && existing.out) {
-      // Keep title/body in sync with the fresh payload.
+      // Keep title/body in sync with the fresh payload, then reconcile labels
+      // (fail-soft, separate from the title/body edit so a label hiccup cannot
+      // undo it). --add-label only adds, so a group whose top semver level rose
+      // between runs may briefly carry both the old and new semver:* label.
       gh(env, clone, ["pr", "edit", payload.branch, "--title", title, "--body", body]);
+      applyLabels(env, clone, payload.branch, labels);
       return { ok: true, action: "updated", url: existing.out, error: null };
     }
 

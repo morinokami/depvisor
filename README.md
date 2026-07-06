@@ -29,6 +29,7 @@ on:
 permissions:
   contents: write # push the update branch
   pull-requests: write # open the PR
+  issues: write # create the PR labels (semver:*, security, ...); omit to skip label creation
 
 concurrency:
   group: depvisor # runs must not race on force-push
@@ -254,6 +255,28 @@ Details worth knowing:
   OSV.dev is unreachable, depvisor logs it and falls back to the normal
   alphabetical order rather than failing the run. Private packages (absent from
   OSV) simply are not prioritized.
+
+### PR labels
+
+Every PR depvisor opens is labeled so you can build automation on top of it —
+auto-merge rulesets, merge queues, notification filters, dashboards. depvisor
+never merges anything itself (the final decision stays with you); it just hands
+you structured signal. The labels are derived deterministically from the same
+data the PR body shows:
+
+- `depvisor` — on every PR, to select depvisor's PRs as a set.
+- `semver:patch` / `semver:minor` / `semver:major` — the group's highest update
+  level (majors are always their own PR, so a group mixes at most minor+patch).
+- `security` — the update resolves at least one known advisory (see
+  [Security prioritization](#security-prioritization)).
+- `dev-dependencies` — every package in the PR is a dev dependency.
+
+Labeling is **fail-soft**: it happens after the PR is opened and never blocks
+it. depvisor creates any missing label (without overwriting a same-named label
+you already have), which needs the `issues: write` permission shown above — drop
+that permission and depvisor still opens the PR and applies whichever of these
+labels already exist in your repo, it just won't create new ones. Label names
+are a fixed set today; a configurable/opt-out input may come later.
 
 ### When the agent changes tests
 
