@@ -37,6 +37,10 @@ inputs:
     description: Maximum number of open depvisor PRs to keep at once; a run opens new PRs only up to this ceiling.
     required: false
     default: "1"
+  minimum_release_age:
+    description: Minimum number of days a version must have been public on the npm registry before depvisor updates to it; "0" disables the cooldown.
+    required: false
+    default: "1"
   node_version:
     description: Node version used for depvisor and target verification scripts.
     required: false
@@ -120,6 +124,7 @@ runs:
         DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
         DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
         DEPVISOR_MAX_PRS: ${{ inputs.max_prs }}
+        DEPVISOR_MIN_RELEASE_AGE: ${{ inputs.minimum_release_age }}
         # Forwarded for the reset between dependency groups: a custom command is
         # reused verbatim; "auto"/"skip" fall back to the PM's lockfile-faithful
         # install ("skip" skips only the pre-agent install step above, not the

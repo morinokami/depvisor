@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { collectCandidates } from "../core/collect.ts";
 import { groupCandidates } from "../core/grouping.ts";
 import { detectPackageManager } from "../core/pm.ts";
+import { applyReleaseAge, parseMinReleaseAge } from "../core/release-age.ts";
 import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/verify.ts";
 
 /**
@@ -10,14 +11,24 @@ import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/ve
  * result, so a human can eyeball the pipeline without going through the agent.
  * It is not part of the CI/composite-action flow — hence its home under dev/.
  *
- *   node src/dev/scan.ts [repoPath] [--verify]
+ *   node src/dev/scan.ts [repoPath] [--verify] [--min-release-age=<days>]
+ *
+ * --min-release-age applies the workflow's cooldown clamp (opt-in here, so the
+ * default scan stays offline); it hits the real npm registry.
  */
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const repoArg = args.find((a) => !a.startsWith("--")) ?? "fixtures/sample-app";
   const repoPath = resolve(process.cwd(), repoArg);
   const doVerify = args.includes("--verify");
+  const ageArg = args.find((a) => a.startsWith("--min-release-age="));
+  const minReleaseAge = ageArg ? parseMinReleaseAge(ageArg.slice("--min-release-age=".length)) : 0;
+  if (minReleaseAge === null) {
+    console.log(`--min-release-age must be a non-negative integer (days): "${ageArg}"\n`);
+    process.exitCode = 1;
+    return;
+  }
 
   console.log(`\ndepvisor scan → ${repoPath}\n`);
 
@@ -30,7 +41,7 @@ function main(): void {
   const pm = detected.pm;
   console.log(`Package manager: ${pm.name} — detected via ${detected.source}\n`);
 
-  const candidates = collectCandidates(repoPath, pm);
+  let candidates = collectCandidates(repoPath, pm);
   if (candidates.length === 0) {
     console.log("No outdated dependencies found.\n");
     return;
@@ -39,6 +50,26 @@ function main(): void {
   console.log(`Found ${candidates.length} outdated package(s):`);
   for (const c of candidates) {
     console.log(`  ${c.name.padEnd(22)} ${c.current} → ${c.latest}  [${c.updateType}, ${c.kind}]`);
+  }
+
+  if (minReleaseAge > 0) {
+    console.log(`\nApplying minimum release age of ${minReleaseAge} day(s) (npm registry)...`);
+    const aged = await applyReleaseAge(candidates, minReleaseAge);
+    for (const c of aged.clamped) console.log(`  clamped    ${c.name} ${c.from} → ${c.to}`);
+    for (const c of aged.excluded) {
+      console.log(`  held back  ${c.name} (no version newer than ${c.current} is old enough)`);
+    }
+    for (const c of aged.unavailable) {
+      console.log(`  dropped    ${c.name} (release age unverifiable — the workflow reports red)`);
+    }
+    if (aged.clamped.length + aged.excluded.length + aged.unavailable.length === 0) {
+      console.log("  every candidate's latest is already mature");
+    }
+    candidates = aged.kept;
+    if (candidates.length === 0) {
+      console.log("\nNo candidates remain after the release-age clamp.\n");
+      return;
+    }
   }
 
   const groups = groupCandidates(candidates);
@@ -76,4 +107,4 @@ function main(): void {
   console.log("");
 }
 
-main();
+await main();

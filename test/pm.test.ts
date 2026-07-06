@@ -183,6 +183,29 @@ test("bun updateInstruction: keeps the caret, -d marks dev deps (single-package)
   assert.doesNotMatch(out, /--cwd/); // root-only deps take no --cwd
 });
 
+test("bun updateInstruction: pinExact drops the caret so installs cannot outrun a release-age clamp", () => {
+  const candidates = [
+    cand({ name: "chalk", latest: "5.0.0" }),
+    cand({ name: "isarray", latest: "2.0.5", kind: "dev", locations: ["packages/a"] }),
+  ];
+  const out = bunToolchain.updateInstruction(candidates, { pinExact: true });
+  // bun writes the specifier verbatim AND resolves ranges at install time, so
+  // only the exact form is guaranteed to land on candidate.latest.
+  assert.match(out, /bun add chalk@5\.0\.0(\n|$)/);
+  assert.match(out, /bun add --cwd packages\/a -d isarray@2\.0\.5(\n|$)/);
+  assert.doesNotMatch(out, /@\^/);
+
+  // npm/pnpm already install the exact target; the flag changes nothing there.
+  assert.equal(
+    npmToolchain.updateInstruction(candidates, { pinExact: true }),
+    npmToolchain.updateInstruction(candidates),
+  );
+  assert.equal(
+    pnpmToolchain.updateInstruction(candidates, { pinExact: true }),
+    pnpmToolchain.updateInstruction(candidates),
+  );
+});
+
 test("bun updateInstruction: scopes --cwd to declaring workspaces, root gets its own line", () => {
   const out = bunToolchain.updateInstruction([
     cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
