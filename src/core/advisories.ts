@@ -264,8 +264,14 @@ export async function fetchAdvisories(
     },
     signal,
   );
+  // The querybatch contract is exactly one result per query, each an object
+  // ({} when the package is clean). A length mismatch or a non-object element
+  // means the fixed API drifted; bail to the neutral order rather than silently
+  // treating the gap as "clean" (same fail-soft stance as a hard fetch failure).
   const results = isRecord(batch) && Array.isArray(batch.results) ? batch.results : null;
-  if (!results) return { resolvedByPackage, ok: false };
+  if (!results || results.length !== probes.length || !results.every(isRecord)) {
+    return { resolvedByPackage, ok: false };
+  }
   const hot = probes.filter((_, i) => {
     const r = results[i];
     return isRecord(r) && Array.isArray(r.vulns) && r.vulns.length > 0;

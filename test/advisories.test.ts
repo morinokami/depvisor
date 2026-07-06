@@ -327,6 +327,23 @@ test("fetchAdvisories is fail-soft: a querybatch failure yields ok:false and neu
   assert.equal(result.resolvedByPackage.size, 0);
 });
 
+test("fetchAdvisories bails to ok:false when querybatch results violate the contract", async () => {
+  // A results array shorter than the probes (or with a non-object element) is an
+  // API-contract drift; treating the gap as "clean" would silently order on a
+  // partial snapshot, so fall back to the neutral order instead.
+  const shortResults = (async () => jsonResponse({ results: [] })) as unknown as typeof fetch; // 0 results for 2 probes
+  const short = await fetchAdvisories([cand({ name: "a" }), cand({ name: "b" })], {
+    fetch: shortResults,
+  });
+  assert.equal(short.ok, false);
+  assert.equal(short.resolvedByPackage.size, 0);
+
+  const badElement = (async () => jsonResponse({ results: [null] })) as unknown as typeof fetch; // element not an object
+  const bad = await fetchAdvisories([cand({ name: "a" })], { fetch: badElement });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.resolvedByPackage.size, 0);
+});
+
 test("fetchAdvisories fails soft to ok:false + empty map when a flagged package's full query fails", async () => {
   // querybatch flags both as vulnerable, but /v1/query for `flaky` 500s. Ordering
   // on a partial OSV snapshot is worse than the neutral order — bail entirely so
