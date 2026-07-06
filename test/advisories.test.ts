@@ -1,0 +1,305 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  describeAdvisories,
+  fetchAdvisories,
+  prioritizeGroups,
+  resolvesAdvisory,
+  type OsvVuln,
+} from "../src/core/advisories.ts";
+import type { Candidate, Group } from "../src/core/types.ts";
+
+function cand(partial: Partial<Candidate> & { name: string }): Candidate {
+  return {
+    current: "1.0.0",
+    latest: "2.0.0",
+    kind: "prod",
+    updateType: "major",
+    locations: [""],
+    ...partial,
+  };
+}
+
+/** An npm SEMVER advisory for `name`, introduced at 0, fixed at `fixed`. */
+function semverVuln(id: string, name: string, event: Record<string, string>): OsvVuln {
+  return {
+    id,
+    affected: [
+      {
+        package: { ecosystem: "npm", name },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, event] }],
+      },
+    ],
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/**
+ * Stub the two OSV endpoints. `vulnsByPkg` maps a package name to the full vuln
+ * list `/v1/query` returns; querybatch triage is derived from it (a package is
+ * "vulnerable" iff it has any entry). Records call URLs for endpoint assertions.
+ */
+function osvStub(vulnsByPkg: Record<string, OsvVuln[]>, calls: string[] = []): typeof fetch {
+  const impl = async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    calls.push(u);
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    if (u.endsWith("/v1/querybatch")) {
+      const queries = (body.queries ?? []) as { package: { name: string } }[];
+      return jsonResponse({
+        results: queries.map((q) => {
+          const vulns = vulnsByPkg[q.package.name] ?? [];
+          return vulns.length > 0 ? { vulns: vulns.map((v) => ({ id: v.id })) } : {};
+        }),
+      });
+    }
+    if (u.endsWith("/v1/query")) {
+      const name = (body.package as { name: string }).name;
+      return jsonResponse({ vulns: vulnsByPkg[name] ?? [] });
+    }
+    return new Response("not found", { status: 404 });
+  };
+  return impl as typeof fetch;
+}
+
+test("resolvesAdvisory is true when the fix version is at or below latest", () => {
+  const v = semverVuln("GHSA-aaaa-bbbb-cccc", "lodash", { fixed: "4.17.21" });
+  assert.equal(resolvesAdvisory("lodash", "4.17.15", "4.17.21", v), true);
+  assert.equal(resolvesAdvisory("lodash", "4.17.15", "4.17.20", v), false); // fix not reached
+});
+
+test("resolvesAdvisory is false when the fix version does not exist yet (latest still affected)", () => {
+  // lodash GHSA-f23m-r3pf-42rh: fixed 4.18.0, but latest published is 4.17.21.
+  const v = semverVuln("GHSA-f23m-r3pf-42rh", "lodash", { fixed: "4.18.0" });
+  assert.equal(resolvesAdvisory("lodash", "4.17.15", "4.17.21", v), false);
+});
+
+test("resolvesAdvisory handles last_affected ranges (no declared fix)", () => {
+  const v: OsvVuln = {
+    id: "GHSA-1111-2222-3333",
+    affected: [
+      {
+        package: { ecosystem: "npm", name: "tar" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { last_affected: "4.5.0" }] }],
+      },
+    ],
+  };
+  assert.equal(resolvesAdvisory("tar", "4.4.0", "4.5.1", v), true); // past last_affected
+  assert.equal(resolvesAdvisory("tar", "4.4.0", "4.5.0", v), false); // 4.5.0 is affected THROUGH
+});
+
+test("resolvesAdvisory only looks at npm affected entries for the exact package", () => {
+  const v: OsvVuln = {
+    id: "GHSA-4444-5555-6666",
+    affected: [
+      {
+        package: { ecosystem: "PyPI", name: "lodash" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }] }],
+      },
+      {
+        package: { ecosystem: "npm", name: "lodash-es" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "9.9.9" }] }],
+      },
+      {
+        package: { ecosystem: "npm", name: "lodash" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "4.17.21" }] }],
+      },
+    ],
+  };
+  // Resolves for lodash via its own entry; the PyPI/lodash-es entries are ignored.
+  assert.equal(resolvesAdvisory("lodash", "4.17.15", "4.17.21", v), true);
+});
+
+test("resolvesAdvisory matches an explicit versions list", () => {
+  const v: OsvVuln = {
+    id: "GHSA-7777-8888-9999",
+    affected: [{ package: { ecosystem: "npm", name: "foo" }, versions: ["1.0.0", "1.0.1"] }],
+  };
+  assert.equal(resolvesAdvisory("foo", "1.0.0", "1.0.2", v), true);
+  assert.equal(resolvesAdvisory("foo", "1.0.0", "1.0.1", v), false); // target still listed
+});
+
+test("resolvesAdvisory refuses to promote on an unevaluable range (conservative)", () => {
+  // ECOSYSTEM ranges are not orderable by core comparison → unknown → current is
+  // not provably affected → no promotion, even though it might be vulnerable.
+  const v: OsvVuln = {
+    id: "GHSA-0000-0000-0000",
+    affected: [
+      {
+        package: { ecosystem: "npm", name: "weird" },
+        ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }],
+      },
+    ],
+  };
+  assert.equal(resolvesAdvisory("weird", "1.0.0", "2.0.0", v), false);
+});
+
+test("resolvesAdvisory handles disjoint introduced/fixed intervals in one range", () => {
+  // Affected in [1.0.0, 1.5.0) and [2.0.0, 2.5.0); safe in between and after.
+  const v: OsvVuln = {
+    id: "GHSA-dddd-eeee-ffff",
+    affected: [
+      {
+        package: { ecosystem: "npm", name: "multi" },
+        ranges: [
+          {
+            type: "SEMVER",
+            events: [
+              { introduced: "1.0.0" },
+              { fixed: "1.5.0" },
+              { introduced: "2.0.0" },
+              { fixed: "2.5.0" },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  assert.equal(resolvesAdvisory("multi", "2.1.0", "2.5.0", v), true); // out of second interval
+  assert.equal(resolvesAdvisory("multi", "1.2.0", "1.7.0", v), true); // out of first interval
+  assert.equal(resolvesAdvisory("multi", "2.1.0", "2.4.0", v), false); // still in second interval
+});
+
+test("prioritizeGroups stable-promotes resolving groups, keeping localeCompare order within a rank", () => {
+  const g = (key: string, ...names: string[]): Group => ({
+    key,
+    reason: "",
+    members: names.map((name) => cand({ name })),
+  });
+  // Input already in localeCompare order (as groupCandidates returns it).
+  const groups = [
+    g("dev-minor", "eslint"),
+    g("prod/axios", "axios"),
+    g("types", "@types/node"),
+    g("prod/lodash", "lodash"),
+  ];
+  const resolved = new Map([
+    ["axios", ["GHSA-a"]],
+    ["lodash", ["GHSA-b"]],
+  ]);
+  const ordered = prioritizeGroups(groups, resolved);
+  assert.deepEqual(
+    ordered.map((x) => x.key),
+    // Promoted groups first, each rank keeping its original relative order.
+    ["prod/axios", "prod/lodash", "dev-minor", "types"],
+  );
+});
+
+test("prioritizeGroups is a no-op when nothing resolves an advisory", () => {
+  const g = (key: string): Group => ({ key, reason: "", members: [cand({ name: key })] });
+  const groups = [g("a"), g("b"), g("c")];
+  assert.deepEqual(
+    prioritizeGroups(groups, new Map()).map((x) => x.key),
+    ["a", "b", "c"],
+  );
+});
+
+test("fetchAdvisories triages via querybatch then fetches only vulnerable packages in full", async () => {
+  const calls: string[] = [];
+  const fetchImpl = osvStub(
+    {
+      lodash: [semverVuln("GHSA-35jh-r3h4-6jhm", "lodash", { fixed: "4.17.21" })],
+      // clean has no advisories → no /v1/query for it.
+    },
+    calls,
+  );
+  const result = await fetchAdvisories(
+    [
+      cand({ name: "lodash", current: "4.17.15", latest: "4.17.21" }),
+      cand({ name: "clean", current: "1.0.0", latest: "2.0.0" }),
+    ],
+    { fetch: fetchImpl },
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual([...result.resolvedByPackage.entries()], [["lodash", ["GHSA-35jh-r3h4-6jhm"]]]);
+  // Exactly one querybatch (triage) + one query (only the vulnerable package).
+  assert.equal(calls.filter((u) => u.endsWith("/v1/querybatch")).length, 1);
+  const queries = calls.filter((u) => u.endsWith("/v1/query"));
+  assert.equal(queries.length, 1);
+});
+
+test("fetchAdvisories does not promote a package whose latest is still affected", async () => {
+  const fetchImpl = osvStub({
+    lodash: [
+      semverVuln("GHSA-fixed", "lodash", { fixed: "4.17.21" }), // resolved
+      semverVuln("GHSA-unfixed", "lodash", { fixed: "4.18.0" }), // still affects 4.17.21
+    ],
+  });
+  const result = await fetchAdvisories(
+    [cand({ name: "lodash", current: "4.17.15", latest: "4.17.21" })],
+    {
+      fetch: fetchImpl,
+    },
+  );
+  assert.deepEqual([...(result.resolvedByPackage.get("lodash") ?? [])], ["GHSA-fixed"]);
+});
+
+test("fetchAdvisories is fail-soft: a querybatch failure yields ok:false and neutral order", async () => {
+  const failing = (async () => {
+    throw new Error("egress blocked");
+  }) as unknown as typeof fetch;
+  const result = await fetchAdvisories([cand({ name: "lodash" })], { fetch: failing });
+  assert.equal(result.ok, false);
+  assert.equal(result.resolvedByPackage.size, 0);
+});
+
+test("fetchAdvisories tolerates a single package's /v1/query failure without losing the rest", async () => {
+  // querybatch says both are vulnerable, but /v1/query for `flaky` 500s.
+  const impl = async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    if (u.endsWith("/v1/querybatch")) {
+      const queries = (body.queries ?? []) as { package: { name: string } }[];
+      return jsonResponse({ results: queries.map(() => ({ vulns: [{ id: "x" }] })) });
+    }
+    const name = (body.package as { name: string }).name;
+    if (name === "flaky") return new Response("boom", { status: 500 });
+    return jsonResponse({ vulns: [semverVuln(`GHSA-${name}`, name, { fixed: "1.5.0" })] });
+  };
+  const result = await fetchAdvisories(
+    [
+      cand({ name: "flaky", current: "1.0.0", latest: "1.5.0" }),
+      cand({ name: "solid", current: "1.0.0", latest: "1.5.0" }),
+    ],
+    { fetch: impl as typeof fetch },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.resolvedByPackage.has("flaky"), false);
+  assert.equal(result.resolvedByPackage.has("solid"), true);
+});
+
+test("fetchAdvisories skips 'unknown'-typed candidates entirely (no fetch)", async () => {
+  const calls: string[] = [];
+  const result = await fetchAdvisories(
+    [cand({ name: "weird", current: "MISSING", latest: "1.0.0", updateType: "unknown" })],
+    { fetch: osvStub({}, calls) },
+  );
+  assert.equal(calls.length, 0);
+  assert.equal(result.ok, true);
+  assert.equal(result.resolvedByPackage.size, 0);
+});
+
+test("describeAdvisories lists prioritized packages; silent when nothing was prioritized", () => {
+  assert.equal(describeAdvisories(new Map()), "");
+  const note = describeAdvisories(
+    new Map([
+      ["lodash", ["GHSA-b", "GHSA-a"]],
+      ["axios", ["GHSA-c"]],
+    ]),
+  );
+  assert.match(note, /prioritized 2 updates/);
+  assert.match(note, /axios \(GHSA-c\)/);
+  assert.match(note, /lodash \(GHSA-b, GHSA-a\)/);
+});

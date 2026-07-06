@@ -278,6 +278,58 @@ test("buildPrPayload drops links whose parts fail validation (fail-soft)", () =>
   assert.ok(p.body.includes("| `bad name!` | 1.0.0 | 2.0.0 |"));
 });
 
+test("buildPrPayload adds a Security column linking resolved advisories", () => {
+  const candidates = [cand("lodash", "4.17.15", "4.17.21")];
+  const p = buildPrPayload({
+    branch: "depvisor/prod-lodash",
+    base: "main",
+    candidates,
+    advisories: new Map([["lodash", ["GHSA-35jh-r3h4-6jhm", "GHSA-p6mc-m468-83gw"]]]),
+    narrative: narrative("Bumped lodash to resolve advisories."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(p.body.includes("| Package | From | To | Security |"));
+  assert.ok(
+    p.body.includes("[GHSA-35jh-r3h4-6jhm](https://github.com/advisories/GHSA-35jh-r3h4-6jhm)"),
+  );
+  assert.ok(
+    p.body.includes("GHSA-p6mc-m468-83gw](https://github.com/advisories/GHSA-p6mc-m468-83gw)"),
+  );
+  // The advisory links must survive the exit re-sanitize untouched.
+  assert.ok(sanitizePrBody(p.body).includes("github.com/advisories/GHSA-35jh-r3h4-6jhm"));
+});
+
+test("buildPrPayload omits the Security column and drops malformed advisory ids", () => {
+  const candidates = [cand("lodash", "4.17.15", "4.17.21")];
+  const p = buildPrPayload({
+    branch: "depvisor/prod-lodash",
+    base: "main",
+    candidates,
+    // Not a valid GHSA shape (would-be injection via a crafted id must not link).
+    advisories: new Map([["lodash", ["not-a-ghsa)](http://evil.example"]]]),
+    narrative: narrative("Bump."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(!p.body.includes("evil.example"));
+  // No valid advisory id, so the Security column disappears entirely.
+  assert.ok(p.body.includes("| Package | From | To |\n|---|---|---|"));
+});
+
+test("buildPrPayload renders Security and Links columns together", () => {
+  const candidates = [cand("lodash", "4.17.15", "4.17.21")];
+  const p = buildPrPayload({
+    branch: "depvisor/prod-lodash",
+    base: "main",
+    candidates,
+    sourceRepos: new Map([["lodash", "lodash/lodash"]]),
+    advisories: new Map([["lodash", ["GHSA-35jh-r3h4-6jhm"]]]),
+    narrative: narrative("Bump."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(p.body.includes("| Package | From | To | Security | Links |"));
+  assert.ok(p.body.includes("|---|---|---|---|---|"));
+});
+
 test("emitPrPayload names payloads by processing order and branch slug", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-pr-"));
   const p0 = buildPrPayload({
