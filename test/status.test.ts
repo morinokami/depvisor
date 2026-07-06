@@ -245,7 +245,10 @@ test("step summary renders run-total and per-group LLM usage rows", () => {
   const summary = renderStepSummary(run({ groups: [group({ usage: usage() })] }));
   // Both the run header and the group table carry a usage row.
   assert.equal(summary.split("| LLM usage |").length - 1, 2);
-  assert.ok(summary.includes("1,260 tokens (in 1,000 · out 200 · cache read 50)"));
+  // The breakdown names every additive bucket (in + out + cache read + cache
+  // write = 1,000 + 200 + 50 + 10 = 1,260), so it sums to the displayed total —
+  // cache write is billed and must not be silently dropped.
+  assert.ok(summary.includes("1,260 tokens (in 1,000 · out 200 · cache read 50 · cache write 10)"));
   assert.ok(summary.includes("est. ~$0.0123"));
   assert.ok(summary.includes("`anthropic/claude-opus-4-8`"));
 });

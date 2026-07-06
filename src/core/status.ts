@@ -332,10 +332,15 @@ function usageDigest(u: {
   input: number;
   output: number;
   cacheRead: number;
+  cacheWrite: number;
   costUsd: number;
 }): string {
-  const cache = u.cacheRead > 0 ? ` · cache read ${fmtTokens(u.cacheRead)}` : "";
-  return `${fmtTokens(u.totalTokens)} tokens (in ${fmtTokens(u.input)} · out ${fmtTokens(u.output)}${cache}), est. ${fmtCost(u.costUsd)}`;
+  // The four token buckets are additive (totalTokens = in + out + cacheRead +
+  // cacheWrite), and cache writes are billed, so name both cache buckets when
+  // present — otherwise the breakdown wouldn't sum to the total shown.
+  const cacheRead = u.cacheRead > 0 ? ` · cache read ${fmtTokens(u.cacheRead)}` : "";
+  const cacheWrite = u.cacheWrite > 0 ? ` · cache write ${fmtTokens(u.cacheWrite)}` : "";
+  return `${fmtTokens(u.totalTokens)} tokens (in ${fmtTokens(u.input)} · out ${fmtTokens(u.output)}${cacheRead}${cacheWrite}), est. ${fmtCost(u.costUsd)}`;
 }
 
 function packageTable(packages: StatusPackage[]): string {
