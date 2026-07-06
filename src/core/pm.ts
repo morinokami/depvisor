@@ -32,8 +32,16 @@ export interface PmToolchain {
    * the workspaces that already declare each dependency (via each candidate's
    * `locations`). Built per group so a monorepo update touches only the right
    * manifests instead of adding dependencies to the root — see updater.md.
+   *
+   * `pinExact` makes the command resolve to exactly `candidate.latest`, at the
+   * cost of an exact (range-less) manifest entry. Only bun's instruction
+   * changes: bun writes the given specifier verbatim AND resolves a range at
+   * install time, so its usual `@^<latest>` would let an install pull a
+   * version newer than the one the minimum_release_age clamp chose. npm and
+   * pnpm already install the exact target (their caret is written by the
+   * tool, not resolved from a range), so they ignore the flag.
    */
-  updateInstruction(candidates: readonly Candidate[]): string;
+  updateInstruction(candidates: readonly Candidate[], opts?: { pinExact?: boolean }): string;
   /**
    * This PM's lockfile names — for detection, error messages, and (with every
    * `package.json`) the mechanical bump commit of the two-commit split
@@ -100,13 +108,18 @@ function pnpmUpdateInstruction(candidates: readonly Candidate[]): string {
  * add), so this emits one line per declaring workspace (root — location "" —
  * takes no `--cwd`). The explicit `^` matters: bun writes the given specifier
  * verbatim, so a bare `name@1.2.3` would pin exactly where npm/pnpm write a
- * caret range (verified against bun 1.3.14).
+ * caret range (verified against bun 1.3.14). Under `pinExact` that pinning is
+ * the point: bun resolves `@^<latest>` at install time, which would silently
+ * pull a release the minimum_release_age cooldown just rounded away.
  */
-function bunUpdateInstruction(candidates: readonly Candidate[]): string {
+function bunUpdateInstruction(
+  candidates: readonly Candidate[],
+  opts?: { pinExact?: boolean },
+): string {
   const lines: string[] = [];
   for (const c of candidates) {
     const flag = c.kind === "dev" ? "-d " : "";
-    const spec = `${c.name}@^${c.latest}`;
+    const spec = opts?.pinExact ? `${c.name}@${c.latest}` : `${c.name}@^${c.latest}`;
     for (const loc of c.locations) {
       lines.push(loc === "" ? `bun add ${flag}${spec}` : `bun add --cwd ${loc} ${flag}${spec}`);
     }

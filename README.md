@@ -104,12 +104,13 @@ jobs:
 
 ### Inputs
 
-| Input             | Purpose                                                                                                                                                                                                      |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `llm_api_key`     | (required) Provider API key — reaches **only** the agent step                                                                                                                                                |
-| `llm_model`       | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                                                                                                            |
-| `verify_commands` | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                   |
-| `max_prs`         | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly |
+| Input                 | Purpose                                                                                                                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm_api_key`         | (required) Provider API key — reaches **only** the agent step                                                                                                                                                                   |
+| `llm_model`           | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                                                                                                                               |
+| `verify_commands`     | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                      |
+| `max_prs`             | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                    |
+| `minimum_release_age` | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1`, matching pnpm's `minimumReleaseAge`). `0` disables the cooldown — required for private-registry packages |
 
 ```yaml
 # e.g. when your checks go by other names:
@@ -139,6 +140,37 @@ The update branch uses a stable name, so reruns update the same PR instead of
 creating duplicates. It contains two commits: `deps: bump …` for the manifest and
 lockfile changes, and `fix: adapt code to …` for code changes written by the AI.
 
+### Update cooldown (`minimum_release_age`)
+
+Freshly published versions are the main carrier of supply-chain attacks: a
+compromised release is published, and automatic updaters spread it within hours.
+depvisor therefore refuses to update to a version younger than
+`minimum_release_age` days (default `1`, matching pnpm's `minimumReleaseAge`;
+Renovate and Dependabot ship the same defense as `minimumReleaseAge`/`cooldown`).
+This is enforced deterministically from the npm registry's publish timestamps,
+before any AI is involved. If a dependency's latest version is too new, depvisor
+updates to the newest version that **has** aged enough instead, and holds the
+dependency back entirely when nothing newer than the installed version has —
+the run summary lists every clamp and hold-back.
+
+Details worth knowing:
+
+- **Fail-closed**: when the npm registry cannot vouch for a version's age
+  (network failure, or a package that does not exist on registry.npmjs.org —
+  e.g. a private-registry package), that update is skipped and the job is
+  marked red (`release-age-unavailable`). A transient failure heals on the
+  next scheduled run. If your repo uses private packages, set
+  `minimum_release_age: 0` to disable the cooldown.
+- **bun repos get exact pins while the cooldown is active**: bun resolves
+  ranges at install time, so depvisor instructs `bun add <name>@<version>`
+  (no `^`) to stop an install from reaching back into the cooldown window.
+  Your manifest then carries an exact version instead of a caret range.
+- **A clamped major can move between PRs as it matures**: while a new major is
+  inside the cooldown window, depvisor may open a PR for an older minor (e.g.
+  `depvisor/prod-foo`); once the major has aged, the update moves to its own
+  `depvisor/major-foo` PR. The earlier PR is not closed automatically — close
+  or merge it yourself, since it counts against `max_prs` until you do.
+
 By default depvisor keeps at most one open PR at a time. Raise `max_prs` to let a
 single run open several PRs — one per dependency group — up to that many open
 depvisor PRs at once. It fills empty slots as you merge or close existing PRs, and
@@ -156,11 +188,13 @@ depvisor writes a job summary and an annotation for every known outcome, at both
 the run level and per group. Benign outcomes (`no-updates`, `pr-up-to-date`,
 `deferred`, `open-pr-blocked` when a human has taken over the PR branch, and
 `held-back-by-limit` when the `max_prs` ceiling is reached) stay green and explain
-why no PR was opened. Outcomes that need attention (`baseline-red`, `reset-failed`,
+why no PR was opened. Updates the `minimum_release_age` cooldown clamped or held
+back are likewise normal operation: they stay green and are listed in the run
+summary. Outcomes that need attention (`baseline-red`, `reset-failed`,
 `no-verify-scripts`, `missing-base`, `scope-violation`, `verification-failed`,
-`reinstall-unavailable`, `open-pr-failed`, and similar fail-closed stops) fail the
-job so they are not missed in scheduled runs — a run stays red if any of its
-groups failed.
+`reinstall-unavailable`, `release-age-unavailable`, `open-pr-failed`, and similar
+fail-closed stops) fail the job so they are not missed in scheduled runs — a run
+stays red if any of its groups failed.
 
 The step summary has a section per group depvisor touched, each with its branch,
 package version table, verification results, and the PR URL when one was created
