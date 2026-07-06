@@ -65,7 +65,29 @@ interface OsvAffected {
 }
 export interface OsvVuln {
   id?: string;
+  aliases?: string[];
   affected?: OsvAffected[];
+}
+
+// GHSA ids are GHSA-xxxx-xxxx-xxxx (a lowercase base32 subset). pr.ts re-validates
+// the same shape at the PR-body embed boundary; keeping the check here too means
+// the unit that promotes a group is exactly the id the PR can link.
+const GHSA_RE = /^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/;
+
+/**
+ * The advisory's GHSA id, from its primary `id` or its `aliases` (OSV may key a
+ * record by CVE and alias the GHSA, or the reverse). null when it has no GHSA —
+ * rare for npm, where GitHub mints a GHSA for essentially every advisory. We
+ * deliberately promote and display in GHSA terms so the promotion unit is
+ * identical to what the PR body's Security column links; a GHSA-less advisory is
+ * simply not counted rather than promoting a group with nothing to show.
+ */
+function extractGhsa(vuln: Record<string, unknown>): string | null {
+  if (typeof vuln.id === "string" && GHSA_RE.test(vuln.id)) return vuln.id;
+  if (Array.isArray(vuln.aliases)) {
+    for (const a of vuln.aliases) if (typeof a === "string" && GHSA_RE.test(a)) return a;
+  }
+  return null;
 }
 
 type Boundary = { kind: "introduced" | "fixed" | "last_affected"; core: Triple };
@@ -237,7 +259,12 @@ export async function fetchAdvisories(
   });
 
   // 2. Full fetch per vulnerable package; evaluate current vs post-clamp latest.
-  await Promise.all(
+  //    A full query that fails or is malformed leaves the OSV snapshot
+  //    incomplete for a package querybatch already flagged as vulnerable.
+  //    Ordering on a partial snapshot would silently mis-rank the max_prs slots,
+  //    so — matching the fail-soft "on any lookup failure use the neutral order
+  //    and log" rule — bail to ok:false + empty map instead of a quiet success.
+  const perPackage = await Promise.all(
     vulnerable.map(async (c) => {
       const full = await osvPost(
         doFetch,
@@ -245,18 +272,24 @@ export async function fetchAdvisories(
         { package: { ecosystem: "npm", name: c.name }, version: c.current },
         signal,
       );
-      const vulns = isRecord(full) && Array.isArray(full.vulns) ? full.vulns : [];
+      if (!isRecord(full) || !Array.isArray(full.vulns)) return null; // failed / malformed
       const ids: string[] = [];
-      for (const raw of vulns) {
-        if (!isRecord(raw) || typeof raw.id !== "string") continue;
-        // raw is guarded field-by-field inside resolvesAdvisory.
-        if (resolvesAdvisory(c.name, c.current, c.latest, raw as unknown as OsvVuln)) {
-          ids.push(raw.id);
+      for (const raw of full.vulns) {
+        if (!isRecord(raw)) continue;
+        // Count and display in GHSA terms; raw is guarded field-by-field inside
+        // resolvesAdvisory.
+        const ghsa = extractGhsa(raw);
+        if (ghsa && resolvesAdvisory(c.name, c.current, c.latest, raw as unknown as OsvVuln)) {
+          ids.push(ghsa);
         }
       }
-      if (ids.length > 0) resolvedByPackage.set(c.name, [...new Set(ids)].sort());
+      return { name: c.name, ids: [...new Set(ids)].sort() };
     }),
   );
+  if (perPackage.some((r) => r === null)) return { resolvedByPackage: new Map(), ok: false };
+  for (const r of perPackage) {
+    if (r && r.ids.length > 0) resolvedByPackage.set(r.name, r.ids);
+  }
   return { resolvedByPackage, ok: true };
 }
 

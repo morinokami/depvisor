@@ -230,8 +230,8 @@ test("fetchAdvisories triages via querybatch then fetches only vulnerable packag
 test("fetchAdvisories does not promote a package whose latest is still affected", async () => {
   const fetchImpl = osvStub({
     lodash: [
-      semverVuln("GHSA-fixed", "lodash", { fixed: "4.17.21" }), // resolved
-      semverVuln("GHSA-unfixed", "lodash", { fixed: "4.18.0" }), // still affects 4.17.21
+      semverVuln("GHSA-35jh-r3h4-6jhm", "lodash", { fixed: "4.17.21" }), // resolved
+      semverVuln("GHSA-f23m-r3pf-42rh", "lodash", { fixed: "4.18.0" }), // still affects 4.17.21
     ],
   });
   const result = await fetchAdvisories(
@@ -240,7 +240,45 @@ test("fetchAdvisories does not promote a package whose latest is still affected"
       fetch: fetchImpl,
     },
   );
-  assert.deepEqual([...(result.resolvedByPackage.get("lodash") ?? [])], ["GHSA-fixed"]);
+  assert.deepEqual([...(result.resolvedByPackage.get("lodash") ?? [])], ["GHSA-35jh-r3h4-6jhm"]);
+});
+
+test("fetchAdvisories counts an advisory by its GHSA alias when the primary id is not GHSA", async () => {
+  // OSV may key a record by CVE and alias the GHSA. The GHSA is what promotes and
+  // what the PR body links.
+  const cveKeyed: OsvVuln = {
+    id: "CVE-2021-23337",
+    aliases: ["GHSA-35jh-r3h4-6jhm"],
+    affected: [
+      {
+        package: { ecosystem: "npm", name: "lodash" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "4.17.21" }] }],
+      },
+    ],
+  };
+  const result = await fetchAdvisories(
+    [cand({ name: "lodash", current: "4.17.15", latest: "4.17.21" })],
+    { fetch: osvStub({ lodash: [cveKeyed] }) },
+  );
+  assert.deepEqual([...(result.resolvedByPackage.get("lodash") ?? [])], ["GHSA-35jh-r3h4-6jhm"]);
+});
+
+test("fetchAdvisories does not promote an advisory with no GHSA (nothing the PR could link)", async () => {
+  const noGhsa: OsvVuln = {
+    id: "CVE-2021-23337", // no GHSA in id or aliases
+    affected: [
+      {
+        package: { ecosystem: "npm", name: "lodash" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "4.17.21" }] }],
+      },
+    ],
+  };
+  const result = await fetchAdvisories(
+    [cand({ name: "lodash", current: "4.17.15", latest: "4.17.21" })],
+    { fetch: osvStub({ lodash: [noGhsa] }) },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.resolvedByPackage.has("lodash"), false);
 });
 
 test("fetchAdvisories is fail-soft: a querybatch failure yields ok:false and neutral order", async () => {
@@ -252,8 +290,10 @@ test("fetchAdvisories is fail-soft: a querybatch failure yields ok:false and neu
   assert.equal(result.resolvedByPackage.size, 0);
 });
 
-test("fetchAdvisories tolerates a single package's /v1/query failure without losing the rest", async () => {
-  // querybatch says both are vulnerable, but /v1/query for `flaky` 500s.
+test("fetchAdvisories fails soft to ok:false + empty map when a flagged package's full query fails", async () => {
+  // querybatch flags both as vulnerable, but /v1/query for `flaky` 500s. Ordering
+  // on a partial OSV snapshot is worse than the neutral order — bail entirely so
+  // the workflow logs it and falls back, rather than silently mis-ranking slots.
   const impl = async (
     input: Parameters<typeof fetch>[0],
     init?: RequestInit,
@@ -266,7 +306,7 @@ test("fetchAdvisories tolerates a single package's /v1/query failure without los
     }
     const name = (body.package as { name: string }).name;
     if (name === "flaky") return new Response("boom", { status: 500 });
-    return jsonResponse({ vulns: [semverVuln(`GHSA-${name}`, name, { fixed: "1.5.0" })] });
+    return jsonResponse({ vulns: [semverVuln("GHSA-aaaa-bbbb-cccc", name, { fixed: "1.5.0" })] });
   };
   const result = await fetchAdvisories(
     [
@@ -275,9 +315,8 @@ test("fetchAdvisories tolerates a single package's /v1/query failure without los
     ],
     { fetch: impl as typeof fetch },
   );
-  assert.equal(result.ok, true);
-  assert.equal(result.resolvedByPackage.has("flaky"), false);
-  assert.equal(result.resolvedByPackage.has("solid"), true);
+  assert.equal(result.ok, false);
+  assert.equal(result.resolvedByPackage.size, 0);
 });
 
 test("fetchAdvisories skips 'unknown'-typed candidates entirely (no fetch)", async () => {
