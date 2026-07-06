@@ -144,8 +144,15 @@ export function parsePnpmOutdated(data: Record<string, unknown>, repoPath: strin
       kind,
       updateType: classifyUpdate(current, latest),
       locations: [...locations].sort(),
-      // pnpm collapses cross-workspace occurrences behind its name-keyed JSON, so
-      // only the one reported current is known here.
+      // pnpm's name-keyed JSON reports one entry per package whose `current` is
+      // the HIGHEST installed version across workspaces; lower-versioned
+      // workspaces are omitted entirely (verified on pnpm 11). So `currents` can
+      // only carry that highest version — advisory matching therefore misses an
+      // advisory that affects solely an omitted lower version (fail-soft: the
+      // `pnpm -r update` still fixes every workspace; only the promotion/
+      // Security-column hint is lost). npm/bun report every occurrence, so their
+      // `currents` is complete. Reconstructing pnpm's per-workspace versions
+      // would need a second command (`pnpm list -r`); deliberately not done.
       currents: current ? [current] : [],
     });
   }
