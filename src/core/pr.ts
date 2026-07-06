@@ -2,6 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isValidNpmName } from "./changelog.ts";
 import type { NumstatEntry } from "./git.ts";
+import type { LicenseChange } from "./license.ts";
 import { RUN_STATUS_FILE } from "./status-file.ts";
 import { formatNumstatLines } from "./test-changes.ts";
 import type { Candidate, UpdateNarrative } from "./types.ts";
@@ -327,6 +328,53 @@ function testChangesSection(changes: readonly NumstatEntry[]): string {
   );
 }
 
+// License strings come from the untrusted npm registry. Only strings within this
+// conservative, SPDX-shaped charset (letters, digits, spaces, and . + - ( ))
+// are embedded, matching packageCell/linksCell's strict-parts stance: a backtick
+// or bracket would break out of the code span the exit sanitizer preserves, and
+// a `|` would break the table row. A change whose license fails the charset is
+// dropped from the list but still counted, so nothing is hidden.
+const LICENSE_RE = /^[A-Za-z0-9 .+()-]+$/;
+
+/** Whether a license string is safe to embed in a markdown code span / table cell. */
+function isDisplayableLicense(license: string): boolean {
+  return LICENSE_RE.test(license);
+}
+
+/**
+ * A warning section listing packages whose declared license changed between the
+ * current and target version (see core/license.ts). Like testChangesSection this
+ * is visibility, not a gate — a relicense is legitimate but among the easiest
+ * changes to miss in review — and it makes NO claim about whether the new license
+ * is more or less permissive; that reading is left to the human. Only
+ * charset-safe license strings are shown; a change dropped for an unsafe string
+ * is still counted, and detection is best-effort (registry `license` field only),
+ * so an empty section is never a guarantee that no license changed.
+ */
+function licenseChangesSection(changes: readonly LicenseChange[]): string {
+  if (changes.length === 0) return "";
+  const safe = changes.filter((c) => isDisplayableLicense(c.from) && isDisplayableLicense(c.to));
+  const omitted = changes.length - safe.length;
+  const rows = safe.map((c) => `| \`${c.name}\` | \`${c.from}\` | \`${c.to}\` |`);
+  const table =
+    rows.length > 0 ? ["| Package | From | To |", "|---|---|---|", ...rows].join("\n") : "";
+  const omittedNote =
+    omitted > 0
+      ? `\n\n_${omitted} license change(s) with values that cannot be safely displayed were omitted from the list above._`
+      : "";
+  return (
+    "## ⚠️ License changed between versions\n\n" +
+    `The declared license changed for ${changes.length} package(s) in this update. A relicense ` +
+    "(for example to a source-available or copyleft license) can carry obligations your project " +
+    "must accept — please confirm the new terms are acceptable. This compares the npm registry " +
+    "`license` field as plain text only; it makes no judgment about whether the new license is " +
+    "more or less permissive, and detection is best-effort.\n\n" +
+    table +
+    omittedNote +
+    "\n\n"
+  );
+}
+
 /**
  * Assemble the PR payload from deterministic data plus the agent's structured
  * narrative. Every narrative field is untrusted and sanitized field-by-field.
@@ -341,6 +389,8 @@ export function buildPrPayload(args: {
   advisories?: ReadonlyMap<string, string[]>;
   /** Test-looking files the agent changed; non-empty adds a warning section. */
   testChanges?: readonly NumstatEntry[];
+  /** Packages whose declared license changed; non-empty adds a warning section. */
+  licenseChanges?: readonly LicenseChange[];
   narrative: UpdateNarrative;
   verification: VerifyResult[];
 }): PrPayload {
@@ -351,6 +401,7 @@ export function buildPrPayload(args: {
     sourceRepos,
     advisories,
     testChanges,
+    licenseChanges,
     narrative,
     verification,
   } = args;
@@ -397,7 +448,9 @@ export function buildPrPayload(args: {
     "",
     versionTable,
     "",
-    testChangesSection(testChanges ?? []) + "## What changed",
+    testChangesSection(testChanges ?? []) +
+      licenseChangesSection(licenseChanges ?? []) +
+      "## What changed",
     "",
     sanitizeSummary(narrative.summary),
     "",

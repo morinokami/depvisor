@@ -9,12 +9,14 @@ import {
   prioritizeGroups,
   type AdvisoryResult,
 } from "../core/advisories.ts";
-import { parseGithubSlug, resolveSourceRepo } from "../core/changelog.ts";
+import { parseGithubSlug } from "../core/changelog.ts";
 import { classifyGroup, countOpenDepvisorPrs, parseMaxPrs } from "../core/budget.ts";
 import { collectCandidates } from "../core/collect.ts";
+import { classifyLicenseChanges, describeLicenseChanges } from "../core/license.ts";
 import {
   applyReleaseAge,
   describeReleaseAge,
+  fetchPackument,
   parseMinReleaseAge,
   type Packument,
 } from "../core/release-age.ts";
@@ -724,22 +726,28 @@ export default defineWorkflow({
         }
 
         // Emit the PR payload. A separate token-holding step pushes and opens the
-        // PR. Source repo resolution is optional; unresolved packages render
-        // without releases/compare links. The release-age clamp already fetched
-        // these packuments, so reuse them instead of hitting the registry again
-        // (the cache is empty when the cooldown is disabled — then fetch fresh).
-        const sourceRepos = new Map(
-          await Promise.all(
-            members.map(async (m) => {
-              const cached = packuments.get(m.name);
-              const slug =
-                cached !== undefined
-                  ? cached && parseGithubSlug(cached.repository)
-                  : await resolveSourceRepo(m.name);
-              return [m.name, slug] as const;
+        // PR. The full packument feeds two display-only signals: the source-repo
+        // releases/compare links and the license-change warning. The release-age
+        // clamp already fetched these packuments, so reuse them; when the cooldown
+        // is disabled the cache is empty, so fetch each once here — the same
+        // registry round-trip the old resolveSourceRepo made, now also yielding
+        // the per-version license, so no extra hits per package. Both signals are
+        // optional (fail-open): a missing packument just renders without them.
+        await Promise.all(
+          members
+            .filter((m) => !packuments.has(m.name))
+            .map(async (m) => {
+              packuments.set(m.name, await fetchPackument(m.name));
             }),
-          ),
         );
+        const sourceRepos = new Map(
+          members.map((m) => {
+            const packument = packuments.get(m.name);
+            return [m.name, packument ? parseGithubSlug(packument.repository) : null] as const;
+          }),
+        );
+        const licenseChanges = classifyLicenseChanges(members, packuments);
+        if (licenseChanges.length > 0) log.info(describeLicenseChanges(licenseChanges));
         const payload = buildPrPayload({
           branch,
           base,
@@ -747,6 +755,7 @@ export default defineWorkflow({
           sourceRepos,
           advisories: advisories.resolvedByPackage,
           testChanges,
+          licenseChanges,
           narrative: {
             summary,
             notableChanges: result.notable_changes,
