@@ -86,6 +86,9 @@ test("parseOutdated merges a dependency declared across workspaces", () => {
   assert.equal(c.latest, "1.3.0");
   assert.equal(c.kind, "prod");
   assert.deepEqual(c.locations, ["packages/a", "packages/b"]); // union, sorted
+  // Both distinct currents are retained so advisory matching can probe each
+  // workspace-current, not just the lowest.
+  assert.deepEqual(c.currents, ["1.0.0", "1.2.0"]);
 });
 
 test("parseOutdated: dev in one workspace, prod in another → prod (no -D)", () => {

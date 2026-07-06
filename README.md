@@ -225,6 +225,36 @@ skips the install before the first group) and uses the package manager's
 lockfile-faithful install — so multi-group runs need a committed lockfile;
 without one, groups after the first are reported as `reinstall-unavailable`.
 
+### Security prioritization
+
+The most urgent dependency update is the one that closes a known vulnerability,
+so depvisor processes those first. After grouping, it queries the
+[OSV.dev](https://osv.dev) database and stable-promotes any group whose update
+**resolves** a known advisory to the front of the run — ahead of routine
+`@types/*` or dev-dependency bumps. This matters most with `max_prs`: security
+fixes claim the run's PR slots before ordinary updates do. When a group is
+prioritized, its PR body gains a **Security** column linking each resolved
+advisory (`GHSA-…`) so a reviewer can see at a glance why the PR is worth merging
+promptly.
+
+Details worth knowing:
+
+- **Ordering only**: prioritization never changes which version is installed —
+  only the order groups are handled. It requires no configuration and is on by
+  default.
+- **Only genuine fixes are promoted**: a group is promoted only when the target
+  version actually leaves the advisory's affected range. An advisory with no
+  released fix yet (the current version is vulnerable and so is the latest) does
+  not promote anything, because updating would not help.
+- **The cooldown still wins**: prioritization runs on the version
+  `minimum_release_age` would actually install, so a fix that is still inside the
+  cooldown window is not treated as available yet — it is prioritized once it has
+  aged enough. The supply-chain cooldown is never bypassed in the name of urgency.
+- **Fail-soft**: unlike the cooldown, this is an optimization, not a defense. If
+  OSV.dev is unreachable, depvisor logs it and falls back to the normal
+  alphabetical order rather than failing the run. Private packages (absent from
+  OSV) simply are not prioritized.
+
 ### Reading the Actions result
 
 depvisor writes a job summary and an annotation for every known outcome, at both

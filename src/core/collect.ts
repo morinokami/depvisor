@@ -101,6 +101,7 @@ export function parseOutdated(data: Record<string, unknown>): Candidate[] {
       kind,
       updateType: classifyUpdate(current, latest),
       locations: [...locations].sort(),
+      currents: [...new Set(currents)].sort(),
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -143,6 +144,16 @@ export function parsePnpmOutdated(data: Record<string, unknown>, repoPath: strin
       kind,
       updateType: classifyUpdate(current, latest),
       locations: [...locations].sort(),
+      // pnpm's name-keyed JSON reports one entry per package whose `current` is
+      // the HIGHEST installed version across workspaces; lower-versioned
+      // workspaces are omitted entirely (verified on pnpm 11). So `currents` can
+      // only carry that highest version — advisory matching therefore misses an
+      // advisory that affects solely an omitted lower version (fail-soft: the
+      // `pnpm -r update` still fixes every workspace; only the promotion/
+      // Security-column hint is lost). npm/bun report every occurrence, so their
+      // `currents` is complete. Reconstructing pnpm's per-workspace versions
+      // would need a second command (`pnpm list -r`); deliberately not done.
+      currents: current ? [current] : [],
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -304,6 +315,7 @@ export function parseBunOutdated(raw: string, workspaces: Map<string, string>): 
       kind: acc.allDev ? "dev" : "prod",
       updateType: classifyUpdate(current, acc.latest),
       locations: [...acc.locations].sort(),
+      currents: [...new Set(acc.currents)].sort(),
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));

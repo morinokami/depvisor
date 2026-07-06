@@ -186,6 +186,20 @@ function packageCell(c: Candidate): string {
   return `[${label}](https://www.npmjs.com/package/${c.name}/v/${c.latest})`;
 }
 
+// GHSA ids are GHSA-xxxx-xxxx-xxxx (a lowercase base32 subset). Validated before
+// embedding, matching linksCell's strict-parts stance (the sanitizer leaves
+// markdown links intact). Any id that fails the shape is dropped from the cell.
+const GHSA_RE = /^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/;
+
+/** Security cell: links to the GitHub advisory page for each resolved GHSA. */
+function advisoryCell(ids: readonly string[] | undefined): string {
+  if (!ids || ids.length === 0) return "";
+  return ids
+    .filter((id) => GHSA_RE.test(id))
+    .map((id) => `[${id}](https://github.com/advisories/${id})`)
+    .join(" · ");
+}
+
 /**
  * Source links for a package from its resolved GitHub slug: the releases page,
  * plus a compare link guessing the common `v`-prefixed tag convention — a wrong
@@ -211,25 +225,31 @@ export function buildPrPayload(args: {
   candidates: Candidate[];
   /** GitHub "owner/repo" per package; missing entries render without links. */
   sourceRepos?: ReadonlyMap<string, string | null>;
+  /** Package name → advisory ids the update resolves; adds a Security column. */
+  advisories?: ReadonlyMap<string, string[]>;
   narrative: UpdateNarrative;
   verification: VerifyResult[];
 }): PrPayload {
-  const { branch, base, candidates, sourceRepos, narrative, verification } = args;
+  const { branch, base, candidates, sourceRepos, advisories, narrative, verification } = args;
 
   const title =
     candidates.length <= 3
       ? `deps: update ${candidates.map((c) => `${c.name} ${c.current} to ${c.latest}`).join(", ")}`
       : `deps: update ${candidates.map((c) => c.name).join(", ")}`;
 
-  // The Links column only exists when at least one package resolved a source.
+  // The Security and Links columns each exist only when at least one package
+  // has content for them, so an ordinary PR keeps the plain three-column table.
+  const security = candidates.map((c) => advisoryCell(advisories?.get(c.name)));
+  const hasSecurity = security.some((s) => s !== "");
   const links = candidates.map((c) => linksCell(c, sourceRepos?.get(c.name)));
   const hasLinks = links.some((l) => l !== "");
   const versionTable = [
-    `| Package | From | To |${hasLinks ? " Links |" : ""}`,
-    `|---|---|---|${hasLinks ? "---|" : ""}`,
+    `| Package | From | To |${hasSecurity ? " Security |" : ""}${hasLinks ? " Links |" : ""}`,
+    `|---|---|---|${hasSecurity ? "---|" : ""}${hasLinks ? "---|" : ""}`,
     ...candidates.map(
       (c, i) =>
         `| ${packageCell(c)} | ${c.current} | ${c.latest} |` +
+        (hasSecurity ? ` ${security[i] ?? ""} |` : "") +
         (hasLinks ? ` ${links[i] ?? ""} |` : ""),
     ),
   ].join("\n");

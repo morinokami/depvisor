@@ -3,6 +3,12 @@ import { fileURLToPath } from "node:url";
 import { defineWorkflow, ResultUnavailableError } from "@flue/runtime";
 import * as v from "valibot";
 import updater from "../agents/updater.ts";
+import {
+  describeAdvisories,
+  fetchAdvisories,
+  prioritizeGroups,
+  type AdvisoryResult,
+} from "../core/advisories.ts";
 import { parseGithubSlug, resolveSourceRepo } from "../core/changelog.ts";
 import { classifyGroup, countOpenDepvisorPrs, parseMaxPrs } from "../core/budget.ts";
 import { collectCandidates } from "../core/collect.ts";
@@ -340,7 +346,7 @@ export default defineWorkflow({
       releaseAgeNote = describeReleaseAge(aged, minReleaseAge);
       if (releaseAgeNote) log.info(releaseAgeNote);
     }
-    const groups = groupCandidates(candidates);
+    let groups = groupCandidates(candidates);
     if (groups.length === 0 && releaseAgeUnavailable.length === 0) {
       const notes = [ignoreNote, releaseAgeNote].filter(Boolean).join(" ");
       return finish({
@@ -351,6 +357,27 @@ export default defineWorkflow({
           : "No outdated dependencies found.",
         groups: [],
       });
+    }
+
+    // Security prioritization (core/advisories.ts): stable-promote groups whose
+    // update RESOLVES a known advisory to the front, so the max_prs budget below
+    // spends its slots on security fixes first. Runs on the post-clamp `latest`
+    // (a fix still inside the cooldown window does not count — cooldown wins) and
+    // is fail-soft: an OSV outage keeps the neutral localeCompare order rather
+    // than failing the run. The resolved-advisory map also feeds the PR body's
+    // Security column below.
+    let advisories: AdvisoryResult = { resolvedByPackage: new Map(), ok: true };
+    if (groups.length > 0) {
+      advisories = await fetchAdvisories(candidates);
+      if (advisories.ok) {
+        groups = prioritizeGroups(groups, advisories.resolvedByPackage);
+        const advisoryNote = describeAdvisories(advisories.resolvedByPackage);
+        if (advisoryNote) log.info(advisoryNote);
+      } else {
+        log.warn(
+          "security prioritization unavailable (OSV lookup failed); using the neutral update order",
+        );
+      }
     }
 
     // Budget (max_prs = ceiling on open depvisor PRs): count existing open
@@ -706,6 +733,7 @@ export default defineWorkflow({
           base,
           candidates: members,
           sourceRepos,
+          advisories: advisories.resolvedByPackage,
           narrative: {
             summary,
             notableChanges: result.notable_changes,

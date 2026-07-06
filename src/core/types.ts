@@ -16,6 +16,16 @@ export interface Candidate {
    * declaring workspace regardless.
    */
   locations: string[];
+  /**
+   * Distinct `current` versions this dependency is declared at across the
+   * declaring workspaces. `current` above is the LOWEST of these (the most
+   * conservative update-type classification), but advisory matching
+   * (`core/advisories.ts`) checks EVERY entry so a vulnerability affecting only a
+   * higher-versioned workspace is not hidden behind the lowest. npm/bun can
+   * report several; pnpm collapses cross-workspace occurrences to one. Absent →
+   * treat as `[current]`.
+   */
+  currents?: string[];
 }
 
 export interface Group {
