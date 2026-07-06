@@ -111,12 +111,18 @@ jobs:
 | `verify_commands`     | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                      |
 | `max_prs`             | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                    |
 | `minimum_release_age` | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1`, matching pnpm's `minimumReleaseAge`). `0` disables the cooldown — required for private-registry packages |
+| `ignore`              | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number. Full version ranges and update-type rules are not supported yet               |
 
 ```yaml
 # e.g. when your checks go by other names:
 verify_commands: |
   npm run check
   npm run test:unit
+
+# e.g. dependencies you have decided not to update:
+ignore: |
+  left-pad
+  lru-cache@11
 ```
 
 The remaining inputs (`llm_api_key_env`, `github_token`, `base_branch`,
@@ -171,6 +177,43 @@ Details worth knowing:
   `depvisor/major-foo` PR. The earlier PR is not closed automatically — close
   or merge it yourself, since it counts against `max_prs` until you do.
 
+### Ignoring packages (`ignore`)
+
+Some updates you simply do not want depvisor to keep trying: a major that clashes
+with your Node version, a dependency that went commercial, a version you have
+intentionally pinned. Without a way to say so, that dependency resurfaces every
+scheduled run and burns an agent investigation only to fail or defer again. The
+`ignore` input is the permanent, human-decided exclusion (Dependabot's `ignore`):
+
+```yaml
+ignore: |
+  left-pad
+  lru-cache@11
+```
+
+(`left-pad` is never updated; `lru-cache` keeps updating, just not to the `11.x`
+major — comments are not supported inside `ignore`, since each line is parsed
+verbatim as `name` or `name@<major>`.)
+
+Details worth knowing:
+
+- **Deterministic and pre-agent**: ignored packages are dropped right after the
+  outdated scan — before the cooldown, grouping, and any AI — so they cost no
+  LLM call.
+- **Trusted config only**: like `verify_commands`, `ignore` is read from the
+  workflow file, never from the (agent-writable) target repository.
+- **Ordering vs the cooldown**: `name@<major>` matches the registry's latest
+  major. If `minimum_release_age` would clamp that major down to an older one
+  anyway, the update was never going to that major, so the rule conservatively
+  drops it a run early rather than letting it slip through.
+- **Existing PRs are left alone**: adding a package to `ignore` does not close a
+  PR depvisor already opened for it — close or merge it yourself, since it
+  counts against `max_prs` until you do. (An `ignore` rule that only removes one
+  member of a grouped PR, like `dev-minor`, refreshes that PR to drop the
+  package.)
+- **Typos fail loudly**: an unrecognized entry stops the run with `bad-ignore`
+  rather than silently ignoring nothing.
+
 By default depvisor keeps at most one open PR at a time. Raise `max_prs` to let a
 single run open several PRs — one per dependency group — up to that many open
 depvisor PRs at once. It fills empty slots as you merge or close existing PRs, and
@@ -192,9 +235,9 @@ why no PR was opened. Updates the `minimum_release_age` cooldown clamped or held
 back are likewise normal operation: they stay green and are listed in the run
 summary. Outcomes that need attention (`baseline-red`, `reset-failed`,
 `no-verify-scripts`, `missing-base`, `scope-violation`, `verification-failed`,
-`reinstall-unavailable`, `release-age-unavailable`, `open-pr-failed`, and similar
-fail-closed stops) fail the job so they are not missed in scheduled runs — a run
-stays red if any of its groups failed.
+`reinstall-unavailable`, `release-age-unavailable`, `bad-ignore`, `open-pr-failed`,
+and similar fail-closed stops) fail the job so they are not missed in scheduled
+runs — a run stays red if any of its groups failed.
 
 The step summary has a section per group depvisor touched, each with its branch,
 package version table, verification results, and the PR URL when one was created

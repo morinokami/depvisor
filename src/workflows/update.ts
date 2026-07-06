@@ -13,6 +13,7 @@ import {
   type Packument,
 } from "../core/release-age.ts";
 import { detectPersistedCredentials, persistedCredentialsSummary } from "../core/credentials.ts";
+import { applyIgnore, describeIgnore, parseIgnore } from "../core/ignore.ts";
 import { groupCandidates } from "../core/grouping.ts";
 import { runInstall } from "../core/install.ts";
 import { detectPackageManager, type PmToolchain } from "../core/pm.ts";
@@ -82,6 +83,10 @@ const MAX_PRS_RAW = process.env.DEPVISOR_MAX_PRS || "";
 // before depvisor updates to it — the supply-chain cooldown (core/release-age.ts).
 // Empty = unset = 1; "0" disables it.
 const MIN_RELEASE_AGE_RAW = process.env.DEPVISOR_MIN_RELEASE_AGE || "";
+// Newline-separated ignore rules (`name` or `name@<major>`) that drop candidates
+// before grouping — the human-decided permanent counterpart to defer. From
+// workflow config, never the agent-writable target tree (like verify_commands).
+const IGNORE_RAW = process.env.DEPVISOR_IGNORE || "";
 // The install_command input, forwarded for the group-boundary reset: a custom
 // command is reused verbatim; `auto`/`skip`/unset fall back to the PM's
 // lockfile-faithful install (`skip` skips only the pre-agent install step, not
@@ -291,6 +296,19 @@ export default defineWorkflow({
         groups: [],
       });
     }
+    const ignore = parseIgnore(IGNORE_RAW);
+    if (!ignore.ok) {
+      return finish({
+        status: "bad-ignore",
+        base,
+        summary:
+          `The ignore input has ${ignore.invalid.length} unrecognized ` +
+          `${ignore.invalid.length === 1 ? "entry" : "entries"}: ${ignore.invalid.join(", ")}. ` +
+          "Each line must be 'name' (never update it) or 'name@<major>' (skip updates to " +
+          "that major); full version ranges and update-type rules are not supported yet.",
+        groups: [],
+      });
+    }
     const resetCommand = resolveResetCommand(pm, REPO, INSTALL_COMMAND);
     log.info(
       `preflight ok: pm=${pm.name}, base=${base}, max_prs=${maxPrs}, ` +
@@ -303,12 +321,20 @@ export default defineWorkflow({
     //    a candidate's latest AND updateType, and grouping (branch/PR identity)
     //    depends on updateType, so it must run before groups are formed.
     const collected = collectCandidates(REPO, pm);
+    // Ignore runs first — before the cooldown clamp and grouping — so a
+    // human-excluded package never costs a packument fetch, an agent run, or a
+    // spurious red release-age-unavailable entry. A `name@<major>` rule matches
+    // the raw registry latest here (see core/ignore.ts).
+    const { kept: notIgnored, ignored } = applyIgnore(collected, ignore.rules);
+    const ignoreNote = describeIgnore(ignored);
+    if (ignoreNote) log.info(ignoreNote);
+
     const packuments = new Map<string, Packument | null>();
-    let candidates = collected;
+    let candidates = notIgnored;
     let releaseAgeNote = "";
     let releaseAgeUnavailable: typeof collected = [];
-    if (minReleaseAge > 0 && collected.length > 0) {
-      const aged = await applyReleaseAge(collected, minReleaseAge, { packuments });
+    if (minReleaseAge > 0 && notIgnored.length > 0) {
+      const aged = await applyReleaseAge(notIgnored, minReleaseAge, { packuments });
       candidates = aged.kept;
       releaseAgeUnavailable = aged.unavailable;
       releaseAgeNote = describeReleaseAge(aged, minReleaseAge);
@@ -316,11 +342,12 @@ export default defineWorkflow({
     }
     const groups = groupCandidates(candidates);
     if (groups.length === 0 && releaseAgeUnavailable.length === 0) {
+      const notes = [ignoreNote, releaseAgeNote].filter(Boolean).join(" ");
       return finish({
         status: "no-updates",
         base,
-        summary: releaseAgeNote
-          ? `No update groups to process. ${releaseAgeNote}`
+        summary: notes
+          ? `No update groups to process. ${notes}`
           : "No outdated dependencies found.",
         groups: [],
       });
