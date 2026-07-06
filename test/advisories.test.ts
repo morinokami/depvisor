@@ -281,6 +281,43 @@ test("fetchAdvisories does not promote an advisory with no GHSA (nothing the PR 
   assert.equal(result.resolvedByPackage.has("lodash"), false);
 });
 
+test("fetchAdvisories checks every workspace current, not just the merged lowest", async () => {
+  // foo is at 1.0.0 in one workspace and 2.1.0 in another (merged current = the
+  // lowest, 1.0.0). The advisory affects [2.0.0, 2.2.0): the 1.0.0 workspace is
+  // clean, but the 2.1.0 one is vulnerable and updating to 2.2.0 resolves it.
+  // Probing only the lowest 1.0.0 would miss this entirely.
+  const vuln: OsvVuln = {
+    id: "GHSA-aaaa-bbbb-cccc",
+    affected: [
+      {
+        package: { ecosystem: "npm", name: "foo" },
+        ranges: [{ type: "SEMVER", events: [{ introduced: "2.0.0" }, { fixed: "2.2.0" }] }],
+      },
+    ],
+  };
+  const affected = (version: string): boolean => version === "2.1.0"; // only this current is in range
+  const impl = async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    if (u.endsWith("/v1/querybatch")) {
+      const queries = (body.queries ?? []) as { version: string }[];
+      return jsonResponse({
+        results: queries.map((q) => (affected(q.version) ? { vulns: [{ id: vuln.id }] } : {})),
+      });
+    }
+    const version = (body as { version: string }).version;
+    return jsonResponse({ vulns: affected(version) ? [vuln] : [] });
+  };
+  const result = await fetchAdvisories(
+    [cand({ name: "foo", current: "1.0.0", latest: "2.2.0", currents: ["1.0.0", "2.1.0"] })],
+    { fetch: impl as typeof fetch },
+  );
+  assert.deepEqual([...(result.resolvedByPackage.get("foo") ?? [])], ["GHSA-aaaa-bbbb-cccc"]);
+});
+
 test("fetchAdvisories is fail-soft: a querybatch failure yields ok:false and neutral order", async () => {
   const failing = (async () => {
     throw new Error("egress blocked");

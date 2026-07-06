@@ -218,14 +218,24 @@ export interface AdvisoryResult {
   ok: boolean;
 }
 
+/** Distinct `current` versions to probe for a candidate (Candidate.currents, or its lowest). */
+function candidateCurrents(c: Candidate): string[] {
+  const cs = c.currents && c.currents.length > 0 ? c.currents : [c.current];
+  return [...new Set(cs.filter((v) => v.length > 0))];
+}
+
 /**
  * Look up advisories resolved by each candidate's update. Two fixed endpoints:
- * one `/v1/querybatch` triages every candidate at its CURRENT version (returns
- * ids only), then only the packages that have an advisory are fetched in full
- * via `/v1/query` (affected ranges included) and evaluated against both current
- * and post-clamp latest. Fail-soft throughout: a querybatch failure yields
- * `ok:false` (neutral order); a single package's `/v1/query` failure just leaves
- * that package unpromoted.
+ * one `/v1/querybatch` triages every candidate at EACH of its declared
+ * `current` versions (returns ids only), then the (name, current) pairs that
+ * have an advisory are fetched in full via `/v1/query` (affected ranges
+ * included) and evaluated — that current is affected AND the post-clamp latest
+ * is not. Probing every workspace-current, not just the lowest, is what stops a
+ * vulnerability that only a higher-versioned workspace carries from being hidden
+ * behind the merged lowest. Fail-soft: a querybatch failure OR any flagged
+ * pair's `/v1/query` failure/malformed shape yields `ok:false` + empty map (the
+ * workflow logs it and keeps the neutral order) — never a quiet success on a
+ * partial snapshot.
  */
 export async function fetchAdvisories(
   candidates: readonly Candidate[],
@@ -235,41 +245,41 @@ export async function fetchAdvisories(
   // 'unknown'-typed candidates are never grouped/updated, so they cannot be
   // promoted; skip them (and their query cost).
   const updatable = candidates.filter((c) => c.updateType !== "unknown");
-  if (updatable.length === 0) return { resolvedByPackage, ok: true };
+  // One probe per (candidate, distinct current) — usually one current per
+  // candidate; workspace monorepos can declare several.
+  const probes = updatable.flatMap((c) => candidateCurrents(c).map((current) => ({ c, current })));
+  if (probes.length === 0) return { resolvedByPackage, ok: true };
   const doFetch = opts.fetch ?? fetch;
   const signal = opts.signal;
 
-  // 1. Triage: one querybatch for every candidate at its CURRENT version.
+  // 1. Triage: one querybatch over every probe.
   const batch = await osvPost(
     doFetch,
     "/v1/querybatch",
     {
-      queries: updatable.map((c) => ({
-        package: { ecosystem: "npm", name: c.name },
-        version: c.current,
+      queries: probes.map((p) => ({
+        package: { ecosystem: "npm", name: p.c.name },
+        version: p.current,
       })),
     },
     signal,
   );
   const results = isRecord(batch) && Array.isArray(batch.results) ? batch.results : null;
   if (!results) return { resolvedByPackage, ok: false };
-  const vulnerable = updatable.filter((_, i) => {
+  const hot = probes.filter((_, i) => {
     const r = results[i];
     return isRecord(r) && Array.isArray(r.vulns) && r.vulns.length > 0;
   });
 
-  // 2. Full fetch per vulnerable package; evaluate current vs post-clamp latest.
-  //    A full query that fails or is malformed leaves the OSV snapshot
-  //    incomplete for a package querybatch already flagged as vulnerable.
-  //    Ordering on a partial snapshot would silently mis-rank the max_prs slots,
-  //    so — matching the fail-soft "on any lookup failure use the neutral order
-  //    and log" rule — bail to ok:false + empty map instead of a quiet success.
-  const perPackage = await Promise.all(
-    vulnerable.map(async (c) => {
+  // 2. Full fetch per flagged (name, current) pair; evaluate that current vs the
+  //    post-clamp latest. A failure/malformed shape here bails to ok:false (see
+  //    the doc above) rather than ordering on a partial snapshot.
+  const perProbe = await Promise.all(
+    hot.map(async ({ c, current }) => {
       const full = await osvPost(
         doFetch,
         "/v1/query",
-        { package: { ecosystem: "npm", name: c.name }, version: c.current },
+        { package: { ecosystem: "npm", name: c.name }, version: current },
         signal,
       );
       if (!isRecord(full) || !Array.isArray(full.vulns)) return null; // failed / malformed
@@ -279,17 +289,25 @@ export async function fetchAdvisories(
         // Count and display in GHSA terms; raw is guarded field-by-field inside
         // resolvesAdvisory.
         const ghsa = extractGhsa(raw);
-        if (ghsa && resolvesAdvisory(c.name, c.current, c.latest, raw as unknown as OsvVuln)) {
+        if (ghsa && resolvesAdvisory(c.name, current, c.latest, raw as unknown as OsvVuln)) {
           ids.push(ghsa);
         }
       }
-      return { name: c.name, ids: [...new Set(ids)].sort() };
+      return { name: c.name, ids };
     }),
   );
-  if (perPackage.some((r) => r === null)) return { resolvedByPackage: new Map(), ok: false };
-  for (const r of perPackage) {
-    if (r && r.ids.length > 0) resolvedByPackage.set(r.name, r.ids);
+  if (perProbe.some((r) => r === null)) return { resolvedByPackage: new Map(), ok: false };
+
+  // Merge per package (a package with several affected workspace-currents yields
+  // several probes), deduping ids.
+  const idsByPackage = new Map<string, Set<string>>();
+  for (const r of perProbe) {
+    if (!r || r.ids.length === 0) continue;
+    const set = idsByPackage.get(r.name) ?? new Set<string>();
+    for (const id of r.ids) set.add(id);
+    idsByPackage.set(r.name, set);
   }
+  for (const [name, set] of idsByPackage) resolvedByPackage.set(name, [...set].sort());
   return { resolvedByPackage, ok: true };
 }
 

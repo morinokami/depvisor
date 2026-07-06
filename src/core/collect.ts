@@ -101,6 +101,7 @@ export function parseOutdated(data: Record<string, unknown>): Candidate[] {
       kind,
       updateType: classifyUpdate(current, latest),
       locations: [...locations].sort(),
+      currents: [...new Set(currents)].sort(),
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -143,6 +144,9 @@ export function parsePnpmOutdated(data: Record<string, unknown>, repoPath: strin
       kind,
       updateType: classifyUpdate(current, latest),
       locations: [...locations].sort(),
+      // pnpm collapses cross-workspace occurrences behind its name-keyed JSON, so
+      // only the one reported current is known here.
+      currents: current ? [current] : [],
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -304,6 +308,7 @@ export function parseBunOutdated(raw: string, workspaces: Map<string, string>): 
       kind: acc.allDev ? "dev" : "prod",
       updateType: classifyUpdate(current, acc.latest),
       locations: [...acc.locations].sort(),
+      currents: [...new Set(acc.currents)].sort(),
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
