@@ -111,7 +111,7 @@ jobs:
 | `verify_commands`     | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                      |
 | `max_prs`             | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                    |
 | `minimum_release_age` | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1`, matching pnpm's `minimumReleaseAge`). `0` disables the cooldown — required for private-registry packages |
-| `ignore`              | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number. Full version ranges and update-type rules are not supported yet                |
+| `ignore`              | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number. Full version ranges and update-type rules are not supported yet               |
 
 ```yaml
 # e.g. when your checks go by other names:
