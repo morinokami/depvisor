@@ -10,6 +10,8 @@
  * throwing, so the agent can proceed without retrying blindly.
  */
 
+import { compareTriple, type Triple } from "./version-core.ts";
+
 const NPM_REGISTRY = "https://registry.npmjs.org";
 const GITHUB_API = "https://api.github.com";
 
@@ -56,23 +58,15 @@ export interface ReleaseNotesResult {
 }
 
 /**
- * End-anchored so a prerelease tag (`v11.0.0-beta.1`) never parses as its GA
- * version and lands in the window; monorepo-style `name@1.2.3` tags still
- * parse (we cannot tell whose without the tag convention, so their notes may
- * appear as bounded noise).
+ * End-anchored, unlike version-core.ts's loose parse, so a prerelease tag
+ * (`v11.0.0-beta.1`) never parses as its GA version and lands in the window;
+ * monorepo-style `name@1.2.3` tags still parse (we cannot tell whose without
+ * the tag convention, so their notes may appear as bounded noise).
  */
-function parseSemver(v: string): [number, number, number] | null {
+function parseSemver(v: string): Triple | null {
   const m = /(\d+)\.(\d+)\.(\d+)$/.exec(v);
   if (!m) return null;
   return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-function compareSemver(a: [number, number, number], b: [number, number, number]): number {
-  for (let i = 0; i < 3; i++) {
-    const d = (a[i] ?? 0) - (b[i] ?? 0);
-    if (d !== 0) return d;
-  }
-  return 0;
 }
 
 /**
@@ -129,18 +123,18 @@ export function selectReleases(releases: unknown, from: string, to: string): Rel
   const fromV = parseSemver(from);
   const toV = parseSemver(to);
 
-  const picked: { v: [number, number, number]; note: ReleaseNote }[] = [];
+  const picked: { v: Triple; note: ReleaseNote }[] = [];
   for (const r of releases as RawRelease[]) {
     if (r?.draft === true || r?.prerelease === true) continue;
     const tag = typeof r?.tag_name === "string" ? r.tag_name : "";
     const v = parseSemver(tag);
     if (!v) continue;
-    if (fromV && compareSemver(v, fromV) <= 0) continue;
-    if (toV && compareSemver(v, toV) > 0) continue;
+    if (fromV && compareTriple(v, fromV) <= 0) continue;
+    if (toV && compareTriple(v, toV) > 0) continue;
     const body = typeof r?.body === "string" ? r.body : "";
     picked.push({ v, note: { version: tag.replace(/^v/, ""), notes: sanitizeReleaseText(body) } });
   }
-  picked.sort((a, b) => compareSemver(b.v, a.v));
+  picked.sort((a, b) => compareTriple(b.v, a.v));
   return picked.slice(0, MAX_RELEASES).map((p) => p.note);
 }
 

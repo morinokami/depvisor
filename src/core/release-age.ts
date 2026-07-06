@@ -1,6 +1,7 @@
 import { isValidNpmName } from "./changelog.ts";
 import { classifyUpdate } from "./collect.ts";
 import type { Candidate, UpdateType } from "./types.ts";
+import { compareTriple, parseVersionCore, type Triple } from "./version-core.ts";
 
 /**
  * The minimum_release_age cooldown: a deterministic, LLM-free supply-chain
@@ -105,27 +106,15 @@ export function versionTimes(packument: Packument): Map<string, number> {
   return out;
 }
 
-type Triple = [number, number, number];
-
 // Stable-only, fully anchored: the clamp set must never contain a prerelease —
-// `2.0.0-rc.1` and `2.0.0` share an x.y.z core, so the core comparator below
-// cannot order them. The loose core parse is used only for the current/latest
+// `2.0.0-rc.1` and `2.0.0` share an x.y.z core, so the core comparator cannot
+// order them. The loose `parseVersionCore` is used only for the current/latest
 // BOUNDS, matching how collect.ts classifies (a prerelease `latest` bounds the
 // clamp set by its core).
 function parseStable(v: string): Triple | null {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
   if (!m) return null;
   return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-function parseCore(v: string): Triple | null {
-  const m = /(\d+)\.(\d+)\.(\d+)/.exec(v);
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-function compareTriple(a: Triple, b: Triple): number {
-  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
 export type ClampDecision =
@@ -153,8 +142,8 @@ export function clampCandidate(
   const minMs = minDays * DAY_MS;
   const isMature = (t: number | undefined): t is number => t !== undefined && nowMs - t >= minMs;
   if (isMature(times.get(candidate.latest))) return { action: "keep" };
-  const cur = parseCore(candidate.current);
-  const lat = parseCore(candidate.latest);
+  const cur = parseVersionCore(candidate.current);
+  const lat = parseVersionCore(candidate.latest);
   // Unparseable bounds cannot be clamped against. Candidates like these are
   // 'unknown'-typed and applyReleaseAge passes them through before calling
   // here; this is only a defensive backstop.

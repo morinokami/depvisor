@@ -3,17 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { PmToolchain } from "./pm.ts";
 import type { Candidate, DepKind, UpdateType } from "./types.ts";
-
-// Deliberately unanchored, unlike changelog.ts's end-anchored parseSemver
-// (which must keep prerelease tags out of release-note windows): `outdated`
-// reports the `latest` dist-tag verbatim, and when a maintainer points it at a
-// prerelease (e.g. 2.0.0-rc.1) that exact string is what the update installs,
-// so it still classifies from its x.y.z core instead of being dropped.
-function parseVersion(v: string): [number, number, number] | null {
-  const m = /(\d+)\.(\d+)\.(\d+)/.exec(v ?? "");
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
+import { compareTriple, parseVersionCore, type Triple } from "./version-core.ts";
 
 /**
  * The lowest of several `current` versions — used when one dependency is
@@ -25,20 +15,16 @@ function parseVersion(v: string): [number, number, number] | null {
  */
 function lowestVersion(versions: string[]): string {
   let lowest: string | undefined;
-  let lowestParsed: [number, number, number] | undefined;
+  let lowestParsed: Triple | undefined;
   for (const v of versions) {
-    const p = parseVersion(v);
+    const p = parseVersionCore(v);
     if (!p) continue;
-    if (!lowestParsed || compareVersion(p, lowestParsed) < 0) {
+    if (!lowestParsed || compareTriple(p, lowestParsed) < 0) {
       lowest = v;
       lowestParsed = p;
     }
   }
   return lowest ?? versions[0] ?? "";
-}
-
-function compareVersion(a: [number, number, number], b: [number, number, number]): number {
-  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
 /** An absolute workspace path relativized against the repo root; root → "". */
@@ -55,8 +41,8 @@ function relativeLocation(repoPath: string, location: string | undefined): strin
  * grouping excludes 'unknown' candidates from agent work.
  */
 export function classifyUpdate(current: string, latest: string): UpdateType {
-  const c = parseVersion(current);
-  const l = parseVersion(latest);
+  const c = parseVersionCore(current);
+  const l = parseVersionCore(latest);
   if (!c || !l) return "unknown";
   if (l[0] > c[0]) return "major";
   if (l[0] === c[0] && l[1] > c[1]) return "minor";

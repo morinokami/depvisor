@@ -1,4 +1,5 @@
 import type { Candidate, Group } from "./types.ts";
+import { compareTriple, type Triple } from "./version-core.ts";
 
 /**
  * Security prioritization (deterministic, LLM-free, unit-tested): query OSV.dev
@@ -25,23 +26,18 @@ const OSV_API = "https://api.osv.dev";
 // the run, mirroring changelog.ts / release-age.ts.
 const FETCH_TIMEOUT_MS = 10_000;
 
-// --- version comparison, release-age.ts's parseCore/compareTriple in spirit ---
 // OSV SEMVER boundaries are concrete versions ("4.18.0") or the "0" sentinel
 // (the very first version), NEVER npm range expressions ("^4.0.0"), so ordering
 // needs only version COMPARISON — no range parser, no semver library. Prerelease
 // suffixes collapse to their x.y.z core, the same limitation release-age.ts
 // already accepts; here it fails toward "still affected", i.e. no promotion.
-type Triple = [number, number, number];
-
-function parseCore(v: string): Triple | null {
+// Start-anchored, unlike version-core.ts's loose parse: OSV boundaries are bare
+// versions, never tags, so a leading-garbage string is unparseable on purpose.
+function parseOsvVersion(v: string): Triple | null {
   if (v === "0") return [0, 0, 0]; // OSV sentinel: introduced at the beginning
   const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
   if (!m) return null;
   return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-function compareCore(a: Triple, b: Triple): number {
-  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -118,15 +114,15 @@ function rangeAffects(core: Triple, range: OsvRange): boolean | null {
     } else {
       continue;
     }
-    const c = parseCore(raw);
+    const c = parseOsvVersion(raw);
     if (!c) return null; // unparseable boundary → cannot decide
     boundaries.push({ kind, core: c });
   }
   if (boundaries.length === 0) return null;
-  boundaries.sort((a, b) => compareCore(a.core, b.core));
+  boundaries.sort((a, b) => compareTriple(a.core, b.core));
   let affected = false;
   for (const b of boundaries) {
-    const cmp = compareCore(core, b.core);
+    const cmp = compareTriple(core, b.core);
     if (b.kind === "introduced") {
       if (cmp >= 0) affected = true;
     } else if (b.kind === "fixed") {
@@ -146,7 +142,7 @@ function rangeAffects(core: Triple, range: OsvRange): boolean | null {
  * so the caller fails toward "still affected".
  */
 function versionAffected(name: string, version: string, vuln: OsvVuln): boolean | null {
-  const core = parseCore(version);
+  const core = parseOsvVersion(version);
   if (!core) return null;
   let sawUnknown = false;
   for (const a of Array.isArray(vuln.affected) ? vuln.affected : []) {

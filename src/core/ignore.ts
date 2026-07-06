@@ -1,5 +1,6 @@
 import { isValidNpmName } from "./changelog.ts";
 import type { Candidate } from "./types.ts";
+import { parseVersionCore } from "./version-core.ts";
 
 /**
  * The ignore policy: a deterministic, LLM-free filter applied right after
@@ -39,10 +40,9 @@ export interface IgnoreRule {
 
 export type ParsedIgnore = { ok: true; rules: IgnoreRule[] } | { ok: false; invalid: string[] };
 
-/** The leading major of an x.y.z core, matching collect.ts's unanchored parse. */
+/** The leading major of an x.y.z core, matching collect.ts's loose parse. */
 function latestMajor(version: string): number | null {
-  const m = /(\d+)\.(\d+)\.(\d+)/.exec(version);
-  return m ? Number(m[1]) : null;
+  return parseVersionCore(version)?.[0] ?? null;
 }
 
 /**
