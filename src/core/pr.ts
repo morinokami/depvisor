@@ -1,7 +1,9 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isValidNpmName } from "./changelog.ts";
+import type { NumstatEntry } from "./git.ts";
 import { RUN_STATUS_FILE } from "./status-file.ts";
+import { formatNumstatLines } from "./test-changes.ts";
 import type { Candidate, UpdateNarrative } from "./types.ts";
 import type { VerifyResult } from "./verify.ts";
 
@@ -215,6 +217,50 @@ function linksCell(c: Candidate, slug: string | null | undefined): string {
   return links.join(" · ");
 }
 
+// Diff paths come from git and may hold any byte a filename can (spaces,
+// backticks, brackets — all observed in real `git diff` output). The exit
+// sanitizer leaves code spans and markdown links intact, so an unvalidated path
+// could break out of its code span; only paths within this conservative charset
+// are embedded, matching packageCell/linksCell's strict-parts stance. Others are
+// dropped from the listing (but still counted, so nothing is hidden).
+const SAFE_PATH_RE = /^[A-Za-z0-9 @._/-]+$/;
+
+/** Whether a repo path is safe to embed in a markdown code span / table cell. */
+export function isDisplayablePath(path: string): boolean {
+  return SAFE_PATH_RE.test(path);
+}
+
+/**
+ * A warning section listing test-looking files the agent changed. The scope
+ * gate cannot deny tests (a poisoned agent can weaken assertions the same way an
+ * honest update adapts them — see core/test-changes.ts), so this raises review
+ * attention where the verification gate cannot vouch. Only charset-safe paths
+ * are listed; any dropped for unsafe names are still counted, and the wording
+ * never implies that an empty section on other PRs proves no test was touched.
+ */
+function testChangesSection(changes: readonly NumstatEntry[]): string {
+  if (changes.length === 0) return "";
+  const safe = changes.filter((c) => isDisplayablePath(c.path));
+  const omitted = changes.length - safe.length;
+  const rows = safe.map((c) => `| \`${c.path}\` | ${formatNumstatLines(c)} |`);
+  const table = rows.length > 0 ? ["| File | Lines |", "|---|---|", ...rows].join("\n") : "";
+  const omittedNote =
+    omitted > 0
+      ? `\n\n_${omitted} changed test file(s) with names that cannot be safely displayed were omitted from the list above._`
+      : "";
+  return (
+    "## ⚠️ Tests were modified by the agent\n\n" +
+    `The agent changed ${changes.length} file(s) that look like tests while adapting this ` +
+    "update. Adapting tests to a changed API is often legitimate, but it can also weaken the " +
+    "checks that verified this PR — please review these diffs with extra care. Detection is " +
+    "heuristic (common naming conventions only); an empty section on other PRs is not a " +
+    "guarantee that no test was touched.\n\n" +
+    table +
+    omittedNote +
+    "\n\n"
+  );
+}
+
 /**
  * Assemble the PR payload from deterministic data plus the agent's structured
  * narrative. Every narrative field is untrusted and sanitized field-by-field.
@@ -227,10 +273,21 @@ export function buildPrPayload(args: {
   sourceRepos?: ReadonlyMap<string, string | null>;
   /** Package name → advisory ids the update resolves; adds a Security column. */
   advisories?: ReadonlyMap<string, string[]>;
+  /** Test-looking files the agent changed; non-empty adds a warning section. */
+  testChanges?: readonly NumstatEntry[];
   narrative: UpdateNarrative;
   verification: VerifyResult[];
 }): PrPayload {
-  const { branch, base, candidates, sourceRepos, advisories, narrative, verification } = args;
+  const {
+    branch,
+    base,
+    candidates,
+    sourceRepos,
+    advisories,
+    testChanges,
+    narrative,
+    verification,
+  } = args;
 
   const title =
     candidates.length <= 3
@@ -274,7 +331,7 @@ export function buildPrPayload(args: {
     "",
     versionTable,
     "",
-    "## What changed",
+    testChangesSection(testChanges ?? []) + "## What changed",
     "",
     sanitizeSummary(narrative.summary),
     "",

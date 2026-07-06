@@ -379,6 +379,75 @@ test("clearPrPreview removes stale payloads and the status file before a run", (
   clearPrPreview(dir);
 });
 
+test("buildPrPayload omits the test-changes warning when no tests changed", () => {
+  const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const withoutArg = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates,
+    narrative: narrative("Bump."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  const withEmpty = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates,
+    testChanges: [],
+    narrative: narrative("Bump."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(!withoutArg.body.includes("Tests were modified"));
+  assert.ok(!withEmpty.body.includes("Tests were modified"));
+});
+
+test("buildPrPayload warns when the agent changed test files", () => {
+  const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const p = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates,
+    testChanges: [
+      { path: "test/cache.test.ts", added: 3, removed: 12 },
+      { path: "src/__snapshots__/x.bin", added: null, removed: null },
+    ],
+    narrative: narrative("Bump lru-cache."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(p.body.includes("## ⚠️ Tests were modified by the agent"));
+  assert.ok(p.body.includes("changed 2 file(s) that look like tests"));
+  assert.ok(p.body.includes("| `test/cache.test.ts` | +3 / -12 |"));
+  assert.ok(p.body.includes("| `src/__snapshots__/x.bin` | binary |"));
+  // Honesty: an empty section elsewhere must not read as a guarantee.
+  assert.ok(p.body.includes("not a guarantee that no test was touched"));
+  // The warning sits above "What changed" so reviewers see it first.
+  assert.ok(p.body.indexOf("Tests were modified") < p.body.indexOf("## What changed"));
+  // And it survives the exit re-sanitize unbroken (code spans preserved).
+  assert.ok(sanitizePrBody(p.body).includes("| `test/cache.test.ts` | +3 / -12 |"));
+});
+
+test("buildPrPayload drops unsafe test paths from the list but still counts them", () => {
+  const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const p = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates,
+    // A backtick in the name would break out of a code span; it must not be embedded.
+    testChanges: [
+      { path: "test/ok.test.ts", added: 1, removed: 0 },
+      { path: "test/ev`il.test.ts", added: 99, removed: 0 },
+    ],
+    narrative: narrative("Bump."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  const clean = sanitizePrBody(p.body);
+  // The count reflects both files, but only the safe one is listed.
+  assert.ok(clean.includes("changed 2 file(s) that look like tests"));
+  assert.ok(clean.includes("| `test/ok.test.ts` | +1 / -0 |"));
+  assert.ok(clean.includes("1 changed test file(s) with names that cannot be safely displayed"));
+  // The dangerous raw path never reaches the rendered body.
+  assert.ok(!clean.includes("ev`il"));
+});
+
 test("buildPrPayload renders notable changes only for packages in the update", () => {
   const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
   const p = buildPrPayload({

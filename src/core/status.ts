@@ -1,8 +1,10 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
-import { sanitizeSummary } from "./pr.ts";
+import type { NumstatEntry } from "./git.ts";
+import { isDisplayablePath, sanitizeSummary } from "./pr.ts";
 import { RUN_STATUS_FILE } from "./status-file.ts";
+import { formatNumstatLines } from "./test-changes.ts";
 import type { Candidate } from "./types.ts";
 import type { VerifyResult } from "./verify.ts";
 
@@ -24,6 +26,12 @@ export interface GroupResult {
   summary: string;
   packages: StatusPackage[];
   verification: VerifyResult[];
+  /**
+   * Test-looking files the agent changed while adapting this update (visibility,
+   * not a gate — see core/test-changes.ts). Optional/absent when none changed;
+   * record-only, so it is deliberately NOT in RUN_OUTPUT_SCHEMA below.
+   */
+  testChanges?: NumstatEntry[];
   prUrl: string | null;
 }
 
@@ -106,7 +114,7 @@ export function emitRunStatus(outDir: string, status: RunStatus): string {
 }
 
 function parseGroup(raw: Partial<GroupResult>): GroupResult {
-  return {
+  const group: GroupResult = {
     status: String(raw.status ?? "unknown"),
     branch: typeof raw.branch === "string" ? raw.branch : null,
     group: typeof raw.group === "string" ? raw.group : null,
@@ -115,6 +123,13 @@ function parseGroup(raw: Partial<GroupResult>): GroupResult {
     verification: Array.isArray(raw.verification) ? (raw.verification as VerifyResult[]) : [],
     prUrl: typeof raw.prUrl === "string" ? raw.prUrl : null,
   };
+  // Preserve testChanges across the open-pr read→rewrite round-trip; parseGroup
+  // rebuilds the object field-by-field, so an omitted field would be silently
+  // dropped when open-pr patches the PR URL back in.
+  if (Array.isArray(raw.testChanges) && raw.testChanges.length > 0) {
+    group.testChanges = raw.testChanges as NumstatEntry[];
+  }
+  return group;
 }
 
 export function readRunStatus(file: string): RunStatus | null {
@@ -232,6 +247,25 @@ function verificationTable(results: VerifyResult[]): string {
   ].join("\n");
 }
 
+/**
+ * A step-summary block flagging test files the agent changed, so a maintainer
+ * sees it in the Actions UI before the PR is even opened. Paths are charset-
+ * validated (`isDisplayablePath`) before embedding, exactly like the PR body;
+ * any dropped for unsafe names are still counted.
+ */
+function testChangesTable(changes: NumstatEntry[]): string {
+  if (changes.length === 0) return "";
+  const safe = changes.filter((c) => isDisplayablePath(c.path));
+  const omitted = changes.length - safe.length;
+  const rows = safe.map((c) => `| \`${c.path}\` | ${formatNumstatLines(c)} |`);
+  return [
+    `#### ⚠️ Tests modified by the agent (${changes.length})`,
+    "",
+    ...(rows.length > 0 ? ["| File | Lines |", "|---|---|", ...rows, ""] : []),
+    ...(omitted > 0 ? [`_${omitted} file(s) with unsafe names omitted._`, ""] : []),
+  ].join("\n");
+}
+
 function renderGroup(group: GroupResult): string {
   const heading = `### Group \`${mdCell(group.group ?? "?")}\` — \`${mdCell(group.status)}\``;
   const rows = [`| Branch | ${group.branch ? `\`${mdCell(group.branch)}\`` : "none"} |`];
@@ -247,6 +281,7 @@ function renderGroup(group: GroupResult): string {
     "",
     packageTable(group.packages),
     verificationTable(group.verification),
+    testChangesTable(group.testChanges ?? []),
   ]
     .filter((part) => part !== "")
     .join("\n");

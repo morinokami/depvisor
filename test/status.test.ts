@@ -147,6 +147,44 @@ test("updateGroupStatus can flip a single group to a failed open-pr outcome", ()
   assert.equal(runFailsJob(patched as RunStatus), true);
 });
 
+test("testChanges survives the open-pr read/rewrite round-trip (parseGroup preserves it)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
+  const file = emitRunStatus(
+    dir,
+    run({
+      groups: [group({ testChanges: [{ path: "test/a.test.ts", added: 2, removed: 9 }] })],
+    }),
+  );
+  // open-pr patches the PR URL back in via read → rewrite; testChanges must not
+  // be dropped by parseGroup when that happens.
+  updateGroupStatus(file, "depvisor/dev-minor", { prUrl: "https://github.com/o/r/pull/9" });
+  const g = readRunStatus(file)?.groups[0];
+  assert.equal(g?.prUrl, "https://github.com/o/r/pull/9");
+  assert.deepEqual(g?.testChanges, [{ path: "test/a.test.ts", added: 2, removed: 9 }]);
+});
+
+test("step summary surfaces a test-changes warning, validating and counting unsafe paths", () => {
+  const summary = renderStepSummary(
+    run({
+      groups: [
+        group({
+          testChanges: [
+            { path: "test/a.test.ts", added: 2, removed: 9 },
+            { path: "snap.bin", added: null, removed: null },
+            { path: "test/ev`il.test.ts", added: 1, removed: 0 },
+          ],
+        }),
+      ],
+    }),
+  );
+  assert.ok(summary.includes("#### ⚠️ Tests modified by the agent (3)"));
+  assert.ok(summary.includes("| `test/a.test.ts` | +2 / -9 |"));
+  assert.ok(summary.includes("| `snap.bin` | binary |"));
+  // The backtick-bearing path is dropped from the list but still counted.
+  assert.ok(!summary.includes("ev`il"));
+  assert.ok(summary.includes("1 file(s) with unsafe names omitted"));
+});
+
 test("step summary renders run header, per-group sections, and sanitizes agent text", () => {
   const summary = renderStepSummary(
     run({

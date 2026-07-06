@@ -182,6 +182,64 @@ export function changedPaths(repo: string): string[] {
   return paths;
 }
 
+/** Per-file line-change counts for a committed diff. */
+export interface NumstatEntry {
+  /** Repo-relative path (the destination path for renames). */
+  path: string;
+  /** Added lines, or null for binary files (git prints `-`). */
+  added: number | null;
+  /** Removed lines, or null for binary files. */
+  removed: number | null;
+}
+
+/**
+ * Per-file line counts for the committed diff `from..to`, parsed from
+ * `git diff --numstat -z`. `-z` is essential: it leaves paths unquoted/unmangled
+ * (so a filename with tabs, spaces, or backticks arrives verbatim) and gives
+ * renames an unambiguous shape. The `-z` records are:
+ *   - normal: `added\tremoved\tpath\0`
+ *   - binary: `-\t-\tpath\0`            (counts become null)
+ *   - rename: `added\tremoved\t\0old\0new\0`  (empty path, then two NUL fields; keep new)
+ * Goes through `run()` (not `git()`, which trims) so raw NULs survive, and
+ * throws on a non-zero exit so a failed diff cannot masquerade as "no changes".
+ */
+export function diffNumstat(repo: string, from: string, to: string): NumstatEntry[] {
+  const res = run(repo, ["diff", "--numstat", "-z", from, to]);
+  if (res.code !== 0) {
+    throw new GitError(`git diff --numstat ${from} ${to} failed (exit ${res.code}): ${res.err}`);
+  }
+  const tokens = res.out.split("\0");
+  const num = (s: string): number | null => (s === "-" ? null : Number(s));
+  const entries: NumstatEntry[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const head = tokens[i] ?? "";
+    if (head === "") {
+      i += 1; // trailing NUL leaves a final empty token
+      continue;
+    }
+    const t1 = head.indexOf("\t");
+    const t2 = t1 === -1 ? -1 : head.indexOf("\t", t1 + 1);
+    if (t1 === -1 || t2 === -1) {
+      i += 1; // malformed record; skip defensively rather than mis-slice
+      continue;
+    }
+    const added = num(head.slice(0, t1));
+    const removed = num(head.slice(t1 + 1, t2));
+    const inlinePath = head.slice(t2 + 1);
+    if (inlinePath === "") {
+      // Rename: the next two NUL fields are old and new; keep the destination.
+      const dest = tokens[i + 2] ?? "";
+      if (dest) entries.push({ path: dest, added, removed });
+      i += 3;
+    } else {
+      entries.push({ path: inlinePath, added, removed });
+      i += 1;
+    }
+  }
+  return entries;
+}
+
 function hasStaged(repo: string): boolean {
   return probe(repo, ["diff", "--cached", "--quiet"]).code !== 0;
 }
