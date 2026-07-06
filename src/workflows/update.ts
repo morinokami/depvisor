@@ -33,6 +33,7 @@ import {
   commitAll,
   commitPaths,
   currentBranch,
+  diffNumstat,
   discardWorkPast,
   ensureBranch,
   hasChanges,
@@ -53,6 +54,7 @@ import {
   versionsMarker,
 } from "../core/pr.ts";
 import { checkDiffScope } from "../core/scope.ts";
+import { classifyTestChanges } from "../core/test-changes.ts";
 import {
   emitRunStatus,
   groupLogLine,
@@ -711,6 +713,16 @@ export default defineWorkflow({
         commitAll(REPO, `fix: adapt code to ${pkgList} update`);
         log.info(`created deterministic commits for ${pkgList}`);
 
+        // Visibility (not a gate): classify the committed base..HEAD diff so the
+        // reviewer is warned when the agent touched tests — the one execution
+        // surface the scope gate cannot deny, because adapting tests to a changed
+        // API is legitimate (see core/test-changes.ts). Display only; nothing is
+        // gated on it and branch/PR identity is untouched.
+        const testChanges = classifyTestChanges(diffNumstat(REPO, base, "HEAD"));
+        if (testChanges.length > 0) {
+          log.info(`agent modified ${testChanges.length} test file(s); flagged in the PR body`);
+        }
+
         // Emit the PR payload. A separate token-holding step pushes and opens the
         // PR. Source repo resolution is optional; unresolved packages render
         // without releases/compare links. The release-age clamp already fetched
@@ -734,6 +746,7 @@ export default defineWorkflow({
           candidates: members,
           sourceRepos,
           advisories: advisories.resolvedByPackage,
+          testChanges,
           narrative: {
             summary,
             notableChanges: result.notable_changes,
@@ -753,6 +766,7 @@ export default defineWorkflow({
           packages,
           verification,
           prUrl: null,
+          ...(testChanges.length > 0 ? { testChanges } : {}),
         });
         // A newly prepared PR consumes a slot; refreshing an existing one does not.
         if (disposition === "open-new") newSlots -= 1;

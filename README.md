@@ -255,6 +255,26 @@ Details worth knowing:
   alphabetical order rather than failing the run. Private packages (absent from
   OSV) simply are not prioritized.
 
+### When the agent changes tests
+
+depvisor's confidence in an update rests on your checks passing — which only
+means something if the tests stayed as strong as they were before. But the agent
+sometimes has to touch tests legitimately (an updated dependency changes an API a
+test exercises), so depvisor cannot simply forbid test edits without blocking
+honest updates. Instead it makes them **visible**: after the update is committed,
+it classifies the diff, and if any changed file looks like a test it adds a
+**⚠️ Tests were modified by the agent** section to the PR body (and the Actions
+step summary) listing those files and their line counts. Nothing is blocked — the
+warning just points your review at the one place the automated gate cannot vouch
+for.
+
+Detection is heuristic, based on common naming conventions (`test/`, `__tests__/`,
+`*.test.*`, `*.spec.*`, and similar) rather than your test-runner's own config
+(which lives in the repo the agent can edit, and so cannot be trusted to define
+what counts as a test). An empty section is therefore not a guarantee that no test
+was touched — but on the vast majority of updates the agent changes no tests at
+all, and then no warning appears.
+
 ### Reading the Actions result
 
 depvisor writes a job summary and an annotation for every known outcome, at both
