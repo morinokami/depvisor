@@ -16,7 +16,15 @@ stays with you.
 
 ## Use it in your repository
 
-Add one workflow and one secret (your LLM API key):
+Using an AI coding agent (Claude Code, Cursor, Codex, …)? Paste this prompt and
+the agent will inspect your repository, tailor the workflow to it, and walk you
+through the rest:
+
+> Read https://raw.githubusercontent.com/morinokami/depvisor/main/start.md and
+> set up depvisor in this repository.
+
+Setting it up by hand instead: add one workflow and one secret (your LLM API
+key):
 
 ```yaml
 # .github/workflows/depvisor.yml

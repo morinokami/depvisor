@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-depvisor is an AI agent, shipped as a GitHub **composite action** (`action.yml`), that does what a human does to a Dependabot-style dependency-update PR: investigate, update, fix breakage, verify, and open the PR. Keep `README.md` in sync when behavior changes.
+depvisor is an AI agent, shipped as a GitHub **composite action** (`action.yml`), that does what a human does to a Dependabot-style dependency-update PR: investigate, update, fix breakage, verify, and open the PR. Keep `README.md` in sync when behavior changes — and `start.md` too: it is the agent-facing setup guide the README tells AI coding agents to fetch (by raw URL, so it must stay self-contained), and it duplicates the consumer workflow template, input names, and status names on purpose.
 
 **Whenever you change code, check whether this file (CLAUDE.md) is still accurate — commands, architecture, invariants, gotchas — and update it in the same change if not.**
 
