@@ -41,6 +41,10 @@ inputs:
     description: Minimum number of days a version must have been public on the npm registry before depvisor updates to it; "0" disables the cooldown.
     required: false
     default: "1"
+  minimum_release_age_exclude:
+    description: Newline-separated package names exempted from the minimum_release_age check — for private-registry packages the public npm registry cannot vouch for. Full-line "#" comments are allowed.
+    required: false
+    default: ""
   ignore:
     description: Newline-separated packages to never update; use "name" to skip a package entirely or "name@<major>" to skip only a specific major. Full-line "#" comments are allowed.
     required: false
@@ -129,6 +133,7 @@ runs:
         DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
         DEPVISOR_MAX_OPEN_PRS: ${{ inputs.max_open_prs }}
         DEPVISOR_MIN_RELEASE_AGE: ${{ inputs.minimum_release_age }}
+        DEPVISOR_MIN_RELEASE_AGE_EXCLUDE: ${{ inputs.minimum_release_age_exclude }}
         DEPVISOR_IGNORE: ${{ inputs.ignore }}
         # Forwarded for the reset between dependency groups: a custom command is
         # reused verbatim; "auto"/"skip" fall back to the PM's lockfile-faithful

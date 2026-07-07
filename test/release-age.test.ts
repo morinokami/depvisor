@@ -6,6 +6,7 @@ import {
   describeReleaseAge,
   fetchPackument,
   parseMinReleaseAge,
+  parseMinReleaseAgeExclude,
   versionTimes,
   type Packument,
 } from "../src/core/release-age.ts";
@@ -109,10 +110,10 @@ test("clampCandidate rounds an immature latest down to the newest mature stable 
   assert.deepEqual(got, { action: "clamp", latest: "1.5.1", updateType: "minor" });
 });
 
-test("clampCandidate excludes when nothing newer than current has matured", () => {
+test("clampCandidate holds back when nothing newer than current has matured", () => {
   const c = cand({ name: "a", current: "1.5.0", latest: "2.0.0" });
   const times = timesOf({ "1.4.0": 30, "1.5.0": 20, "2.0.0": 1 });
-  assert.deepEqual(clampCandidate(c, 7, NOW, times), { action: "exclude" });
+  assert.deepEqual(clampCandidate(c, 7, NOW, times), { action: "hold-back" });
 });
 
 test("clampCandidate never clamps past latest, even when the registry has newer versions", () => {
@@ -216,6 +217,7 @@ test("applyReleaseAge rewrites clamped candidates in place, in input order", asy
   );
   assert.deepEqual(result.clamped, [{ name: "fresh", from: "2.0.0", to: "1.2.0" }]);
   assert.equal(result.excluded.length, 0);
+  assert.equal(result.heldBack.length, 0);
   assert.equal(result.unavailable.length, 0);
 });
 
@@ -257,7 +259,7 @@ test("applyReleaseAge drops unverifiable candidates as unavailable (404 and netw
   );
 });
 
-test("applyReleaseAge excludes candidates whose only newer versions are still ripening", async () => {
+test("applyReleaseAge holds back candidates whose only newer versions are still ripening", async () => {
   const fetchImpl = stubFetch({
     "https://registry.npmjs.org/eager": () =>
       jsonResponse({
@@ -272,7 +274,7 @@ test("applyReleaseAge excludes candidates whose only newer versions are still ri
   );
   assert.equal(result.kept.length, 0);
   assert.deepEqual(
-    result.excluded.map((c) => c.name),
+    result.heldBack.map((c) => c.name),
     ["eager"],
   );
   assert.equal(result.unavailable.length, 0);
@@ -305,19 +307,20 @@ test("fetchPackument refuses invalid names without fetching", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("describeReleaseAge reports clamps, hold-backs, and drops; silent when nothing happened", () => {
+test("describeReleaseAge reports clamps, hold-backs, exclusions, and drops; silent when nothing happened", () => {
   assert.equal(
     describeReleaseAge(
-      { kept: [cand({ name: "a" })], clamped: [], excluded: [], unavailable: [] },
+      { kept: [cand({ name: "a" })], clamped: [], excluded: [], heldBack: [], unavailable: [] },
       1,
     ),
     "",
   );
   const note = describeReleaseAge(
     {
-      kept: [],
+      kept: [cand({ name: "@acme/internal" })],
       clamped: [{ name: "fresh", from: "2.0.0", to: "1.2.0" }],
-      excluded: [cand({ name: "eager", latest: "1.0.1" })],
+      excluded: [cand({ name: "@acme/internal" })],
+      heldBack: [cand({ name: "eager", latest: "1.0.1" })],
       unavailable: [cand({ name: "@acme/private" })],
     },
     7,
@@ -325,5 +328,72 @@ test("describeReleaseAge reports clamps, hold-backs, and drops; silent when noth
   assert.match(note, /minimum_release_age=7/);
   assert.match(note, /fresh to 1\.2\.0 \(latest 2\.0\.0 is too new\)/);
   assert.match(note, /held back eager 1\.0\.1/);
+  assert.match(note, /skipped the age check for @acme\/internal \(minimum_release_age_exclude\)/);
   assert.match(note, /dropped @acme\/private \(release age unverifiable\)/);
+});
+
+test("parseMinReleaseAgeExclude accepts names, skipping blanks and # comments", () => {
+  const parsed = parseMinReleaseAgeExclude(
+    "# private registry — npmjs cannot vouch for these\n@acme/internal\n\n  left-pad  \n@acme/internal\n",
+  );
+  assert.ok(parsed.ok);
+  assert.deepEqual([...parsed.exclude].sort(), ["@acme/internal", "left-pad"]);
+});
+
+test("parseMinReleaseAgeExclude returns an empty set for empty/whitespace input", () => {
+  for (const raw of ["", "   ", "\n\n"]) {
+    const parsed = parseMinReleaseAgeExclude(raw);
+    assert.ok(parsed.ok);
+    assert.equal(parsed.exclude.size, 0);
+  }
+});
+
+test("parseMinReleaseAgeExclude fails closed on majors, patterns, and invalid names", () => {
+  for (const raw of ["lru-cache@11", "@acme/*", "bad name", "../etc/passwd", "@"]) {
+    const parsed = parseMinReleaseAgeExclude(raw);
+    assert.ok(!parsed.ok, `expected failure for '${raw}'`);
+    assert.deepEqual(parsed.invalid, [raw.trim()]);
+  }
+  // One valid line does not rescue the input; every bad entry is reported.
+  const mixed = parseMinReleaseAgeExclude("good-name\npkg@2\n@scope/*");
+  assert.ok(!mixed.ok);
+  assert.deepEqual(mixed.invalid, ["pkg@2", "@scope/*"]);
+});
+
+test("applyReleaseAge passes excluded candidates through verbatim without fetching", async () => {
+  const calls: string[] = [];
+  // @acme/internal would 404 on npmjs (private registry) and fresh is too new:
+  // the exclusion must skip the fetch entirely — no spurious red — while the
+  // non-excluded candidate is still clamped as usual.
+  const fetchImpl = stubFetch(
+    {
+      "https://registry.npmjs.org/fresh": () =>
+        jsonResponse({
+          time: { "1.0.0": daysAgo(200), "1.2.0": daysAgo(30), "2.0.0": daysAgo(0.1) },
+          versions: { "1.0.0": {}, "1.2.0": {}, "2.0.0": {} },
+        }),
+    },
+    calls,
+  );
+  const result = await applyReleaseAge(
+    [
+      cand({ name: "@acme/internal", current: "1.0.0", latest: "1.1.0", updateType: "minor" }),
+      cand({ name: "fresh", current: "1.0.0", latest: "2.0.0", updateType: "major" }),
+    ],
+    7,
+    { fetch: fetchImpl, now: NOW, exclude: new Set(["@acme/internal"]) },
+  );
+  assert.deepEqual(
+    result.kept.map((c) => [c.name, c.latest, c.updateType]),
+    [
+      ["@acme/internal", "1.1.0", "minor"], // verbatim: no age check
+      ["fresh", "1.2.0", "minor"], // still clamped
+    ],
+  );
+  assert.deepEqual(
+    result.excluded.map((c) => c.name),
+    ["@acme/internal"],
+  );
+  assert.equal(result.unavailable.length, 0);
+  assert.deepEqual(calls, ["https://registry.npmjs.org/fresh"]);
 });

@@ -56,13 +56,13 @@ async function main(): Promise<void> {
     console.log(`\nApplying minimum release age of ${minReleaseAge} day(s) (npm registry)...`);
     const aged = await applyReleaseAge(candidates, minReleaseAge);
     for (const c of aged.clamped) console.log(`  clamped    ${c.name} ${c.from} → ${c.to}`);
-    for (const c of aged.excluded) {
+    for (const c of aged.heldBack) {
       console.log(`  held back  ${c.name} (no version newer than ${c.current} is old enough)`);
     }
     for (const c of aged.unavailable) {
       console.log(`  dropped    ${c.name} (release age unverifiable — the workflow reports red)`);
     }
-    if (aged.clamped.length + aged.excluded.length + aged.unavailable.length === 0) {
+    if (aged.clamped.length + aged.heldBack.length + aged.unavailable.length === 0) {
       console.log("  every candidate's latest is already mature");
     }
     candidates = aged.kept;
