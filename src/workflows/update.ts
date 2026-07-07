@@ -52,6 +52,7 @@ import {
   type Packument,
 } from "../core/release-age.ts";
 import { checkDiffScope } from "../core/scope.ts";
+import { parseSuggestFeatures } from "../core/suggest-features.ts";
 import {
   emitRunStatus,
   groupLogLine,
@@ -66,7 +67,7 @@ import {
   type RunStatus,
 } from "../core/status.ts";
 import { classifyTestChanges } from "../core/test-changes.ts";
-import type { Candidate } from "../core/types.ts";
+import type { Candidate, RelevantNewFeature } from "../core/types.ts";
 import {
   parseVerifyCommands,
   runVerification,
@@ -107,6 +108,12 @@ const MIN_RELEASE_AGE_EXCLUDE_RAW = process.env.DEPVISOR_MIN_RELEASE_AGE_EXCLUDE
 // before grouping — the human-decided permanent counterpart to defer. From
 // workflow config, never the agent-writable target tree (like verify_commands).
 const IGNORE_RAW = process.env.DEPVISOR_IGNORE || "";
+// Opt-in flag (empty/"false" = off, "true" = on, else bad-suggest-features): when
+// on, the per-group prompt asks the agent to surface newly added capabilities
+// relevant to the codebase, rendered display-only in the PR body
+// (core/suggest-features.ts). Off by default because it costs extra tokens and
+// widens the agent's engagement with untrusted release notes.
+const SUGGEST_FEATURES_RAW = process.env.DEPVISOR_SUGGEST_FEATURES || "";
 // The install_command input, forwarded for the group-boundary reset: a custom
 // command is reused verbatim; `auto`/`skip`/unset fall back to the PM's
 // lockfile-faithful install (`skip` skips only the pre-agent install step, not
@@ -122,6 +129,19 @@ const UpdateResult = v.object({
   residual_risks: v.array(v.string()),
   verdict: v.picklist(["update", "defer"]),
   defer_reason: v.optional(v.string()),
+  // Opt-in (suggest_features): newly added capabilities the agent judged
+  // relevant to this codebase, from release notes it already fetched. Optional
+  // and always in the schema — the workflow only renders it when the flag is on
+  // (a model could otherwise fill it unbidden), and pr.ts filters to members.
+  relevant_new_features: v.optional(
+    v.array(
+      v.object({
+        package: v.string(),
+        summary: v.string(),
+        codebase_relevance: v.string(),
+      }),
+    ),
+  ),
 });
 
 /**
@@ -251,6 +271,7 @@ function updatePrompt(
   pm: PmToolchain,
   verifySteps: VerifyStep[],
   minReleaseAge: number,
+  suggestFeatures: boolean,
 ): string {
   const targets = members
     .map((m) => {
@@ -261,6 +282,7 @@ function updatePrompt(
     })
     .join("\n");
   const verifyCmds = verifySteps.map((s) => `\`${s.run}\``).join(", ");
+  const wantSuggestions = wantsSuggestions(suggestFeatures, members);
   return (
     `Update the following packages in this repository to the target versions listed:\n` +
     `${targets}\n\n` +
@@ -277,9 +299,48 @@ function updatePrompt(
     "Return the structured result: summary, notable changes (your per-package digest " +
     "of the release notes), breaking changes addressed, residual risks, and verdict " +
     "'update' (applied, checks pass) or 'defer' (too risky now — give defer_reason " +
-    "and leave no half-finished changes)."
+    "and leave no half-finished changes)." +
+    (wantSuggestions ? `\n\n${suggestionInstruction}` : "")
   );
 }
+
+/**
+ * Whether a group takes part in suggest_features: the flag is on AND the group
+ * has a non-patch member (patch releases are backward-compatible fixes, so no
+ * new capability to surface); judged on the post-clamp updateType grouping
+ * already used. The prompt instruction and the render gate share this exact
+ * condition — the result schema is model-visible even without the instruction,
+ * so a patch-only group could fill the field unbidden and must be ignored at
+ * render time too.
+ */
+function wantsSuggestions(suggestFeatures: boolean, members: readonly Candidate[]): boolean {
+  return (
+    suggestFeatures && members.some((m) => m.updateType === "minor" || m.updateType === "major")
+  );
+}
+
+// Appended to the per-group prompt only when suggest_features is on and the
+// group has a minor/major member. Kept in the workflow (not updater.md) so the
+// base instructions stay static; written in updater.md's plain imperative style.
+// The material lever (base only on notes ALREADY fetched — never fetch just to
+// suggest) keeps the cost and the untrusted-notes exposure bounded, and the
+// grounding + "report only" requirements are the sole guard against
+// hallucinated or self-adopted suggestions (there is no deterministic gate).
+const suggestionInstruction =
+  "Additionally, surface newly added capabilities that may be relevant to this " +
+  "repository. Base this ONLY on release notes you already fetched while doing the " +
+  "update above — do not call fetch_release_notes again just to look for features. " +
+  "Among the versions you moved to, find items that ADD a new API, option, or " +
+  "capability, and for each one check whether it relates to something that already " +
+  "exists in this repository (a specific function, class, pattern, or file). Report " +
+  "the relevant ones in the optional `relevant_new_features` field: an array of " +
+  "{package, summary, codebase_relevance} entries, where `package` is one of the " +
+  "packages you just updated, `summary` describes the new capability in a sentence or " +
+  "two, and `codebase_relevance` names the concrete existing symbol or file it could " +
+  "improve. Do NOT report a suggestion whose `codebase_relevance` cannot name a real, " +
+  "existing symbol or file in this repository. This is a notification only: NEVER " +
+  "modify code to adopt any of these features — report them and leave the code exactly " +
+  "as the update required. Leave the field empty when nothing new is relevant.";
 
 function groupStart(title: string): void {
   if (process.env.GITHUB_ACTIONS) process.stdout.write(`::group::${title}\n`);
@@ -383,10 +444,22 @@ export default defineWorkflow({
         groups: [],
       });
     }
+    const suggestFeatures = parseSuggestFeatures(SUGGEST_FEATURES_RAW);
+    if (suggestFeatures === null) {
+      return finish({
+        status: "bad-suggest-features",
+        base,
+        summary:
+          `The suggest_features input must be 'true' or 'false' (empty means false); ` +
+          `got '${SUGGEST_FEATURES_RAW.trim()}'.`,
+        groups: [],
+      });
+    }
     const resetCommand = resolveResetCommand(pm, REPO, INSTALL_COMMAND);
     log.info(
       `preflight ok: pm=${pm.name}, base=${base}, max_open_prs=${maxOpenPrs}, ` +
-        `minimum_release_age=${minReleaseAge}, verify steps: ${describeVerifySteps(verifySteps)}`,
+        `minimum_release_age=${minReleaseAge}, suggest_features=${suggestFeatures}, ` +
+        `verify steps: ${describeVerifySteps(verifySteps)}`,
     );
 
     // 1. Scan + group (once — groups are disjoint and the tree returns to base
@@ -647,7 +720,7 @@ export default defineWorkflow({
         try {
           log.info(`agent session starting for ${describeMembers(members)}`);
           const response = await session.prompt(
-            updatePrompt(members, pm, verifySteps, minReleaseAge),
+            updatePrompt(members, pm, verifySteps, minReleaseAge, suggestFeatures),
             {
               result: UpdateResult,
             },
@@ -779,6 +852,20 @@ export default defineWorkflow({
         );
         const licenseChanges = classifyLicenseChanges(members, packuments);
         if (licenseChanges.length > 0) log.info(describeLicenseChanges(licenseChanges));
+        // Render the agent's feature suggestions only under the same condition
+        // that emitted the instruction (flag on + non-patch member — see
+        // wantsSuggestions): the field is always in the schema, so a model
+        // could fill it unbidden — an off run or a patch-only group must
+        // ignore it entirely (pr.ts then filters to members and renders only
+        // when non-empty). Map the wire (snake_case) shape to the internal
+        // RelevantNewFeature, like the narrative fields above.
+        const newFeatures: RelevantNewFeature[] = wantsSuggestions(suggestFeatures, members)
+          ? (result.relevant_new_features ?? []).map((f) => ({
+              package: f.package,
+              summary: f.summary,
+              codebaseRelevance: f.codebase_relevance,
+            }))
+          : [];
         const payload = buildPrPayload({
           branch,
           base,
@@ -787,6 +874,7 @@ export default defineWorkflow({
           advisories: advisories.resolvedByPackage,
           testChanges,
           licenseChanges,
+          newFeatures,
           narrative: {
             summary,
             notableChanges: result.notable_changes,
