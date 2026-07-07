@@ -24,6 +24,20 @@ test("parseIgnore accepts bare names and name@<major>, skipping blank lines", ()
   ]);
 });
 
+test("parseIgnore skips full-line # comments", () => {
+  const parsed = parseIgnore(
+    "# v11 needs Node 20; revisit when we drop 18\nlru-cache@11\n  # indented comment\n",
+  );
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.rules, [{ name: "lru-cache", major: 11 }]);
+});
+
+test("parseIgnore rejects trailing comments (full-line comments only)", () => {
+  const parsed = parseIgnore("left-pad # pinned on purpose");
+  assert.ok(!parsed.ok);
+  assert.deepEqual(parsed.invalid, ["left-pad # pinned on purpose"]);
+});
+
 test("parseIgnore returns an empty rule set for empty/whitespace input", () => {
   for (const raw of ["", "   ", "\n\n"]) {
     const parsed = parseIgnore(raw);

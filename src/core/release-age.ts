@@ -31,7 +31,7 @@ const DAY_MS = 86_400_000;
 /**
  * Parse the minimum_release_age input (days): empty = 1 (the default, matching
  * pnpm's minimumReleaseAge); "0" explicitly disables the cooldown; otherwise a
- * non-negative integer, else null (same shape as budget.ts's parseMaxPrs).
+ * non-negative integer, else null (same shape as budget.ts's parseMaxOpenPrs).
  */
 export function parseMinReleaseAge(raw: string): number | null {
   const trimmed = raw.trim();

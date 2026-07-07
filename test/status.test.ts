@@ -73,7 +73,7 @@ test("status failure policy keeps benign outcomes green and fail-closed stops re
     "in-progress",
     "baseline-red",
     "reset-failed",
-    "bad-max-prs",
+    "bad-max-open-prs",
     "reinstall-unavailable",
     "branch-collision",
     "verification-failed",

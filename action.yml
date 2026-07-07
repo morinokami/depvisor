@@ -33,7 +33,7 @@ inputs:
     description: Newline-separated verification commands; replaces automatic build/lint/test script detection.
     required: false
     default: ""
-  max_prs:
+  max_open_prs:
     description: Maximum number of open depvisor PRs to keep at once; a run opens new PRs only up to this ceiling.
     required: false
     default: "1"
@@ -42,7 +42,7 @@ inputs:
     required: false
     default: "1"
   ignore:
-    description: Newline-separated packages to never update; use "name" to skip a package entirely or "name@<major>" to skip only a specific major.
+    description: Newline-separated packages to never update; use "name" to skip a package entirely or "name@<major>" to skip only a specific major. Full-line "#" comments are allowed.
     required: false
     default: ""
   node_version:
@@ -106,7 +106,7 @@ runs:
 
     # Deterministic, token-holding: snapshot open PRs so the (token-free)
     # agent step can skip groups whose PR is already up to date AND count open
-    # depvisor PRs against the max_prs ceiling. The ceiling fails open if the
+    # depvisor PRs against the max_open_prs ceiling. The ceiling fails open if the
     # snapshot is truncated, hence the generous --limit (gh paginates; only
     # repos with more open PRs than this can undercount).
     - name: Snapshot open PRs
@@ -127,7 +127,7 @@ runs:
         DEPVISOR_TARGET_REPO: ${{ github.workspace }}
         DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
         DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
-        DEPVISOR_MAX_PRS: ${{ inputs.max_prs }}
+        DEPVISOR_MAX_OPEN_PRS: ${{ inputs.max_open_prs }}
         DEPVISOR_MIN_RELEASE_AGE: ${{ inputs.minimum_release_age }}
         DEPVISOR_IGNORE: ${{ inputs.ignore }}
         # Forwarded for the reset between dependency groups: a custom command is

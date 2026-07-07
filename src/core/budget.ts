@@ -1,14 +1,14 @@
 /**
- * The max_prs budget: deterministic, LLM-free decisions the update workflow
- * makes per group. `max_prs` is a ceiling on the number of open depvisor PRs
+ * The max_open_prs budget: deterministic, LLM-free decisions the update workflow
+ * makes per group. `max_open_prs` is a ceiling on the number of open depvisor PRs
  * (Dependabot's open-pull-requests-limit model), not a per-run throughput cap:
  * a run opens new PRs only up to the ceiling, but always refreshes existing ones
  * (a refresh never consumes a slot). Extracted here so it is unit-testable
  * without the agent (the workflow module cannot be imported under plain node).
  */
 
-/** Parse the max_prs input: empty = 1; otherwise a positive integer, else null. */
-export function parseMaxPrs(raw: string): number | null {
+/** Parse the max_open_prs input: empty = 1; otherwise a positive integer, else null. */
+export function parseMaxOpenPrs(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return 1;
   if (!/^\d+$/.test(trimmed)) return null;

@@ -10,7 +10,7 @@ import {
   type AdvisoryResult,
 } from "../core/advisories.ts";
 import { parseGithubSlug } from "../core/changelog.ts";
-import { classifyGroup, countOpenDepvisorPrs, parseMaxPrs } from "../core/budget.ts";
+import { classifyGroup, countOpenDepvisorPrs, parseMaxOpenPrs } from "../core/budget.ts";
 import { collectCandidates } from "../core/collect.ts";
 import { classifyLicenseChanges, describeLicenseChanges } from "../core/license.ts";
 import {
@@ -79,7 +79,7 @@ const PR_OUT_DIR = fileURLToPath(new URL("../../pr-preview", import.meta.url));
 // branch after preflight rejects HEAD or depvisor/*.
 const BASE_OVERRIDE = process.env.DEPVISOR_BASE_BRANCH || undefined;
 // JSON snapshot of open PRs ({headRefName, body}[]), written by a separate
-// token-holding workflow step. Data flows in; credentials never do. The max_prs
+// token-holding workflow step. Data flows in; credentials never do. The max_open_prs
 // ceiling counts open depvisor PRs from this snapshot, so its accuracy matters:
 // in CI the snapshot step fails the job if `gh pr list` fails, but a truncated
 // snapshot (more open PRs than its --limit) or an absent one (local runs) fails
@@ -90,7 +90,7 @@ const OPEN_PRS_FILE = process.env.DEPVISOR_OPEN_PRS_FILE;
 const VERIFY_COMMANDS = process.env.DEPVISOR_VERIFY_COMMANDS || "";
 // Ceiling on the number of open depvisor PRs (Dependabot's open-pull-requests-limit
 // model). Empty = unset = 1. Refreshing an existing PR never consumes a slot.
-const MAX_PRS_RAW = process.env.DEPVISOR_MAX_PRS || "";
+const MAX_OPEN_PRS_RAW = process.env.DEPVISOR_MAX_OPEN_PRS || "";
 // Minimum age (days) a version must have been public on the npm registry
 // before depvisor updates to it — the supply-chain cooldown (core/release-age.ts).
 // Empty = unset = 1; "0" disables it.
@@ -130,7 +130,7 @@ function resolveResetCommand(pm: PmToolchain, repo: string, installInput: string
 
 /**
  * Open-PR snapshot, or [] when absent. Skip-if-up-to-date degrades gracefully
- * without it (a missed skip just re-runs the agent), but the max_prs ceiling
+ * without it (a missed skip just re-runs the agent), but the max_open_prs ceiling
  * counts from it, so an absent/unreadable snapshot fails open toward opening
  * more PRs — see the OPEN_PRS_FILE comment above.
  */
@@ -193,7 +193,7 @@ function preflight():
       status: "bad-base",
       summary:
         `Refusing to use '${base}' as the base branch. Check out the intended base ` +
-        "or set DEPVISOR_BASE_BRANCH explicitly.",
+        "or set the base_branch action input (DEPVISOR_BASE_BRANCH locally).",
     };
   }
   if (!refExists(REPO, base)) {
@@ -295,7 +295,7 @@ function summarizeRun(run: RunStatus): string {
   const count = (status: string) => run.groups.filter((g) => g.status === status).length;
   const parts = [`Prepared ${count("pr-prepared")} PR(s) from ${run.groups.length} group(s).`];
   const held = count("held-back-by-limit");
-  if (held > 0) parts.push(`${held} group(s) held back by the max_prs limit.`);
+  if (held > 0) parts.push(`${held} group(s) held back by the max_open_prs limit.`);
   return parts.join(" ");
 }
 
@@ -325,12 +325,12 @@ export default defineWorkflow({
     }
     const { base, verifySteps, pm } = pre;
 
-    const maxPrs = parseMaxPrs(MAX_PRS_RAW);
-    if (maxPrs === null) {
+    const maxOpenPrs = parseMaxOpenPrs(MAX_OPEN_PRS_RAW);
+    if (maxOpenPrs === null) {
       return finish({
-        status: "bad-max-prs",
+        status: "bad-max-open-prs",
         base,
-        summary: `The max_prs input must be a positive integer; got '${MAX_PRS_RAW.trim()}'.`,
+        summary: `The max_open_prs input must be a positive integer; got '${MAX_OPEN_PRS_RAW.trim()}'.`,
         groups: [],
       });
     }
@@ -353,14 +353,15 @@ export default defineWorkflow({
         summary:
           `The ignore input has ${ignore.invalid.length} unrecognized ` +
           `${ignore.invalid.length === 1 ? "entry" : "entries"}: ${ignore.invalid.join(", ")}. ` +
-          "Each line must be 'name' (never update it) or 'name@<major>' (skip updates to " +
-          "that major); full version ranges and update-type rules are not supported yet.",
+          "Each line must be 'name' (never update it), 'name@<major>' (skip updates to " +
+          "that major), or a full-line '#' comment; full version ranges and update-type " +
+          "rules are not supported yet.",
         groups: [],
       });
     }
     const resetCommand = resolveResetCommand(pm, REPO, INSTALL_COMMAND);
     log.info(
-      `preflight ok: pm=${pm.name}, base=${base}, max_prs=${maxPrs}, ` +
+      `preflight ok: pm=${pm.name}, base=${base}, max_open_prs=${maxOpenPrs}, ` +
         `min_release_age=${minReleaseAge}, verify steps: ${describeVerifySteps(verifySteps)}`,
     );
 
@@ -403,7 +404,7 @@ export default defineWorkflow({
     }
 
     // Security prioritization (core/advisories.ts): stable-promote groups whose
-    // update RESOLVES a known advisory to the front, so the max_prs budget below
+    // update RESOLVES a known advisory to the front, so the max_open_prs budget below
     // spends its slots on security fixes first. Runs on the post-clamp `latest`
     // (a fix still inside the cooldown window does not count — cooldown wins) and
     // is fail-soft: an OSV outage keeps the neutral localeCompare order rather
@@ -423,7 +424,7 @@ export default defineWorkflow({
       }
     }
 
-    // Budget (max_prs = ceiling on open depvisor PRs): map each open PR's
+    // Budget (max_open_prs = ceiling on open depvisor PRs): map each open PR's
     // branch to its body — the keys count toward the ceiling, the bodies feed
     // skip-if-up-to-date. Only a newly opened PR consumes a slot; refreshing an
     // existing PR does not.
@@ -434,9 +435,9 @@ export default defineWorkflow({
       }
     }
     const openDepvisorCount = countOpenDepvisorPrs(bodyByBranch.keys());
-    let newSlots = Math.max(0, maxPrs - openDepvisorCount);
+    let newSlots = Math.max(0, maxOpenPrs - openDepvisorCount);
     log.info(
-      `${candidates.length} candidates -> ${groups.length} groups; ${openDepvisorCount} open depvisor PR(s), ${newSlots} new-PR slot(s) (max_prs=${maxPrs})`,
+      `${candidates.length} candidates -> ${groups.length} groups; ${openDepvisorCount} open depvisor PR(s), ${newSlots} new-PR slot(s) (max_open_prs=${maxOpenPrs})`,
     );
 
     // The run starts as `in-progress` — a job-failing status — and only the
@@ -545,7 +546,7 @@ export default defineWorkflow({
         if (disposition === "held-back") {
           record(
             "held-back-by-limit",
-            `Held back: the max_prs=${maxPrs} open-PR limit is already reached. This group is opened once a slot frees (an existing depvisor PR is merged or closed).`,
+            `Held back: the max_open_prs=${maxOpenPrs} open-PR limit is already reached. This group is opened once a slot frees (an existing depvisor PR is merged or closed).`,
           );
           continue;
         }
@@ -651,7 +652,10 @@ export default defineWorkflow({
             // its re-parse rejected); absent on the ResultUnavailableError path.
             record(
               "no-structured-result",
-              "The agent did not return a structured update result; no PR was created.",
+              "The agent did not return a structured update result; no PR was created. " +
+                "This is usually transient and heals on the next run; if it recurs, the " +
+                "model may be struggling with structured output — consider a stronger " +
+                "llm_model.",
             );
             continue;
           }
