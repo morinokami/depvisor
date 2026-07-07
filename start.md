@@ -96,7 +96,10 @@ made a choice in the conversation, treat it as binding.
 4. **Optional inputs** — keep the defaults unless the user asks:
    `max_open_prs` (default: at most 1 open depvisor PR), `minimum_release_age`
    (default: 1-day supply-chain cooldown — keep it enabled), `ignore`
-   (packages never to update).
+   (packages never to update), `suggest_features` (default off — set `"true"`
+   to add a display-only "new features that may be relevant" section to PRs;
+   costs extra tokens and widens the agent's exposure to untrusted release
+   notes, so leave off unless the user asks).
 
 Before implementing, restate the choices to yourself as a contract:
 

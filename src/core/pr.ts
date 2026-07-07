@@ -5,7 +5,7 @@ import type { NumstatEntry } from "./git.ts";
 import type { LicenseChange } from "./license.ts";
 import { RUN_STATUS_FILE } from "./status-file.ts";
 import { formatNumstatLines } from "./test-changes.ts";
-import type { Candidate, UpdateNarrative } from "./types.ts";
+import type { Candidate, RelevantNewFeature, UpdateNarrative } from "./types.ts";
 import type { VerifyResult } from "./verify.ts";
 
 export interface PrPayload {
@@ -375,6 +375,56 @@ function licenseChangesSection(changes: readonly LicenseChange[]): string {
   );
 }
 
+// At most this many suggestion bullets in the PR body; the rest are dropped
+// with an explicit note (never silent truncation). Suggestions are secondary to
+// the bump/verify/security content, so the section stays short by design.
+const MAX_NEW_FEATURE_BULLETS = 5;
+
+/**
+ * A display-only section listing newly added capabilities the agent noticed in
+ * this update's release notes that may relate to code already in the repository
+ * (the opt-in suggest_features feature — see core/suggest-features.ts). This is
+ * NOT a gate and depvisor never adopts a suggestion; the wording says so and
+ * never implies exhaustiveness. Each bullet's package label/version comes from
+ * the validated candidate — suggestions whose `package` is not a member of this
+ * group are dropped (the same render-time filter as notable_changes) — while the
+ * untrusted free text (`summary`/`codebaseRelevance`, from release notes + LLM
+ * judgment) is neutralized by the same sanitizeSummary + newline-collapse
+ * treatment bulletSection applies. Over the cap, the excess is dropped with a
+ * note. "" when nothing survives filtering, so the section only ever appears
+ * when it has content.
+ */
+function newFeaturesSection(
+  features: readonly RelevantNewFeature[],
+  candidates: readonly Candidate[],
+): string {
+  const byName = new Map(candidates.map((c) => [c.name, c] as const));
+  const bullets = features.flatMap((f) => {
+    const c = byName.get(f.package);
+    if (!c) return [];
+    const label = `\`${c.name}@${c.latest}\``;
+    const summary = sanitizeSummary(f.summary).replace(/\s*\n\s*/g, " ");
+    const relevance = sanitizeSummary(f.codebaseRelevance).replace(/\s*\n\s*/g, " ");
+    const text = [summary, relevance].filter((t) => t.length > 0).join(" — ");
+    return [text ? `- **${label}** — ${text}` : `- **${label}**`];
+  });
+  if (bullets.length === 0) return "";
+  const shown = bullets.slice(0, MAX_NEW_FEATURE_BULLETS);
+  const omitted = bullets.length - shown.length;
+  const omittedNote =
+    omitted > 0 ? `\n\n_${omitted} further suggestion(s) were omitted to keep this short._` : "";
+  return (
+    "## 💡 New features that may be relevant\n\n" +
+    "While updating, the agent noticed these newly added capabilities that look related to " +
+    "code already in this repository. This is heuristic and not exhaustive, and depvisor did " +
+    "NOT change any code to use them — they are surfaced for your consideration only, to pick " +
+    "up in a separate change if you find them worthwhile.\n\n" +
+    shown.join("\n") +
+    omittedNote +
+    "\n\n"
+  );
+}
+
 /**
  * Assemble the PR payload from deterministic data plus the agent's structured
  * narrative. Every narrative field is untrusted and sanitized field-by-field.
@@ -391,6 +441,12 @@ export function buildPrPayload(args: {
   testChanges?: readonly NumstatEntry[];
   /** Packages whose declared license changed; non-empty adds a warning section. */
   licenseChanges?: readonly LicenseChange[];
+  /**
+   * Agent-suggested new features relevant to the codebase (opt-in
+   * suggest_features); non-empty after member filtering adds a display-only
+   * section. The workflow passes these only when the flag is on.
+   */
+  newFeatures?: readonly RelevantNewFeature[];
   narrative: UpdateNarrative;
   verification: VerifyResult[];
 }): PrPayload {
@@ -402,6 +458,7 @@ export function buildPrPayload(args: {
     advisories,
     testChanges,
     licenseChanges,
+    newFeatures,
     narrative,
     verification,
   } = args;
@@ -454,7 +511,7 @@ export function buildPrPayload(args: {
     "",
     sanitizeSummary(narrative.summary),
     "",
-    narrativeSections + "## Verification",
+    narrativeSections + newFeaturesSection(newFeatures ?? [], candidates) + "## Verification",
     "",
     checks,
     "",

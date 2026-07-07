@@ -41,6 +41,20 @@ export interface NotableChange {
 }
 
 /**
+ * Agent-suggested newly added capability from an update's release notes that may
+ * relate to code already in the repository (the opt-in suggest_features feature).
+ * Display-only, never adopted; `package` names one updated package, `summary`
+ * describes the capability, and `codebaseRelevance` names the concrete existing
+ * symbol or file it could improve. Both free-text fields are untrusted (release
+ * notes + LLM judgment), so pr.ts sanitizes them like any other narrative field.
+ */
+export interface RelevantNewFeature {
+  package: string;
+  summary: string;
+  codebaseRelevance: string;
+}
+
+/**
  * The agent's structured account of an update. Keeping fields separate lets the
  * PR renderer compose the body deterministically and sanitize each untrusted,
  * changelog-derived field on its own.
