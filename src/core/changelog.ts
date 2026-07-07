@@ -154,15 +154,17 @@ function requestInit(signal?: AbortSignal): RequestInit {
 /**
  * Resolve a package to its GitHub "owner/repo" slug via npm registry metadata,
  * or null. Never throws — an invalid name, a non-GitHub source, or a network
- * failure all degrade to null, because everything this feeds (the release-notes
- * lookup below, the PR body's releases/compare links) is strictly optional.
- * The endpoint is fixed here; callers only supply the package name.
+ * failure all degrade to null, because the release-notes lookup below (its one
+ * remaining caller — the PR body's releases/compare links now read
+ * `parseGithubSlug` off the packument the run already fetched) treats the slug
+ * as strictly optional. The endpoint is fixed here; callers only supply the
+ * package name.
  */
 export async function resolveSourceRepo(
   pkg: string,
   opts: { fetch?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<string | null> {
-  if (!NPM_NAME_RE.test(pkg)) return null;
+  if (!isValidNpmName(pkg)) return null;
   const doFetch = opts.fetch ?? fetch;
   try {
     const res = await doFetch(`${NPM_REGISTRY}/${pkg}`, requestInit(opts.signal));
@@ -188,7 +190,7 @@ export async function fetchReleaseNotes(
   const doFetch = opts.fetch ?? fetch;
   const pkg = input.package;
 
-  if (!NPM_NAME_RE.test(pkg)) {
+  if (!isValidNpmName(pkg)) {
     return unavailable(pkg, null, `Invalid package name: ${pkg}`);
   }
 

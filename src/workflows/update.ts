@@ -10,29 +10,10 @@ import {
   prioritizeGroups,
   type AdvisoryResult,
 } from "../core/advisories.ts";
-import { parseGithubSlug } from "../core/changelog.ts";
 import { classifyGroup, countOpenDepvisorPrs, parseMaxOpenPrs } from "../core/budget.ts";
+import { parseGithubSlug } from "../core/changelog.ts";
 import { collectCandidates } from "../core/collect.ts";
-import { classifyLicenseChanges, describeLicenseChanges } from "../core/license.ts";
-import {
-  applyReleaseAge,
-  describeReleaseAge,
-  fetchPackument,
-  parseMinReleaseAge,
-  parseMinReleaseAgeExclude,
-  type Packument,
-} from "../core/release-age.ts";
 import { detectPersistedCredentials, persistedCredentialsSummary } from "../core/credentials.ts";
-import { applyIgnore, describeIgnore, parseIgnore } from "../core/ignore.ts";
-import { groupCandidates } from "../core/grouping.ts";
-import { runInstall } from "../core/install.ts";
-import { detectPackageManager, type PmToolchain } from "../core/pm.ts";
-import {
-  parseVerifyCommands,
-  runVerification,
-  verifyStepsFor,
-  type VerifyStep,
-} from "../core/verify.ts";
 import {
   commitAll,
   commitPaths,
@@ -49,6 +30,11 @@ import {
   revParse,
   tryCheckout,
 } from "../core/git.ts";
+import { groupCandidates } from "../core/grouping.ts";
+import { applyIgnore, describeIgnore, parseIgnore } from "../core/ignore.ts";
+import { runInstall } from "../core/install.ts";
+import { classifyLicenseChanges, describeLicenseChanges } from "../core/license.ts";
+import { detectPackageManager, type PmToolchain } from "../core/pm.ts";
 import {
   branchNameForGroup,
   buildPrPayload,
@@ -57,9 +43,15 @@ import {
   slugify,
   versionsMarker,
 } from "../core/pr.ts";
+import {
+  applyReleaseAge,
+  describeReleaseAge,
+  fetchPackument,
+  parseMinReleaseAge,
+  parseMinReleaseAgeExclude,
+  type Packument,
+} from "../core/release-age.ts";
 import { checkDiffScope } from "../core/scope.ts";
-import { classifyTestChanges } from "../core/test-changes.ts";
-import type { Candidate } from "../core/types.ts";
 import {
   emitRunStatus,
   groupLogLine,
@@ -73,6 +65,14 @@ import {
   type GroupUsage,
   type RunStatus,
 } from "../core/status.ts";
+import { classifyTestChanges } from "../core/test-changes.ts";
+import type { Candidate } from "../core/types.ts";
+import {
+  parseVerifyCommands,
+  runVerification,
+  verifyStepsFor,
+  type VerifyStep,
+} from "../core/verify.ts";
 import { REPO } from "../shared/target.ts";
 
 const PR_OUT_DIR = fileURLToPath(new URL("../../pr-preview", import.meta.url));
@@ -386,7 +386,7 @@ export default defineWorkflow({
     const resetCommand = resolveResetCommand(pm, REPO, INSTALL_COMMAND);
     log.info(
       `preflight ok: pm=${pm.name}, base=${base}, max_open_prs=${maxOpenPrs}, ` +
-        `min_release_age=${minReleaseAge}, verify steps: ${describeVerifySteps(verifySteps)}`,
+        `minimum_release_age=${minReleaseAge}, verify steps: ${describeVerifySteps(verifySteps)}`,
     );
 
     // 1. Scan + group (once — groups are disjoint and the tree returns to base
@@ -672,7 +672,7 @@ export default defineWorkflow({
           result = v.parse(UpdateResult, response.data);
           log.info(
             `agent structured result received: verdict=${result.verdict} ` +
-              `(${usage.totalTokens} tokens, est. $${usage.costUsd.toFixed(4)})`,
+              `(${usage.totalTokens} tokens, est. ~$${usage.costUsd.toFixed(4)})`,
           );
         } catch (err) {
           // The agent could not produce a validated result — whether Flue gave up
