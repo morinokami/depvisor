@@ -252,9 +252,11 @@ Details worth knowing:
   cooldown window is not treated as available yet — it is prioritized once it has
   aged enough. The supply-chain cooldown is never bypassed in the name of urgency.
 - **Fail-soft**: unlike the cooldown, this is an optimization, not a defense. If
-  OSV.dev is unreachable, depvisor logs it and falls back to the normal
-  alphabetical order rather than failing the run. Private packages (absent from
-  OSV) simply are not prioritized.
+  OSV.dev is unreachable, depvisor falls back to the normal alphabetical order
+  rather than failing the run, and says so in the run summary. If that note
+  appears on every run, check that `api.osv.dev` is reachable from the runner
+  (e.g. your egress allowlist). Private packages (absent from OSV) simply are
+  not prioritized.
 
 ### PR labels
 

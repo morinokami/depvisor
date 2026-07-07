@@ -4,6 +4,7 @@ import { defineWorkflow, ResultUnavailableError } from "@flue/runtime";
 import * as v from "valibot";
 import updater from "../agents/updater.ts";
 import {
+  ADVISORIES_UNAVAILABLE_NOTE,
   describeAdvisories,
   fetchAdvisories,
   prioritizeGroups,
@@ -411,6 +412,10 @@ export default defineWorkflow({
     // than failing the run. The resolved-advisory map also feeds the PR body's
     // Security column below.
     let advisories: AdvisoryResult = { resolvedByPackage: new Map(), ok: true };
+    // Set on an OSV outage and appended to the completed run's summary below:
+    // the run stays green (fail-soft), so the summary note is the only place a
+    // user can notice the degradation without reading the raw step log.
+    let osvUnavailableNote = "";
     if (groups.length > 0) {
       advisories = await fetchAdvisories(candidates);
       if (advisories.ok) {
@@ -418,9 +423,8 @@ export default defineWorkflow({
         const advisoryNote = describeAdvisories(advisories.resolvedByPackage);
         if (advisoryNote) log.info(advisoryNote);
       } else {
-        log.warn(
-          "security prioritization unavailable (OSV lookup failed); using the neutral update order",
-        );
+        osvUnavailableNote = ADVISORIES_UNAVAILABLE_NOTE;
+        log.warn(osvUnavailableNote);
       }
     }
 
@@ -782,11 +786,14 @@ export default defineWorkflow({
 
     // Graceful end of the loop: upgrade the crash marker to the real outcome.
     // Run-level stops (baseline-red, reset-failed) already set their status.
-    // The release-age note rides along so cooldown clamps and hold-backs are
-    // visible in the summary rather than silently truncating the run.
+    // The release-age and OSV-unavailable notes ride along so cooldown
+    // clamps/hold-backs and a degraded security prioritization are visible in
+    // the summary rather than silent.
     if (run.status === "in-progress") {
       run.status = "completed";
-      run.summary = releaseAgeNote ? `${summarizeRun(run)} ${releaseAgeNote}` : summarizeRun(run);
+      run.summary = [summarizeRun(run), releaseAgeNote, osvUnavailableNote]
+        .filter(Boolean)
+        .join(" ");
     }
     return finish(run);
   },

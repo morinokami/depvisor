@@ -329,6 +329,21 @@ export function prioritizeGroups(
   return [...groups].sort((a, b) => Number(resolvesAny(b)) - Number(resolvesAny(a)));
 }
 
+/**
+ * Run-summary/log note for an OSV outage. Fail-soft keeps the run green, so
+ * this note is the only user-visible trace of the degradation (the workflow
+ * appends it to the completed run's summary, which report-status renders into
+ * the step summary and the run-level annotation). Without it, a permanently
+ * unreachable api.osv.dev — e.g. an egress allowlist that predates the
+ * endpoint — would silently disable security prioritization on every run,
+ * discoverable only by reading the raw agent-step log.
+ */
+export const ADVISORIES_UNAVAILABLE_NOTE =
+  "Security prioritization was unavailable (OSV.dev could not be queried): groups ran in " +
+  "the neutral order and PRs may be missing their Security column. If this note appears " +
+  "on every run, check that api.osv.dev is reachable from the runner (e.g. your egress " +
+  "allowlist).";
+
 /** One-line run-summary note; "" when nothing was prioritized. */
 export function describeAdvisories(resolvedByPackage: ReadonlyMap<string, string[]>): string {
   if (resolvedByPackage.size === 0) return "";
