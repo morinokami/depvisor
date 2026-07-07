@@ -29,6 +29,7 @@ jobs:
             objects.githubusercontent.com:443
             *.actions.githubusercontent.com:443
             registry.npmjs.org:443
+            api.osv.dev:443
             api.openai.com:443
             api.anthropic.com:443
 
