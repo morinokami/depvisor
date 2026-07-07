@@ -105,14 +105,15 @@ jobs:
 
 ### Inputs
 
-| Input                 | Purpose                                                                                                                                                                                                                                               |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `llm_api_key`         | (required) Provider API key — reaches **only** the agent step                                                                                                                                                                                         |
-| `llm_model`           | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                                                                                                                                                     |
-| `verify_commands`     | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                            |
-| `max_open_prs`        | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                                          |
-| `minimum_release_age` | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown — required for private-registry packages                                                        |
-| `ignore`              | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; full-line `#` comments are allowed. Full version ranges and update-type rules are not supported yet |
+| Input                         | Purpose                                                                                                                                                                                                                                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm_api_key`                 | (required) Provider API key — reaches **only** the agent step                                                                                                                                                                                         |
+| `llm_model`                   | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                                                                                                                                                     |
+| `verify_commands`             | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                            |
+| `max_open_prs`                | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                                          |
+| `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                        |
+| `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). Full-line `#` comments are allowed                               |
+| `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; full-line `#` comments are allowed. Full version ranges and update-type rules are not supported yet |
 
 ```yaml
 # e.g. when your checks go by other names:
@@ -165,8 +166,28 @@ Details worth knowing:
   (network failure, or a package that does not exist on registry.npmjs.org —
   e.g. a private-registry package), that update is skipped and the job is
   marked red (`release-age-unavailable`). A transient failure heals on the
-  next scheduled run. If your repo uses private packages, set
-  `minimum_release_age: 0` to disable the cooldown.
+  next scheduled run. If your repo uses private packages, list them in
+  `minimum_release_age_exclude` (next bullet) so the cooldown keeps defending
+  everything else.
+- **Private packages: exempt them per package, don't disable the defense**
+  (`minimum_release_age_exclude`): newline-separated package names (full-line
+  `#` comments allowed) skip the age check and update straight to the version
+  the collector reports — the same escape hatch pnpm ships as
+  `minimumReleaseAgeExclude`.
+
+  ```yaml
+  minimum_release_age_exclude: |
+    # our private packages — not on registry.npmjs.org
+    @acme/design-tokens
+    @acme/eslint-config
+  ```
+
+  The exemption is meant for packages the public registry cannot vouch for.
+  Excluding a package that _does_ exist on npmjs removes a real supply-chain
+  defense for it, so keep the list to your private packages. Typos fail loudly
+  (`bad-min-release-age-exclude`), and `minimum_release_age: 0` remains the
+  full disable.
+
 - **bun repos get exact pins while the cooldown is active**: bun resolves
   ranges at install time, so depvisor instructs `bun add <name>@<version>`
   (no `^`) to stop an install from reaching back into the cooldown window.
@@ -368,23 +389,23 @@ Green — working as intended:
 
 Red — needs your attention (the annotation and run summary carry the specifics):
 
-| Status                                                    | Meaning — and what to do                                                                                                                                                                                |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `persisted-credentials`                                   | The checkout carries a token. Set `persist-credentials: false` on `actions/checkout`.                                                                                                                   |
-| `dirty-tree`                                              | Uncommitted changes before any update — usually an install that wrote files git does not ignore. Extend `.gitignore` or fix `install_command`.                                                          |
-| `unsupported-package-manager`                             | The repo uses a package manager depvisor does not support (e.g. yarn).                                                                                                                                  |
-| `ambiguous-package-manager`                               | Lockfiles of several package managers, with no `packageManager` field to disambiguate. Remove the stale lockfile or set the field.                                                                      |
-| `bad-base` / `missing-base`                               | The base branch cannot be used or was not fetched. Set the `base_branch` input, or dispatch the run from the default branch.                                                                            |
-| `no-verify-scripts`                                       | package.json defines none of `build`/`lint`/`test`, so no gate can vouch for an update. Set `verify_commands`.                                                                                          |
-| `bad-max-open-prs` / `bad-min-release-age` / `bad-ignore` | The named input does not parse; the annotation shows the offending value.                                                                                                                               |
-| `baseline-red`                                            | Your checks already fail on the base branch before any update. Fix the base first.                                                                                                                      |
-| `reset-failed`                                            | The tree reset between groups left the checks failing (e.g. a leaked build artifact). Re-run; if it persists, file an issue.                                                                            |
-| `release-age-unavailable`                                 | The npm registry could not vouch for a version's age (network failure, or a private-registry package). Transient failures heal on the next run; for private packages set `minimum_release_age: 0`.      |
-| `reinstall-unavailable`                                   | Multi-group runs need a reinstall between groups, but `install_command: skip` with no committed lockfile leaves no way to run one. Commit a lockfile or set `install_command`.                          |
-| `branch-collision`                                        | Two group names slugify to the same branch (rare — e.g. `@babel/core` vs `babel-core`). `ignore` one of the two packages.                                                                               |
-| `no-structured-result`                                    | The agent returned no validated result (tokens may still have been spent). Usually transient; if it recurs, consider a stronger `llm_model`.                                                            |
-| `unexpected-commits` / `scope-violation`                  | The agent stepped outside its box (ran git, or touched denied paths); nothing was trusted or committed. Re-run; a recurrence is worth an issue.                                                         |
-| `verification-failed`                                     | The update broke your checks and the agent could not fix them; no PR. The step summary shows which command failed.                                                                                      |
-| `no-changes`                                              | The agent reported success but changed nothing; no PR. Re-run; a recurrence is worth an issue.                                                                                                          |
-| `open-pr-failed`                                          | The push or PR creation failed — most often the "Allow GitHub Actions to create and approve pull requests" repository setting is off, or the workflow lacks `contents: write` / `pull-requests: write`. |
-| `in-progress`                                             | The run crashed mid-loop before writing a final status; the log has the failure. Groups recorded before the stop are intact.                                                                            |
+| Status                                                                                    | Meaning — and what to do                                                                                                                                                                                         |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `persisted-credentials`                                                                   | The checkout carries a token. Set `persist-credentials: false` on `actions/checkout`.                                                                                                                            |
+| `dirty-tree`                                                                              | Uncommitted changes before any update — usually an install that wrote files git does not ignore. Extend `.gitignore` or fix `install_command`.                                                                   |
+| `unsupported-package-manager`                                                             | The repo uses a package manager depvisor does not support (e.g. yarn).                                                                                                                                           |
+| `ambiguous-package-manager`                                                               | Lockfiles of several package managers, with no `packageManager` field to disambiguate. Remove the stale lockfile or set the field.                                                                               |
+| `bad-base` / `missing-base`                                                               | The base branch cannot be used or was not fetched. Set the `base_branch` input, or dispatch the run from the default branch.                                                                                     |
+| `no-verify-scripts`                                                                       | package.json defines none of `build`/`lint`/`test`, so no gate can vouch for an update. Set `verify_commands`.                                                                                                   |
+| `bad-max-open-prs` / `bad-min-release-age` / `bad-min-release-age-exclude` / `bad-ignore` | The named input does not parse; the annotation shows the offending value.                                                                                                                                        |
+| `baseline-red`                                                                            | Your checks already fail on the base branch before any update. Fix the base first.                                                                                                                               |
+| `reset-failed`                                                                            | The tree reset between groups left the checks failing (e.g. a leaked build artifact). Re-run; if it persists, file an issue.                                                                                     |
+| `release-age-unavailable`                                                                 | The npm registry could not vouch for a version's age (network failure, or a private-registry package). Transient failures heal on the next run; list private-registry packages in `minimum_release_age_exclude`. |
+| `reinstall-unavailable`                                                                   | Multi-group runs need a reinstall between groups, but `install_command: skip` with no committed lockfile leaves no way to run one. Commit a lockfile or set `install_command`.                                   |
+| `branch-collision`                                                                        | Two group names slugify to the same branch (rare — e.g. `@babel/core` vs `babel-core`). `ignore` one of the two packages.                                                                                        |
+| `no-structured-result`                                                                    | The agent returned no validated result (tokens may still have been spent). Usually transient; if it recurs, consider a stronger `llm_model`.                                                                     |
+| `unexpected-commits` / `scope-violation`                                                  | The agent stepped outside its box (ran git, or touched denied paths); nothing was trusted or committed. Re-run; a recurrence is worth an issue.                                                                  |
+| `verification-failed`                                                                     | The update broke your checks and the agent could not fix them; no PR. The step summary shows which command failed.                                                                                               |
+| `no-changes`                                                                              | The agent reported success but changed nothing; no PR. Re-run; a recurrence is worth an issue.                                                                                                                   |
+| `open-pr-failed`                                                                          | The push or PR creation failed — most often the "Allow GitHub Actions to create and approve pull requests" repository setting is off, or the workflow lacks `contents: write` / `pull-requests: write`.          |
+| `in-progress`                                                                             | The run crashed mid-loop before writing a final status; the log has the failure. Groups recorded before the stop are intact.                                                                                     |

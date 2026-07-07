@@ -16,8 +16,14 @@ import { compareTriple, parseVersionCore, type Triple } from "./version-core.ts"
  * dropped from the run and reported red (`release-age-unavailable`). This is
  * the deliberate opposite of changelog.ts's never-throw style — that module
  * is display-only, this one is a defense, and waving a candidate through on
- * error would defeat it. Private-registry users disable the cooldown with
- * `minimum_release_age: 0`.
+ * error would defeat it. The escape hatch for packages the public registry
+ * cannot vouch for is per-package, not global: `minimum_release_age_exclude`
+ * (pnpm's minimumReleaseAgeExclude) exempts the named packages from the age
+ * check while the cooldown keeps defending everything else
+ * (`minimum_release_age: 0` remains the full disable). Exemption is a human
+ * opt-out, not a fail-open path — an excluded name skips the registry check
+ * entirely, so listing a package that DOES exist on npmjs removes a real
+ * defense for it (the input is meant for private-registry packages).
  */
 
 const NPM_REGISTRY = "https://registry.npmjs.org";
@@ -39,6 +45,31 @@ export function parseMinReleaseAge(raw: string): number | null {
   if (!/^\d+$/.test(trimmed)) return null;
   const n = Number(trimmed);
   return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+export type ParsedReleaseAgeExclude =
+  | { ok: true; exclude: Set<string> }
+  | { ok: false; invalid: string[] };
+
+/**
+ * Parse the minimum_release_age_exclude input: newline-separated package names
+ * exempted from the cooldown. Blank lines and full-line `#` comments are
+ * skipped (ignore.ts's conventions); every other line must be a bare npm name
+ * — no majors, version ranges, or patterns — else the whole input is rejected
+ * with the offending entries. Fail-closed like parseIgnore: silently dropping
+ * a bad entry would be the "thought I excluded it" trap, except here the trap
+ * is a run that stays red (`release-age-unavailable`) despite the exclusion.
+ */
+export function parseMinReleaseAgeExclude(raw: string): ParsedReleaseAgeExclude {
+  const exclude = new Set<string>();
+  const invalid: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const entry = line.trim();
+    if (!entry || entry.startsWith("#")) continue;
+    if (isValidNpmName(entry)) exclude.add(entry);
+    else invalid.push(entry);
+  }
+  return invalid.length > 0 ? { ok: false, invalid } : { ok: true, exclude };
 }
 
 /** The slice of an npm packument the cooldown (and PR-body source links) needs. */
@@ -120,7 +151,7 @@ function parseStable(v: string): Triple | null {
 export type ClampDecision =
   | { action: "keep" }
   | { action: "clamp"; latest: string; updateType: UpdateType }
-  | { action: "exclude" };
+  | { action: "hold-back" };
 
 /**
  * Decide one candidate's fate under the cooldown. A mature `latest` (its exact
@@ -129,7 +160,7 @@ export type ClampDecision =
  * cannot order prereleases. Otherwise clamp to the newest mature STABLE
  * version in (current, latest] — bounds compared on x.y.z cores — recomputing
  * updateType because grouping (and so branch/PR identity) depends on it. No
- * mature version in the window means no update has ripened yet: exclude.
+ * mature version in the window means no update has ripened yet: hold back.
  * A version missing from `times` cannot be proven mature, so it never counts
  * as mature (fail-closed).
  */
@@ -147,7 +178,7 @@ export function clampCandidate(
   // Unparseable bounds cannot be clamped against. Candidates like these are
   // 'unknown'-typed and applyReleaseAge passes them through before calling
   // here; this is only a defensive backstop.
-  if (!cur || !lat) return { action: "exclude" };
+  if (!cur || !lat) return { action: "hold-back" };
   let best: string | null = null;
   let bestParsed: Triple | null = null;
   for (const [version, t] of times) {
@@ -160,7 +191,7 @@ export function clampCandidate(
       bestParsed = parsed;
     }
   }
-  if (best === null) return { action: "exclude" };
+  if (best === null) return { action: "hold-back" };
   return { action: "clamp", latest: best, updateType: classifyUpdate(candidate.current, best) };
 }
 
@@ -169,8 +200,10 @@ export interface ReleaseAgeResult {
   kept: Candidate[];
   /** Kept, but rounded down from a too-new dist-tag `latest`. */
   clamped: { name: string; from: string; to: string }[];
-  /** Dropped: no version newer than `current` has matured yet (normal, green). */
+  /** Kept verbatim, no age check: named in minimum_release_age_exclude (green). */
   excluded: Candidate[];
+  /** Dropped: no version newer than `current` has matured yet (normal, green). */
+  heldBack: Candidate[];
   /** Dropped: publish times unverifiable (fail-closed — reported red). */
   unavailable: Candidate[];
 }
@@ -182,7 +215,11 @@ export interface ReleaseAgeResult {
  * fetches a package's packument twice. 'unknown'-typed candidates pass
  * through unfetched — grouping already excludes them from agent work, and a
  * red "unavailable" drop for a candidate that was never updatable would be
- * noise. `now` is injectable for test determinism.
+ * noise. Candidates named in `opts.exclude` (minimum_release_age_exclude)
+ * also pass through unfetched, keeping the raw `latest`: the human opted them
+ * out of the age check, so no packument means no spurious red — their
+ * packument is still fetched fail-soft at PR time for links/license. `now` is
+ * injectable for test determinism.
  */
 export async function applyReleaseAge(
   candidates: readonly Candidate[],
@@ -192,9 +229,16 @@ export async function applyReleaseAge(
     signal?: AbortSignal;
     now?: number;
     packuments?: Map<string, Packument | null>;
+    exclude?: ReadonlySet<string>;
   } = {},
 ): Promise<ReleaseAgeResult> {
-  const result: ReleaseAgeResult = { kept: [], clamped: [], excluded: [], unavailable: [] };
+  const result: ReleaseAgeResult = {
+    kept: [],
+    clamped: [],
+    excluded: [],
+    heldBack: [],
+    unavailable: [],
+  };
   if (minDays <= 0) {
     result.kept = [...candidates];
     return result;
@@ -208,7 +252,10 @@ export async function applyReleaseAge(
   const names = [
     ...new Set(
       candidates
-        .filter((c) => c.updateType !== "unknown" && !packuments.has(c.name))
+        .filter(
+          (c) =>
+            c.updateType !== "unknown" && !opts.exclude?.has(c.name) && !packuments.has(c.name),
+        )
         .map((c) => c.name),
     ),
   ];
@@ -219,6 +266,11 @@ export async function applyReleaseAge(
   );
 
   for (const c of candidates) {
+    if (opts.exclude?.has(c.name)) {
+      result.excluded.push(c);
+      result.kept.push(c);
+      continue;
+    }
     if (c.updateType === "unknown") {
       result.kept.push(c);
       continue;
@@ -236,17 +288,17 @@ export async function applyReleaseAge(
       result.clamped.push({ name: c.name, from: c.latest, to: decision.latest });
       result.kept.push({ ...c, latest: decision.latest, updateType: decision.updateType });
     } else {
-      result.excluded.push(c);
+      result.heldBack.push(c);
     }
   }
   return result;
 }
 
 /**
- * One-line note for the run summary — clamps and hold-backs are normal
- * operation (green) but must never be silent truncation. "" when the cooldown
- * changed nothing. Unavailable drops additionally get their own red group
- * entries in the workflow; this line is just the aggregate.
+ * One-line note for the run summary — clamps, hold-backs, and exclusions are
+ * normal operation (green) but must never be silent truncation. "" when the
+ * cooldown changed nothing. Unavailable drops additionally get their own red
+ * group entries in the workflow; this line is just the aggregate.
  */
 export function describeReleaseAge(result: ReleaseAgeResult, minDays: number): string {
   const parts: string[] = [];
@@ -254,9 +306,13 @@ export function describeReleaseAge(result: ReleaseAgeResult, minDays: number): s
     const list = result.clamped.map((c) => `${c.name} to ${c.to} (latest ${c.from} is too new)`);
     parts.push(`clamped ${list.join(", ")}`);
   }
-  if (result.excluded.length > 0) {
-    const list = result.excluded.map((c) => `${c.name} ${c.latest}`);
+  if (result.heldBack.length > 0) {
+    const list = result.heldBack.map((c) => `${c.name} ${c.latest}`);
     parts.push(`held back ${list.join(", ")} (no newer stable version is old enough)`);
+  }
+  if (result.excluded.length > 0) {
+    const list = result.excluded.map((c) => c.name);
+    parts.push(`skipped the age check for ${list.join(", ")} (minimum_release_age_exclude)`);
   }
   if (result.unavailable.length > 0) {
     const list = result.unavailable.map((c) => c.name);

@@ -19,6 +19,7 @@ import {
   describeReleaseAge,
   fetchPackument,
   parseMinReleaseAge,
+  parseMinReleaseAgeExclude,
   type Packument,
 } from "../core/release-age.ts";
 import { detectPersistedCredentials, persistedCredentialsSummary } from "../core/credentials.ts";
@@ -96,6 +97,12 @@ const MAX_OPEN_PRS_RAW = process.env.DEPVISOR_MAX_OPEN_PRS || "";
 // before depvisor updates to it — the supply-chain cooldown (core/release-age.ts).
 // Empty = unset = 1; "0" disables it.
 const MIN_RELEASE_AGE_RAW = process.env.DEPVISOR_MIN_RELEASE_AGE || "";
+// Newline-separated package names exempted from the cooldown's age check —
+// the per-package escape hatch for packages the public npm registry cannot
+// vouch for (private-registry packages), which would otherwise go red as
+// release-age-unavailable every run. From workflow config, never the
+// agent-writable target tree (like verify_commands and ignore).
+const MIN_RELEASE_AGE_EXCLUDE_RAW = process.env.DEPVISOR_MIN_RELEASE_AGE_EXCLUDE || "";
 // Newline-separated ignore rules (`name` or `name@<major>`) that drop candidates
 // before grouping — the human-decided permanent counterpart to defer. From
 // workflow config, never the agent-writable target tree (like verify_commands).
@@ -346,6 +353,22 @@ export default defineWorkflow({
         groups: [],
       });
     }
+    // Parsed and validated even when the cooldown is disabled: a typo'd
+    // exclusion should fail loudly now, not the day the cooldown is re-enabled.
+    const releaseAgeExclude = parseMinReleaseAgeExclude(MIN_RELEASE_AGE_EXCLUDE_RAW);
+    if (!releaseAgeExclude.ok) {
+      return finish({
+        status: "bad-min-release-age-exclude",
+        base,
+        summary:
+          `The minimum_release_age_exclude input has ${releaseAgeExclude.invalid.length} unrecognized ` +
+          `${releaseAgeExclude.invalid.length === 1 ? "entry" : "entries"}: ` +
+          `${releaseAgeExclude.invalid.join(", ")}. Each line must be a package name ` +
+          "(or a full-line '#' comment); majors, version ranges, and patterns are not " +
+          "supported.",
+        groups: [],
+      });
+    }
     const ignore = parseIgnore(IGNORE_RAW);
     if (!ignore.ok) {
       return finish({
@@ -385,7 +408,10 @@ export default defineWorkflow({
     let releaseAgeNote = "";
     let releaseAgeUnavailable: typeof collected = [];
     if (minReleaseAge > 0 && notIgnored.length > 0) {
-      const aged = await applyReleaseAge(notIgnored, minReleaseAge, { packuments });
+      const aged = await applyReleaseAge(notIgnored, minReleaseAge, {
+        packuments,
+        exclude: releaseAgeExclude.exclude,
+      });
       candidates = aged.kept;
       releaseAgeUnavailable = aged.unavailable;
       releaseAgeNote = describeReleaseAge(aged, minReleaseAge);
@@ -479,7 +505,9 @@ export default defineWorkflow({
           `Could not verify the release age of ${c.name}@${c.latest} against the npm ` +
           "registry (fetch failed or package not found), so this update was dropped " +
           "for the run (fail-closed). A transient registry failure heals on the next " +
-          "run; for private-registry packages set minimum_release_age: 0.",
+          `run; if ${c.name} lives on a private registry, add it to the ` +
+          "minimum_release_age_exclude input (minimum_release_age: 0 disables the " +
+          "cooldown entirely).",
         packages: statusPackages([c]),
         verification: [],
         prUrl: null,
