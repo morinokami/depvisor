@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ADVISORIES_UNAVAILABLE_NOTE,
   describeAdvisories,
   fetchAdvisories,
   prioritizeGroups,
@@ -8,6 +9,13 @@ import {
   type OsvVuln,
 } from "../src/core/advisories.ts";
 import type { Candidate, Group } from "../src/core/types.ts";
+
+test("ADVISORIES_UNAVAILABLE_NOTE stays actionable: names the endpoint to check", () => {
+  // The run stays green on an OSV outage, so this note is the only user-visible
+  // trace of the degradation — it must keep telling users what to verify.
+  assert.match(ADVISORIES_UNAVAILABLE_NOTE, /api\.osv\.dev/);
+  assert.match(ADVISORIES_UNAVAILABLE_NOTE, /[Ss]ecurity prioritization/);
+});
 
 function cand(partial: Partial<Candidate> & { name: string }): Candidate {
   return {
