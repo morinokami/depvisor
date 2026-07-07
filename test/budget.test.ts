@@ -1,18 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyGroup, countOpenDepvisorPrs, parseMaxPrs } from "../src/core/budget.ts";
+import { classifyGroup, countOpenDepvisorPrs, parseMaxOpenPrs } from "../src/core/budget.ts";
 
-test("parseMaxPrs defaults empty to 1 and accepts positive integers", () => {
-  assert.equal(parseMaxPrs(""), 1);
-  assert.equal(parseMaxPrs("   "), 1);
-  assert.equal(parseMaxPrs("1"), 1);
-  assert.equal(parseMaxPrs("5"), 5);
-  assert.equal(parseMaxPrs(" 3 "), 3);
+test("parseMaxOpenPrs defaults empty to 1 and accepts positive integers", () => {
+  assert.equal(parseMaxOpenPrs(""), 1);
+  assert.equal(parseMaxOpenPrs("   "), 1);
+  assert.equal(parseMaxOpenPrs("1"), 1);
+  assert.equal(parseMaxOpenPrs("5"), 5);
+  assert.equal(parseMaxOpenPrs(" 3 "), 3);
 });
 
-test("parseMaxPrs rejects non-positive-integer input (fail-fast)", () => {
+test("parseMaxOpenPrs rejects non-positive-integer input (fail-fast)", () => {
   for (const raw of ["0", "-1", "1.5", "abc", "2x", "1e3", "  0 "]) {
-    assert.equal(parseMaxPrs(raw), null, `expected null for '${raw}'`);
+    assert.equal(parseMaxOpenPrs(raw), null, `expected null for '${raw}'`);
   }
 });
 
@@ -41,10 +41,10 @@ test("classifyGroup: a new group opens only while slots remain, else held back",
 });
 
 test("budget scenario: ceiling reached by existing PRs opens no new PR", () => {
-  // max_prs=2, two existing open depvisor PRs already at the ceiling.
-  const maxPrs = parseMaxPrs("2") as number;
+  // max_open_prs=2, two existing open depvisor PRs already at the ceiling.
+  const maxOpenPrs = parseMaxOpenPrs("2") as number;
   const open = ["depvisor/major-chalk", "depvisor/major-lru-cache"];
-  let newSlots = Math.max(0, maxPrs - countOpenDepvisorPrs(open));
+  let newSlots = Math.max(0, maxOpenPrs - countOpenDepvisorPrs(open));
   assert.equal(newSlots, 0);
 
   // A brand-new group is held back; an existing (drifted) one still refreshes.
@@ -53,8 +53,8 @@ test("budget scenario: ceiling reached by existing PRs opens no new PR", () => {
 });
 
 test("budget scenario: successful new PRs consume slots in order", () => {
-  const maxPrs = parseMaxPrs("2") as number;
-  let newSlots = Math.max(0, maxPrs - countOpenDepvisorPrs([])); // 2
+  const maxOpenPrs = parseMaxOpenPrs("2") as number;
+  let newSlots = Math.max(0, maxOpenPrs - countOpenDepvisorPrs([])); // 2
   const dispositions: string[] = [];
   // Three new groups, each succeeds → only the first two open, third held back.
   for (let i = 0; i < 3; i++) {
