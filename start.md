@@ -1,4 +1,4 @@
-# Skill: Set Up depvisor in a Repository
+# Set Up depvisor in a Repository
 
 You are helping the user add depvisor to their repository. depvisor is a GitHub
 Action whose AI agent investigates dependency updates, applies them, fixes any
