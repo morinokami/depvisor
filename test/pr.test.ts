@@ -9,6 +9,7 @@ import {
   clearPrPreview,
   deriveLabels,
   emitPrPayload,
+  extractVersionsMarker,
   PR_PAYLOADS_DIR,
   sanitizeLabels,
   sanitizePrBody,
@@ -135,6 +136,44 @@ test("sanitizePrBody drops a malformed versions marker (fail-closed)", () => {
   const clean = sanitizePrBody("hi <!-- depvisor:versions=--><script>x</script> -->");
   assert.ok(!clean.includes("<script"));
   assert.ok(!clean.includes("<!--"));
+});
+
+test("extractVersionsMarker reads only the body's trailing marker", () => {
+  const real = versionsMarker([cand("lru-cache", "10.0.0", "11.0.0")]);
+  // Trailing marker, with the CRLF/whitespace tail a web-edited body can gain.
+  assert.equal(extractVersionsMarker(`body\n\n${real}`), real);
+  assert.equal(extractVersionsMarker(`body\n\n${real}\r\n`), real);
+  // A mid-body marker is not "the" marker; neither is a code-span-quoted one.
+  assert.equal(extractVersionsMarker(`${real}\n\ntrailing prose`), null);
+  assert.equal(extractVersionsMarker(`body \`${real}\``), null);
+  assert.equal(extractVersionsMarker("no marker at all"), null);
+});
+
+test("a marker-shaped code span in the narrative cannot hijack the versions marker", () => {
+  // sanitizeSummary deliberately keeps code spans intact, so agent narrative
+  // (from poisoned release notes — or an honest depvisor-on-depvisor update
+  // quoting its own marker syntax) can carry a marker-shaped string into the
+  // body. Extraction must stay pinned to the trailing marker buildPrPayload
+  // wrote, or such narrative could freeze skip-if-up-to-date on versions the
+  // PR does not deliver.
+  const candidates = [cand("lru-cache", "10.0.0", "11.0.0")];
+  const real = versionsMarker(candidates);
+  const fake = "<!-- depvisor:versions=lru-cache@99.0.0@ -->";
+  const p = buildPrPayload({
+    branch: "depvisor/major-lru-cache",
+    base: "main",
+    candidates,
+    narrative: {
+      summary: `Updated. depvisor tracks PRs via \`${fake}\` markers.`,
+      notableChanges: [],
+      breakingChangesAddressed: [],
+      residualRisks: [],
+    },
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  const clean = sanitizePrBody(p.body);
+  assert.equal(extractVersionsMarker(clean), real);
+  assert.equal(extractVersionsMarker(p.body), real);
 });
 
 const narrative = (

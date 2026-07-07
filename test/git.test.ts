@@ -54,6 +54,37 @@ test("changedPaths does not truncate the first entry (leading-space status)", ()
   assert.deepEqual(changedPaths(repo), ["package-lock.json", "package.json"]);
 });
 
+test("changedPaths reports quoting-triggering paths verbatim and they stay committable", () => {
+  const repo = tempRepo();
+  // Non-ASCII and embedded-quote names make non-`-z` porcelain C-quote the path
+  // (`"\346…"`); the escaped string no longer names the real file, so a bump
+  // commit's `git add` pathspec failed and a scope read saw nothing on either
+  // side. `-z` prints paths verbatim.
+  mkdirSync(join(repo, "ワークスペース"));
+  writeFileSync(join(repo, "ワークスペース/package.json"), '{"name":"ws"}\n');
+  writeFileSync(join(repo, 'has"quote.txt'), "x\n");
+  execSync("git add -A", { cwd: repo });
+  execSync("git -c user.email=t@t -c user.name=t commit -qm add", { cwd: repo });
+
+  writeFileSync(join(repo, "ワークスペース/package.json"), '{"name":"ws","version":"2"}\n');
+  writeFileSync(join(repo, 'has"quote.txt'), "y\n");
+  assert.deepEqual(changedPaths(repo).sort(), ['has"quote.txt', "ワークスペース/package.json"]);
+
+  // The mechanical bump path must reach the commit, not die on a pathspec.
+  const bump = manifestBumpPaths(repo, ["package-lock.json"]);
+  assert.deepEqual(bump, ["ワークスペース/package.json"]);
+  const sha = commitPaths(repo, bump, "deps: bump");
+  assert.ok(sha);
+  assert.deepEqual(changedPaths(repo).sort(), ['has"quote.txt']);
+});
+
+test("changedPaths keeps only the destination of a staged rename (-z ORIG_PATH dropped)", () => {
+  const repo = tempRepo();
+  execSync("git mv src.ts renamed.ts", { cwd: repo });
+  writeFileSync(join(repo, "package.json"), '{"changed":1}\n');
+  assert.deepEqual(changedPaths(repo).sort(), ["package.json", "renamed.ts"]);
+});
+
 test("commitPaths/commitAll split manifests from code fixes", () => {
   const repo = tempRepo();
   writeFileSync(join(repo, "package.json"), '{"v":2}\n');

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -144,4 +144,23 @@ test("checkDiffScope passes a version-only bump with source fixes", () => {
   );
   writeFileSync(join(repo, "src.ts"), "export const adapted = true;\n");
   assert.deepEqual(checkDiffScope(repo, "HEAD"), { ok: true, violations: [] });
+});
+
+test("checkDiffScope catches guarded-field tampering under a non-ASCII workspace path", () => {
+  // Non-`-z` porcelain C-quotes such a path, and the escaped string reads as a
+  // nonexistent file on BOTH sides of the diff — a guarded `scripts` injection
+  // in that workspace slipped through the gate unseen.
+  const repo = repoWithBaseline(`{"name":"root","private":true}`);
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo });
+  mkdirSync(join(repo, "パッケージ"));
+  writeFileSync(join(repo, "パッケージ/package.json"), `{"name":"ws","version":"1.0.0"}`);
+  sh("git add -A");
+  sh("git -c user.email=t@t -c user.name=t commit -qm add-workspace");
+  writeFileSync(
+    join(repo, "パッケージ/package.json"),
+    `{"name":"ws","version":"1.0.0","scripts":{"postinstall":"node steal.js"}}`,
+  );
+  const scope = checkDiffScope(repo, "HEAD");
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["パッケージ/package.json (scripts)"]);
 });
