@@ -42,7 +42,7 @@ inputs:
     required: false
     default: "1"
   ignore:
-    description: Newline-separated packages to never update; use "name" to skip a package entirely or "name@<major>" to skip only a specific major.
+    description: Newline-separated packages to never update; use "name" to skip a package entirely or "name@<major>" to skip only a specific major. Full-line "#" comments are allowed.
     required: false
     default: ""
   node_version:

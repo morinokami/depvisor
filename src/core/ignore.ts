@@ -18,6 +18,10 @@ import { parseVersionCore } from "./version-core.ts";
  * nothing here needs range satisfaction:
  *   - `name`          — always exclude this package.
  *   - `name@<major>`  — exclude only when the update target's major is <major>.
+ *   - `# …`           — a full-line comment (npm names cannot start with `#`,
+ *                       so this can never shadow a real rule). Trailing
+ *                       comments after a rule are NOT supported — they fail
+ *                       loudly like any other unrecognized entry.
  * Fuller ranges (`>=2 <3`) and update-type rules (`major`) are a future
  * expansion gated on adding a semver dependency. parseIgnore fails closed on
  * anything it does not recognize, so a typo turns the run red (`bad-ignore`)
@@ -68,17 +72,18 @@ function parseEntry(entry: string): IgnoreRule | null {
 }
 
 /**
- * Parse the newline-separated ignore input. Blank lines are skipped; every
- * remaining line must parse, else the whole input is rejected with the list of
- * offending entries so the run can fail fast with a message that names them
- * (silently dropping a bad rule would be the "thought I ignored it" trap).
+ * Parse the newline-separated ignore input. Blank lines and full-line `#`
+ * comments are skipped; every remaining line must parse, else the whole input
+ * is rejected with the list of offending entries so the run can fail fast with
+ * a message that names them (silently dropping a bad rule would be the
+ * "thought I ignored it" trap).
  */
 export function parseIgnore(raw: string): ParsedIgnore {
   const rules: IgnoreRule[] = [];
   const invalid: string[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const entry = line.trim();
-    if (!entry) continue;
+    if (!entry || entry.startsWith("#")) continue;
     const rule = parseEntry(entry);
     if (rule) rules.push(rule);
     else invalid.push(entry);

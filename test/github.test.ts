@@ -1,6 +1,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSecureEnv, isNetworkRemote, SAFE_PATH_DIRS } from "../src/core/github.ts";
+import {
+  buildSecureEnv,
+  describePrCreateError,
+  isNetworkRemote,
+  SAFE_PATH_DIRS,
+} from "../src/core/github.ts";
+
+test("describePrCreateError appends the repo-setting hint to the Actions-forbidden error", () => {
+  const raw =
+    "GraphQL: GitHub Actions is not permitted to create or approve pull requests (createPullRequest)";
+  const described = describePrCreateError(raw);
+  assert.ok(described.startsWith(raw));
+  assert.match(described, /Allow GitHub Actions to create and approve pull requests/);
+  assert.match(described, /github_token/);
+});
+
+test("describePrCreateError passes unrecognized errors through unchanged", () => {
+  for (const raw of ["pull request create failed: HTTP 502", ""]) {
+    assert.equal(describePrCreateError(raw), raw);
+  }
+});
 
 test("isNetworkRemote accepts network remotes", () => {
   for (const url of [

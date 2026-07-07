@@ -193,7 +193,7 @@ function preflight():
       status: "bad-base",
       summary:
         `Refusing to use '${base}' as the base branch. Check out the intended base ` +
-        "or set DEPVISOR_BASE_BRANCH explicitly.",
+        "or set the base_branch action input (DEPVISOR_BASE_BRANCH locally).",
     };
   }
   if (!refExists(REPO, base)) {
@@ -353,8 +353,9 @@ export default defineWorkflow({
         summary:
           `The ignore input has ${ignore.invalid.length} unrecognized ` +
           `${ignore.invalid.length === 1 ? "entry" : "entries"}: ${ignore.invalid.join(", ")}. ` +
-          "Each line must be 'name' (never update it) or 'name@<major>' (skip updates to " +
-          "that major); full version ranges and update-type rules are not supported yet.",
+          "Each line must be 'name' (never update it), 'name@<major>' (skip updates to " +
+          "that major), or a full-line '#' comment; full version ranges and update-type " +
+          "rules are not supported yet.",
         groups: [],
       });
     }
@@ -651,7 +652,10 @@ export default defineWorkflow({
             // its re-parse rejected); absent on the ResultUnavailableError path.
             record(
               "no-structured-result",
-              "The agent did not return a structured update result; no PR was created.",
+              "The agent did not return a structured update result; no PR was created. " +
+                "This is usually transient and heals on the next run; if it recurs, the " +
+                "model may be struggling with structured output — consider a stronger " +
+                "llm_model.",
             );
             continue;
           }

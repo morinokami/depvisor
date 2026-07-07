@@ -22,6 +22,24 @@ function failed(error: string): OpenPrResult {
 }
 
 /**
+ * Attach a fix-it hint to well-known `gh pr create` failures. The most common
+ * first-run failure — the repository setting that forbids Actions from creating
+ * PRs — surfaces as a raw GraphQL error that names no setting, and it lands
+ * only AFTER the agent step has already spent LLM tokens, so the message must
+ * point straight at the fix. Anything unrecognized passes through unchanged.
+ */
+export function describePrCreateError(error: string): string {
+  if (/not permitted to create or approve pull requests/i.test(error)) {
+    return (
+      `${error} — enable "Allow GitHub Actions to create and approve pull requests" ` +
+      "(repository Settings → Actions → General → Workflow permissions), or pass a " +
+      "GitHub App / PAT token with pull-request write access as the github_token input."
+    );
+  }
+  return error;
+}
+
+/**
  * Accept only remotes that reach a network host. Local paths, `file://`, and
  * transport helpers can run destination-side hooks inside this token-holding
  * process; network remotes run hooks on the far side.
@@ -360,7 +378,7 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       return { ok: true, action: "updated", url: existing.out, error: null };
     }
 
-    return failed(create.err);
+    return failed(describePrCreateError(create.err));
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
