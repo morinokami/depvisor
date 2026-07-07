@@ -42,11 +42,14 @@ all of the following before writing anything:
      the committed lockfile, so depvisor cannot update the repository at all.
 3. **Verification scripts** — depvisor refuses to open a PR it cannot verify:
    - If package.json defines at least one of `build` / `lint` / `test`, those
-     are auto-detected and no configuration is needed.
+     are auto-detected and no configuration is needed. depvisor runs them in
+     the fixed order **build → lint → test** — build first because tests may
+     consume its artifacts (e.g. a test that requires `dist/`).
    - Otherwise, ask the user which commands verify this repository (e.g.
-     `npm run check`) and set them as the `verify_commands` input. Do not
-     invent commands — without real ones the run fails with
-     `no-verify-scripts`.
+     `npm run check`) and set them as the `verify_commands` input, listed in
+     dependency order — a build before the tests that consume its output,
+     since the commands run in the order given. Do not invent commands —
+     without real ones the run fails with `no-verify-scripts`.
    - Workspace monorepos: verification must run from the repository root and
      exercise the workspaces (root scripts fanning out via `--workspaces`,
      turbo/nx, `bun run --filter`, …). If the root scripts do not reach the
@@ -74,6 +77,14 @@ made a choice in the conversation, treat it as binding.
    - The provider determines the API-endpoint host the workflow allows:
      openai → `api.openai.com`, anthropic → `api.anthropic.com`,
      openrouter → `openrouter.ai`.
+   - **Secret name**: check `gh secret list` for an existing secret that
+     plausibly holds the chosen provider's key (`OPENAI_API_KEY`,
+     `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …). You cannot read secret
+     values, so never assume — ask the user whether it is that provider's API
+     key, and only on their confirmation reference it from the workflow
+     instead of creating a new one. No match, no confirmation, or
+     `gh secret list` fails (unauthenticated `gh`, insufficient access):
+     default to `LLM_API_KEY`.
 2. **Schedule** — when should depvisor run? Default to weekly (e.g. Monday
    03:00 UTC) if the user has no preference; `workflow_dispatch` is always
    included for manual runs.
@@ -91,7 +102,7 @@ Before implementing, restate the choices to yourself as a contract:
 
 - Package manager: `<npm | pnpm | bun>`
 - Verification: `auto-detected (<scripts>)` or `verify_commands: <commands>`
-- Model: `<exact specifier>` → secret `LLM_API_KEY`, endpoint `<host>`
+- Model: `<exact specifier>` → secret `<LLM_API_KEY | confirmed existing name>`, endpoint `<host>`
 - Schedule: `<cron>`
 - Extras: `<none | github_token | minimum_release_age_exclude | install_command | …>`
 
@@ -140,7 +151,7 @@ jobs:
 
       - uses: morinokami/depvisor@v1
         with:
-          llm_api_key: ${{ secrets.LLM_API_KEY }}
+          llm_api_key: ${{ secrets.LLM_API_KEY }} # ← the Step 2 secret name
           llm_model: openai/gpt-5.5 # ← the user's chosen model
 ```
 
@@ -184,10 +195,20 @@ Tailor it per the Step 2 contract:
 
 ## Step 4: Hand the human-only steps to the user
 
-Two things only the user can do. **Never ask the user to paste the API key
+Before asking the user to do anything, check what already exists. Both checks
+are best-effort — they need an authenticated `gh` with access to the repo, and
+when one fails you simply ask the user instead:
+
+```sh
+gh secret list # is the Step 2 secret already there?
+gh api repos/{owner}/{repo}/actions/permissions/workflow \
+  --jq .can_approve_pull_request_reviews # true → item 2 below is already done
+```
+
+Then hand over whatever remains. **Never ask the user to paste the API key
 into the chat** — `gh secret set` prompts for the value directly:
 
-1. Create the repository secret:
+1. Create the repository secret (skip when Step 2 confirmed an existing one):
 
    ```sh
    gh secret set LLM_API_KEY
@@ -197,14 +218,18 @@ into the chat** — `gh secret set` prompts for the value directly:
    with the API key of the provider chosen in Step 2.
 
 2. Enable **"Allow GitHub Actions to create and approve pull requests"**
-   (Settings → Actions → General → Workflow permissions). Without it, PR
-   creation fails with `open-pr-failed`.
+   (Settings → Actions → General → Workflow permissions) — skip when the
+   check above already returned `true`. Without it, PR creation fails with
+   `open-pr-failed`.
 
 ## Step 5: Verify
 
-1. Run the Step 1 verification commands locally on the base branch. If any
-   fail, tell the user now: depvisor stops with `baseline-red` until the base
-   branch is green.
+1. Run the Step 1 verification commands locally on the base branch, in the
+   same order depvisor will: **build → lint → test** for auto-detected
+   scripts, the given order for `verify_commands`. Running tests without the
+   build they consume produces a spurious failure, not a real baseline
+   problem. If a command still fails in the right order, tell the user now:
+   depvisor stops with `baseline-red` until the base branch is green.
 2. Re-check what you wrote: the checkout sets `persist-credentials: false`;
    the `permissions` block grants `contents: write` and
    `pull-requests: write`; the egress allowlist matches the chosen provider.
