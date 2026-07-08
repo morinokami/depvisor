@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/morinokami/depvisor/compare/v1.1.0...v1.2.0) (2026-07-08)
+
+
+### Features
+
+* open one PR per package and raise the default max_open_prs to 5 ([#44](https://github.com/morinokami/depvisor/issues/44)) ([d8bd096](https://github.com/morinokami/depvisor/commit/d8bd09606d0a0cd1c78764822b8f15197f0f89e8))
+
 ## [1.1.0](https://github.com/morinokami/depvisor/compare/v1.0.1...v1.1.0) (2026-07-08)
 
 
