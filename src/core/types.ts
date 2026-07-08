@@ -28,6 +28,14 @@ export interface Candidate {
   currents?: string[];
 }
 
+/**
+ * One unit of update = one prospective PR. The key is the stable branch/PR
+ * identity (see grouping.ts). Today every group is a singleton — one package —
+ * but the machinery stays member-based on purpose: a future user-declared
+ * `groups` config (Dependabot's `groups`) will bundle several packages into one
+ * group, and everything downstream (prompt, gates, PR body, labels) already
+ * handles the plural.
+ */
 export interface Group {
   key: string;
   reason: string;
