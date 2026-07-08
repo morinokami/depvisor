@@ -42,7 +42,7 @@ inputs:
     required: false
     default: "1"
   minimum_release_age_exclude:
-    description: Newline-separated package names exempted from the minimum_release_age check — for private-registry packages the public npm registry cannot vouch for. Full-line "#" comments are allowed.
+    description: Newline-separated package names exempted from the minimum_release_age check — for private-registry packages the public npm registry cannot vouch for. Exact names only (full-line "#" comments are allowed); globs, version ranges, and majors are not supported.
     required: false
     default: ""
   ignore:

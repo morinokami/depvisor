@@ -118,7 +118,7 @@ jobs:
 | `verify_commands`             | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                                                                                |
 | `max_open_prs`                | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                                                                                              |
 | `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                                                                            |
-| `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). Full-line `#` comments are allowed                                                                                   |
+| `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). **Exact names only** (full-line `#` comments allowed); globs, version ranges, and majors are not supported           |
 | `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; full-line `#` comments are allowed. Full version ranges and update-type rules are not supported yet                                                     |
 | `suggest_features`            | `true` to also surface newly added capabilities relevant to your code as a display-only PR-body section (default `false`). Opt-in because it costs extra tokens and widens the agent's engagement with untrusted release notes — see [New-feature suggestions](#new-feature-suggestions-suggest_features) |
 
@@ -258,11 +258,17 @@ Details worth knowing:
     @acme/eslint-config
   ```
 
+  Every line must be an **exact package name**: globs (`@acme/*`), version
+  ranges, and majors (`@acme/design-tokens@2`) are **not** supported, so a
+  pattern has to be expanded into one line per package. (pnpm's
+  `minimumReleaseAgeExclude` _does_ accept globs — a list carried over from
+  `pnpm-workspace.yaml` may therefore need expanding.)
+
   The exemption is meant for packages the public registry cannot vouch for.
   Excluding a package that _does_ exist on npmjs removes a real supply-chain
-  defense for it, so keep the list to your private packages. Typos fail loudly
-  (`bad-min-release-age-exclude`), and `minimum_release_age: 0` remains the
-  full disable.
+  defense for it, so keep the list to your private packages. Typos and
+  unsupported syntax fail loudly (`bad-min-release-age-exclude`), and
+  `minimum_release_age: 0` remains the full disable.
 
 - **bun repos get exact pins while the cooldown is active**: bun resolves
   ranges at install time, so depvisor instructs `bun add <name>@<version>`
