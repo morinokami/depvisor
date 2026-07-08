@@ -62,9 +62,9 @@ export function slugify(s: string): string {
 }
 
 /**
- * Branch name for a group: derived from the stable group key, never from the
- * member list. The key is the PR identity; member churn in e.g. `dev-minor`
- * must not change the branch.
+ * Branch name for a group: derived from the stable group key (name/kind/
+ * updateType), never from the member list. The key is the PR identity; the
+ * same package must map to the same branch run after run.
  */
 export function branchNameForGroup(groupKey: string): string {
   return `depvisor/${slugify(groupKey)}`;
@@ -239,17 +239,19 @@ export function sanitizeLabels(labels: unknown): string[] {
   return [...kept].sort();
 }
 
-// Highest update level in a group decides its single semver:* label; major is
-// isolated per package by grouping, so a group mixes at most minor and patch.
+// Every group is a singleton today, so the semver:* label is simply that
+// package's update level; the highest-rank fold below is the plural handling a
+// future user-declared groups config needs (majors stay isolated per package by
+// grouping, so even then a group mixes at most minor and patch).
 const SEMVER_RANK = { patch: 0, minor: 1, major: 2 } as const;
 
 /**
- * Derive the deterministic label set for a group: `depvisor` always, the group's
- * top `semver:<level>`, `security` when any member resolves an advisory, and
- * `dev-dependencies` when every member is a dev dependency. LLM-free and keyed
- * only on the same inputs the version table uses, so labels can never drift from
- * what the PR shows. Ordering-only advisory data feeds `security`, so a promoted
- * security group and its label stay in lockstep.
+ * Derive the deterministic label set for a group: `depvisor` always, the
+ * update's `semver:<level>`, `security` when any member resolves an advisory,
+ * and `dev-dependencies` when every member is a dev dependency. LLM-free and
+ * keyed only on the same inputs the version table uses, so labels can never
+ * drift from what the PR shows. Ordering-only advisory data feeds `security`,
+ * so a promoted security group and its label stay in lockstep.
  */
 export function deriveLabels(
   candidates: readonly Candidate[],

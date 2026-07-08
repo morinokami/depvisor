@@ -30,14 +30,14 @@ const cand = (name: string, current: string, latest: string): Candidate => ({
 const depvisorFooter = "_Opened by [depvisor](https://github.com/morinokami/depvisor)._";
 
 test("group branches derive from the stable key, not the member list", () => {
-  assert.equal(branchNameForGroup("dev-minor"), "depvisor/dev-minor");
+  assert.equal(branchNameForGroup("dev/knip"), "depvisor/dev-knip");
   assert.equal(branchNameForGroup("major/@types/node"), "depvisor/major-types-node");
   assert.equal(branchNameForGroup("prod/lru-cache"), "depvisor/prod-lru-cache");
 });
 
 test("parsePrPayload accepts a well-shaped payload and drops extra keys", () => {
   const parsed = parsePrPayload({
-    branch: "depvisor/dev-minor",
+    branch: "depvisor/dev-knip",
     base: "main",
     title: "deps: update",
     body: "body",
@@ -45,7 +45,7 @@ test("parsePrPayload accepts a well-shaped payload and drops extra keys", () => 
     extra: "dropped",
   });
   assert.deepEqual(parsed, {
-    branch: "depvisor/dev-minor",
+    branch: "depvisor/dev-knip",
     base: "main",
     title: "deps: update",
     body: "body",
@@ -414,7 +414,7 @@ test("buildPrPayload renders Security and Links columns together", () => {
 test("emitPrPayload names payloads by processing order and branch slug", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-pr-"));
   const p0 = buildPrPayload({
-    branch: "depvisor/dev-minor",
+    branch: "depvisor/dev-knip",
     base: "main",
     candidates: [cand("knip", "6.23.0", "6.24.0")],
     narrative: narrative("Bump knip."),
@@ -429,21 +429,21 @@ test("emitPrPayload names payloads by processing order and branch slug", () => {
   });
   const a = emitPrPayload(dir, p0, 0);
   const b = emitPrPayload(dir, p1, 1);
-  assert.ok(a.endsWith(join(PR_PAYLOADS_DIR, "00-depvisor-dev-minor.json")));
+  assert.ok(a.endsWith(join(PR_PAYLOADS_DIR, "00-depvisor-dev-knip.json")));
   assert.ok(b.endsWith(join(PR_PAYLOADS_DIR, "01-depvisor-major-lru-cache.json")));
   // Filenames sort in processing order, and round-trip the payload.
   const files = readdirSync(join(dir, PR_PAYLOADS_DIR)).sort();
-  assert.deepEqual(files, ["00-depvisor-dev-minor.json", "01-depvisor-major-lru-cache.json"]);
+  assert.deepEqual(files, ["00-depvisor-dev-knip.json", "01-depvisor-major-lru-cache.json"]);
   assert.equal(
     (JSON.parse(readFileSync(a, "utf8")) as { branch: string }).branch,
-    "depvisor/dev-minor",
+    "depvisor/dev-knip",
   );
 });
 
 test("clearPrPreview removes stale payloads and the status file before a run", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-pr-"));
   const payload = buildPrPayload({
-    branch: "depvisor/dev-minor",
+    branch: "depvisor/dev-knip",
     base: "main",
     candidates: [cand("knip", "6.23.0", "6.24.0")],
     narrative: narrative("Bump knip."),

@@ -37,7 +37,7 @@ test("push-boundary policy refusals are failed (red), not blocked (green)", () =
 
   const depvisorBase = openPrWithGh("/nonexistent", {
     ...payload,
-    branch: "depvisor/dev-minor",
+    branch: "depvisor/dev-knip",
     base: "depvisor/other",
   });
   assert.equal(depvisorBase.ok, false);

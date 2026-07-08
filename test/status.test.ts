@@ -22,8 +22,8 @@ import {
 
 const group = (patch: Partial<GroupResult> = {}): GroupResult => ({
   status: "pr-prepared",
-  branch: "depvisor/dev-minor",
-  group: "dev-minor",
+  branch: "depvisor/dev-knip",
+  group: "dev/knip",
   summary: "Updated knip. <!-- hidden --> @octocat\n::error:: nope",
   packages: [
     {
@@ -98,7 +98,7 @@ test("toRunOutput projects the workflow output, dropping packages, prUrl, and us
   assert.equal(output.groups.length, 1);
   const g = output.groups[0] as Record<string, unknown>;
   assert.equal(g.status, "pr-prepared");
-  assert.equal(g.branch, "depvisor/dev-minor");
+  assert.equal(g.branch, "depvisor/dev-knip");
   assert.deepEqual(g.verification, [{ name: "pnpm run test", ok: true, code: 0 }]);
   assert.ok(!("packages" in g), "packages must be stripped from the workflow output");
   assert.ok(!("prUrl" in g), "prUrl must be stripped from the workflow output");
@@ -115,7 +115,7 @@ test("toActionOutputs projects status, failed, prepared_count, and gated pr_urls
           group: "prod/semver",
           prUrl: "https://github.com/o/r/pull/2",
         }),
-        group({ status: "held-back-by-limit", branch: "depvisor/types", group: "types" }),
+        group({ status: "held-back-by-limit", branch: "depvisor/dev-vitest", group: "dev/vitest" }),
       ],
     }),
   );
@@ -182,7 +182,7 @@ test("run status is emitted, read, and patched per group by branch", () => {
     dir,
     run({
       groups: [
-        group({ branch: "depvisor/dev-minor" }),
+        group({ branch: "depvisor/dev-knip" }),
         group({ branch: "depvisor/prod-semver", group: "prod/semver" }),
       ],
     }),
@@ -199,7 +199,7 @@ test("run status is emitted, read, and patched per group by branch", () => {
     next?.groups.find((g) => g.branch === "depvisor/prod-semver")?.prUrl,
     "https://github.com/o/r/pull/2",
   );
-  assert.equal(next?.groups.find((g) => g.branch === "depvisor/dev-minor")?.prUrl, null);
+  assert.equal(next?.groups.find((g) => g.branch === "depvisor/dev-knip")?.prUrl, null);
   assert.equal(
     readRunStatus(file)?.groups.find((g) => g.branch === "depvisor/prod-semver")?.prUrl,
     "https://github.com/o/r/pull/2",
@@ -209,7 +209,7 @@ test("run status is emitted, read, and patched per group by branch", () => {
 test("recordGroupOutcome can flip a single group to a failed open-pr outcome", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
   const file = emitRunStatus(dir, run());
-  recordGroupOutcome(file, "depvisor/dev-minor", {
+  recordGroupOutcome(file, "depvisor/dev-knip", {
     status: "open-pr-failed",
     summary: "PR creation failed: boom",
   });
@@ -268,7 +268,7 @@ test("readRunStatus and recordGroupOutcome fail toward null on a corrupt status 
   // open-pr's per-payload loop — both fail toward null, the same direction as
   // a missing file, and toActionOutputs(null) reports failed=true.
   assert.equal(readRunStatus(file), null);
-  assert.equal(recordGroupOutcome(file, "depvisor/dev-minor", { prUrl: "x" }), null);
+  assert.equal(recordGroupOutcome(file, "depvisor/dev-knip", { prUrl: "x" }), null);
   assert.equal(toActionOutputs(readRunStatus(file)).failed, "true");
 });
 
@@ -291,7 +291,7 @@ test("testChanges survives the open-pr read/rewrite round-trip (parseGroup prese
   );
   // open-pr patches the PR URL back in via read → rewrite; testChanges must not
   // be dropped by parseGroup when that happens.
-  recordGroupOutcome(file, "depvisor/dev-minor", { prUrl: "https://github.com/o/r/pull/9" });
+  recordGroupOutcome(file, "depvisor/dev-knip", { prUrl: "https://github.com/o/r/pull/9" });
   const g = readRunStatus(file)?.groups[0];
   assert.equal(g?.prUrl, "https://github.com/o/r/pull/9");
   assert.deepEqual(g?.testChanges, [{ path: "test/a.test.ts", added: 2, removed: 9 }]);
@@ -352,7 +352,7 @@ test("sumGroupUsage keeps distinct models", () => {
 test("usage survives the open-pr read/rewrite round-trip (parseGroup preserves it)", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
   const file = emitRunStatus(dir, run({ groups: [group({ usage: usage() })] }));
-  recordGroupOutcome(file, "depvisor/dev-minor", { prUrl: "https://github.com/o/r/pull/7" });
+  recordGroupOutcome(file, "depvisor/dev-knip", { prUrl: "https://github.com/o/r/pull/7" });
   const g = readRunStatus(file)?.groups[0];
   assert.equal(g?.prUrl, "https://github.com/o/r/pull/7");
   assert.deepEqual(g?.usage, usage());
@@ -386,14 +386,14 @@ test("step summary renders run header, per-group sections, and sanitizes agent t
     run({
       groups: [
         group(),
-        group({ status: "held-back-by-limit", branch: "depvisor/types", group: "types" }),
+        group({ status: "held-back-by-limit", branch: "depvisor/dev-vitest", group: "dev/vitest" }),
       ],
     }),
   );
   assert.ok(summary.includes("| Status | `completed` |"));
   assert.ok(summary.includes("| Groups | 2 |"));
-  assert.ok(summary.includes("Group `dev-minor` — `pr-prepared`"));
-  assert.ok(summary.includes("Group `types` — `held-back-by-limit`"));
+  assert.ok(summary.includes("Group `dev/knip` — `pr-prepared`"));
+  assert.ok(summary.includes("Group `dev/vitest` — `held-back-by-limit`"));
   assert.ok(summary.includes("| knip | 6.23.0 | 6.24.0 | dev | minor |"));
   assert.ok(summary.includes("| pass | pnpm run test | 0 |"));
   assert.ok(!summary.includes("<!-- hidden -->"));

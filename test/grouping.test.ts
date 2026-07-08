@@ -25,16 +25,7 @@ test("major updates are isolated per package", () => {
   );
 });
 
-test('@types/* non-major updates share the stable "types" key', () => {
-  const groups = groupCandidates([
-    c({ name: "@types/semver", kind: "dev", updateType: "patch" }),
-    c({ name: "@types/react", kind: "dev", updateType: "minor" }),
-  ]);
-  assert.equal(groups.length, 1);
-  assert.equal(groups[0]!.key, "types");
-});
-
-test("non-major dev deps group as dev-minor; prod deps stay individual", () => {
+test("non-major updates are individual per package, dev and prod alike", () => {
   const groups = groupCandidates([
     c({ name: "typescript", kind: "dev", updateType: "minor" }),
     c({ name: "vitest", kind: "dev", updateType: "patch" }),
@@ -42,9 +33,21 @@ test("non-major dev deps group as dev-minor; prod deps stay individual", () => {
   ]);
   assert.deepEqual(
     groups.map((g) => g.key),
-    ["dev-minor", "prod/semver"],
+    ["dev/typescript", "dev/vitest", "prod/semver"],
   );
-  assert.equal(groups[0]!.members.length, 2);
+  for (const g of groups) assert.equal(g.members.length, 1);
+});
+
+test("@types/* packages get no preset: individual like any other dep", () => {
+  const groups = groupCandidates([
+    c({ name: "@types/semver", kind: "dev", updateType: "patch" }),
+    c({ name: "@types/react", kind: "dev", updateType: "minor" }),
+    c({ name: "@types/node", kind: "prod", updateType: "minor" }),
+  ]);
+  assert.deepEqual(
+    groups.map((g) => g.key),
+    ["dev/@types/react", "dev/@types/semver", "prod/@types/node"],
+  );
 });
 
 test("unknown update types never reach a group (could be a downgrade)", () => {

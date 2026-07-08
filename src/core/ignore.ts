@@ -105,8 +105,8 @@ function isIgnored(candidate: Candidate, rules: readonly IgnoreRule[]): boolean 
 /**
  * Split candidates into those to keep and those the ignore rules drop, in input
  * order. A pure prepend filter — no version rewriting, no updateType change —
- * so it never affects branch/PR identity beyond removing members (an aggregate
- * group like `dev-minor` keeps its key; a singleton group simply vanishes).
+ * so it never affects branch/PR identity: every group is a singleton, so
+ * ignoring a package simply makes its group vanish.
  */
 export function applyIgnore(
   candidates: readonly Candidate[],

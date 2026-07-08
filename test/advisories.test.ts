@@ -185,9 +185,9 @@ test("prioritizeGroups stable-promotes resolving groups, keeping localeCompare o
   });
   // Input already in localeCompare order (as groupCandidates returns it).
   const groups = [
-    g("dev-minor", "eslint"),
+    g("dev/@types/node", "@types/node"),
+    g("dev/eslint", "eslint"),
     g("prod/axios", "axios"),
-    g("types", "@types/node"),
     g("prod/lodash", "lodash"),
   ];
   const resolved = new Map([
@@ -198,7 +198,7 @@ test("prioritizeGroups stable-promotes resolving groups, keeping localeCompare o
   assert.deepEqual(
     ordered.map((x) => x.key),
     // Promoted groups first, each rank keeping its original relative order.
-    ["prod/axios", "prod/lodash", "dev-minor", "types"],
+    ["prod/axios", "prod/lodash", "dev/@types/node", "dev/eslint"],
   );
 });
 
