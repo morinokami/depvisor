@@ -266,9 +266,12 @@ Details worth knowing:
 
   The exemption is meant for packages the public registry cannot vouch for.
   Excluding a package that _does_ exist on npmjs removes a real supply-chain
-  defense for it, so keep the list to your private packages. Typos and
-  unsupported syntax fail loudly (`bad-min-release-age-exclude`), and
-  `minimum_release_age: 0` remains the full disable.
+  defense for it, so keep the list to your private packages. Malformed entries
+  fail loudly (`bad-min-release-age-exclude`); a _misspelled_ name is still a
+  valid package name, so it parses, exempts nothing, and the package it was
+  meant to exempt keeps failing the run with `release-age-unavailable`. Either
+  way a bad entry never silently drops the cooldown — it only ever fails to
+  lift it. `minimum_release_age: 0` remains the full disable.
 
 - **bun repos get exact pins while the cooldown is active**: bun resolves
   ranges at install time, so depvisor instructs `bun add <name>@<version>`
