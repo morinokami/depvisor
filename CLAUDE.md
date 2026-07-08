@@ -118,7 +118,7 @@ Preserve these when changing the flow above.
 
 `.github/workflows/depvisor.yml` is the **development** workflow: it runs the composite action from the checkout via `uses: ./`, matching consumer workflows except for `uses: ./` and `install_command: skip` (the target is depvisor itself, a pnpm repo — the action's own `pnpm install` covers it).
 
-The composite action has two documented GitHub-runner quirks (nested `uses:` doesn't evaluate `github.action_path`; pnpm/action-setup breaks absolute paths) — read the comments in action.yml before touching it.
+The composite action has two documented GitHub-runner quirks (nested `uses:` doesn't evaluate `github.action_path`; pnpm/action-setup breaks absolute paths) — read the comments in action.yml before touching it. That second quirk is also load-bearing on purpose: `pnpm/action-setup` reads `packageManager` from `package_json_file` (default = the target checkout's `package.json`) and refuses when it differs from the pinned `version` (#35), so `package_json_file` is pointed at depvisor's own manifest — the absolute path mangles to a nonexistent file, so the target's `packageManager` is never read and the pinned `version` stands.
 
 ### Release workflow
 
