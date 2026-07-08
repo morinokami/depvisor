@@ -9,10 +9,8 @@ change (and any risks) in the PR body. It is **LLM-provider-agnostic** (bring yo
 API key: OpenAI, Anthropic, …) and ships as a GitHub Action. The final merge decision
 stays with you.
 
-> **Status: alpha.** depvisor runs end-to-end on real repositories, but interfaces
-> and configuration are still evolving. It currently supports npm, pnpm, and bun
-> projects and updates direct dependencies only; yarn stops with a clear error
-> rather than guessing.
+> depvisor currently supports npm, pnpm, and bun projects and updates direct
+> dependencies only; yarn stops with a clear error rather than guessing.
 
 ## Use it in your repository
 
@@ -66,7 +64,7 @@ jobs:
         with:
           persist-credentials: false # required — depvisor refuses persisted tokens
 
-      - uses: morinokami/depvisor@v1
+      - uses: morinokami/depvisor@v1 # or pin a commit SHA for production; see Versioning below
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}
           llm_model: openai/gpt-5.5 # or anthropic/claude-sonnet-5, ... (BYOK)
@@ -180,6 +178,34 @@ One caveat: a known GitHub runner bug
 ([actions/runner#2009](https://github.com/actions/runner/issues/2009)) loses
 step outputs when a composite action is nested inside _another_ composite
 action — consume these outputs from workflow steps directly.
+
+## Versioning
+
+Pin depvisor the way you would any privileged third-party action — it handles
+your tokens and opens PRs, so a version swapped out from under you is a real
+supply-chain risk. **Pin to a full-length commit SHA** and keep the version in a
+trailing comment; a SHA is the only truly immutable reference (a Git tag, even
+`@v1.2.3`, can be force-moved — the vector behind recent Actions supply-chain
+attacks), and it is how depvisor pins its own dependencies:
+
+```yaml
+- uses: morinokami/depvisor@<full-length-sha> # v1.2.3
+```
+
+Let [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot)
+or Renovate (the `github-actions` ecosystem) bump that SHA for you, so you keep
+depvisor's own security fixes without giving up immutability.
+
+Prefer convenience over that guarantee? The movable major tag
+`morinokami/depvisor@v1` always points at the latest `v1.x` release — you get
+patches and backward-compatible features without editing the pin, and a breaking
+change bumps the major to `v2`, which you opt into deliberately (`@v1` never
+rolls forward to `v2` on its own). It trades the supply-chain immutability above
+for auto-updates.
+
+Releases are cut from [Conventional Commits](https://www.conventionalcommits.org)
+on `main` (`feat` → minor, `fix` → patch, `!`/`BREAKING CHANGE` → major), and the
+[CHANGELOG](CHANGELOG.md) is generated per release.
 
 ## How depvisor works
 

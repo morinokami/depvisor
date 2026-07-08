@@ -152,7 +152,7 @@ jobs:
         with:
           persist-credentials: false # required — depvisor refuses persisted tokens
 
-      - uses: morinokami/depvisor@v1
+      - uses: morinokami/depvisor@v1 # or pin a commit SHA for production (immutable; the recommended pin)
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }} # ← the Step 2 secret name
           llm_model: openai/gpt-5.5 # ← the user's chosen model
