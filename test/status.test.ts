@@ -1,19 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   emitRunStatus,
   readRunStatus,
+  recordGroupOutcome,
   renderStepSummary,
   runFailsJob,
   runLogLine,
   statusFailsJob,
   statusPath,
   sumGroupUsage,
+  toActionOutputs,
   toRunOutput,
-  updateGroupStatus,
   type GroupResult,
   type GroupUsage,
   type RunStatus,
@@ -104,6 +105,58 @@ test("toRunOutput projects the workflow output, dropping packages, prUrl, and us
   assert.ok(!("usage" in g), "usage is record-only and must not appear in the workflow output");
 });
 
+test("toActionOutputs projects status, failed, prepared_count, and gated pr_urls", () => {
+  const outputs = toActionOutputs(
+    run({
+      groups: [
+        group({ prUrl: "https://github.com/o/r/pull/1" }),
+        group({
+          branch: "depvisor/prod-semver",
+          group: "prod/semver",
+          prUrl: "https://github.com/o/r/pull/2",
+        }),
+        group({ status: "held-back-by-limit", branch: "depvisor/types", group: "types" }),
+      ],
+    }),
+  );
+  assert.deepEqual(outputs, {
+    status: "completed",
+    failed: "false",
+    prepared_count: "2",
+    pr_urls: "https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/2",
+  });
+});
+
+test("toActionOutputs fails closed on off-vocabulary statuses and unsafe URLs", () => {
+  const outputs = toActionOutputs(
+    run({
+      status: "Weird::status",
+      groups: [group({ prUrl: "https://github.com/o/r/pull/1?x=`whoami`" })],
+    }),
+  );
+  assert.equal(outputs.status, "", "an off-vocabulary status is dropped, not escaped");
+  assert.equal(outputs.failed, "true", "failed derives from the raw status, not the gated one");
+  assert.equal(outputs.pr_urls, "", "a URL outside the strict charset is dropped");
+  assert.equal(outputs.prepared_count, "1");
+});
+
+test("toActionOutputs reports a missing status file (crash before reporting) as failed", () => {
+  assert.deepEqual(toActionOutputs(null), {
+    status: "",
+    failed: "true",
+    prepared_count: "0",
+    pr_urls: "",
+  });
+});
+
+test("toActionOutputs counts only pr-prepared groups; a red group flips failed", () => {
+  const outputs = toActionOutputs(
+    run({ groups: [group(), group({ status: "verification-failed", branch: "depvisor/x" })] }),
+  );
+  assert.equal(outputs.prepared_count, "1");
+  assert.equal(outputs.failed, "true", "a completed run with a failed group is still a failure");
+});
+
 test("runFailsJob fails a completed run when any group failed", () => {
   assert.equal(runFailsJob(run()), false);
   assert.equal(
@@ -137,10 +190,11 @@ test("run status is emitted, read, and patched per group by branch", () => {
   assert.equal(file, statusPath(dir));
   assert.equal(readRunStatus(file)?.groups.length, 2);
 
-  const next = updateGroupStatus(file, "depvisor/prod-semver", {
+  const next = recordGroupOutcome(file, "depvisor/prod-semver", {
     prUrl: "https://github.com/o/r/pull/2",
   });
-  // Only the matching group is patched.
+  // Only the matching group is patched; nothing is appended.
+  assert.equal(next?.groups.length, 2);
   assert.equal(
     next?.groups.find((g) => g.branch === "depvisor/prod-semver")?.prUrl,
     "https://github.com/o/r/pull/2",
@@ -152,16 +206,79 @@ test("run status is emitted, read, and patched per group by branch", () => {
   );
 });
 
-test("updateGroupStatus can flip a single group to a failed open-pr outcome", () => {
+test("recordGroupOutcome can flip a single group to a failed open-pr outcome", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
   const file = emitRunStatus(dir, run());
-  updateGroupStatus(file, "depvisor/dev-minor", {
+  recordGroupOutcome(file, "depvisor/dev-minor", {
     status: "open-pr-failed",
     summary: "PR creation failed: boom",
   });
   const patched = readRunStatus(file);
   assert.equal(patched?.status, "completed");
   assert.equal(runFailsJob(patched as RunStatus), true);
+});
+
+test("recordGroupOutcome appends a synthetic entry for an unreadable payload (null branch)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
+  const file = emitRunStatus(dir, run());
+  // The open-pr step cannot know the branch of a payload it failed to parse;
+  // the appended open-pr-failed entry is what keeps the report step's outputs
+  // consistent with the job the non-zero exit is about to fail.
+  recordGroupOutcome(file, null, {
+    status: "open-pr-failed",
+    summary: "Unreadable PR payload 01-x.json: boom",
+  });
+  const next = readRunStatus(file);
+  assert.equal(next?.groups.length, 2);
+  const synthetic = next?.groups[1];
+  assert.equal(synthetic?.status, "open-pr-failed");
+  assert.equal(synthetic?.branch, null);
+  assert.equal(runFailsJob(next as RunStatus), true);
+  const outputs = toActionOutputs(next);
+  assert.equal(outputs.failed, "true", "outputs must agree with the red job (review finding 1)");
+});
+
+test("recordGroupOutcome appends via fallback when a patched branch matches no entry", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
+  const file = emitRunStatus(dir, run());
+  // The opened-PR path patches only prUrl; a branch with no status entry must
+  // not lose the URL (or, worse, silently no-op), so the fallback supplies the
+  // appended entry's identity. The PR genuinely exists, so it stays green.
+  const next = recordGroupOutcome(
+    file,
+    "depvisor/ghost",
+    { prUrl: "https://github.com/o/r/pull/9" },
+    { status: "pr-prepared", summary: "PR opened for a branch with no status entry." },
+  );
+  assert.equal(next?.groups.length, 2);
+  const appended = next?.groups[1];
+  assert.equal(appended?.status, "pr-prepared");
+  assert.equal(appended?.branch, "depvisor/ghost");
+  assert.equal(appended?.prUrl, "https://github.com/o/r/pull/9");
+  assert.equal(runFailsJob(next as RunStatus), false);
+  assert.equal(toActionOutputs(next).prepared_count, "2");
+  assert.ok(toActionOutputs(next).pr_urls.includes("https://github.com/o/r/pull/9"));
+});
+
+test("readRunStatus and recordGroupOutcome fail toward null on a corrupt status file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
+  const file = statusPath(dir);
+  writeFileSync(file, '{"status": "completed", "gro');
+  // A truncated write must not crash the reporter (review finding 2) nor
+  // open-pr's per-payload loop — both fail toward null, the same direction as
+  // a missing file, and toActionOutputs(null) reports failed=true.
+  assert.equal(readRunStatus(file), null);
+  assert.equal(recordGroupOutcome(file, "depvisor/dev-minor", { prUrl: "x" }), null);
+  assert.equal(toActionOutputs(readRunStatus(file)).failed, "true");
+});
+
+test("readRunStatus reads a non-object JSON root as null", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
+  const file = statusPath(dir);
+  for (const root of ["null", "42", '"completed"']) {
+    writeFileSync(file, root);
+    assert.equal(readRunStatus(file), null, `root ${root} must read as no status`);
+  }
 });
 
 test("testChanges survives the open-pr read/rewrite round-trip (parseGroup preserves it)", () => {
@@ -174,7 +291,7 @@ test("testChanges survives the open-pr read/rewrite round-trip (parseGroup prese
   );
   // open-pr patches the PR URL back in via read → rewrite; testChanges must not
   // be dropped by parseGroup when that happens.
-  updateGroupStatus(file, "depvisor/dev-minor", { prUrl: "https://github.com/o/r/pull/9" });
+  recordGroupOutcome(file, "depvisor/dev-minor", { prUrl: "https://github.com/o/r/pull/9" });
   const g = readRunStatus(file)?.groups[0];
   assert.equal(g?.prUrl, "https://github.com/o/r/pull/9");
   assert.deepEqual(g?.testChanges, [{ path: "test/a.test.ts", added: 2, removed: 9 }]);
@@ -235,7 +352,7 @@ test("sumGroupUsage keeps distinct models", () => {
 test("usage survives the open-pr read/rewrite round-trip (parseGroup preserves it)", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
   const file = emitRunStatus(dir, run({ groups: [group({ usage: usage() })] }));
-  updateGroupStatus(file, "depvisor/dev-minor", { prUrl: "https://github.com/o/r/pull/7" });
+  recordGroupOutcome(file, "depvisor/dev-minor", { prUrl: "https://github.com/o/r/pull/7" });
   const g = readRunStatus(file)?.groups[0];
   assert.equal(g?.prUrl, "https://github.com/o/r/pull/7");
   assert.deepEqual(g?.usage, usage());

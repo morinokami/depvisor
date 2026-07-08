@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openPrWithGh } from "./core/github.ts";
-import { PR_PAYLOADS_DIR, type PrPayload } from "./core/pr.ts";
-import { RUN_STATUS_FILE, updateGroupStatus } from "./core/status.ts";
+import { openPrWithGh, type OpenPrResult } from "./core/github.ts";
+import { parsePrPayload, PR_PAYLOADS_DIR, type PrPayload } from "./core/pr.ts";
+import { recordGroupOutcome, RUN_STATUS_FILE } from "./core/status.ts";
 import { REPO } from "./shared/target.ts";
 
 /**
@@ -40,13 +40,27 @@ function main(): void {
   let anyFailed = false;
   for (const file of files) {
     // An unreadable/corrupt payload must not stop the remaining PRs (the
-    // isolation this entrypoint promises). Its branch is unknown, so there is
-    // no status entry to patch — the non-zero exit is what surfaces it.
+    // isolation this entrypoint promises). Its branch is unknown, so no entry
+    // can be patched — a synthetic open-pr-failed entry is appended instead:
+    // without one, the stale `pr-prepared` entry would keep the report step's
+    // outputs/annotations green while this process's non-zero exit turns the
+    // job red. Shape counts as unreadable: the payload is an untrusted
+    // read-back (the tokenless step wrote it), and a JSON-parseable non-payload
+    // like `{}` would otherwise throw mid-push instead of being recorded.
     let payload: PrPayload;
     try {
-      payload = JSON.parse(readFileSync(file, "utf8")) as PrPayload;
+      const parsed = parsePrPayload(JSON.parse(readFileSync(file, "utf8")));
+      if (!parsed) {
+        throw new Error("not a PR payload (branch/base/title/body/labels missing or mistyped)");
+      }
+      payload = parsed;
     } catch (err) {
-      console.error(`  failed: unreadable payload ${file}: ${(err as Error).message}`);
+      const message = (err as Error).message;
+      console.error(`  failed: unreadable payload ${file}: ${message}`);
+      recordGroupOutcome(statusFile, null, {
+        status: "open-pr-failed",
+        summary: `Unreadable PR payload ${basename(file)}: ${message}`,
+      });
       anyFailed = true;
       continue;
     }
@@ -54,22 +68,53 @@ function main(): void {
     // CI supplies a trusted push target; only trusted local dev falls back to the
     // target checkout's .git/config. Empty string = unset (composite action
     // forwards unset inputs as ""), so `|| undefined` lets github.ts fall back.
-    const result = openPrWithGh(REPO, payload, process.env.DEPVISOR_REMOTE_URL || undefined);
+    // openPrWithGh reports expected failures as a result value, but it is not
+    // exception-free (temp-dir/fs errors, and defense in depth against shape
+    // gaps like the one parsePrPayload closes) — a throw must cost this one
+    // payload, not the rest of the loop, so it is caught and recorded like any
+    // other open-pr failure. Its branch is known here, so the entry lands on
+    // the group instead of a branchless synthetic one.
+    let result: OpenPrResult;
+    try {
+      result = openPrWithGh(REPO, payload, process.env.DEPVISOR_REMOTE_URL || undefined);
+    } catch (err) {
+      const message = (err as Error).message;
+      console.error(`  failed: ${message}`);
+      recordGroupOutcome(statusFile, payload.branch, {
+        status: "open-pr-failed",
+        summary: `PR creation crashed: ${message}`,
+      });
+      anyFailed = true;
+      continue;
+    }
     if (result.ok) {
       console.log(`  ${result.action}: ${result.url}`);
-      updateGroupStatus(statusFile, payload.branch, { prUrl: result.url });
+      // The fallback covers a payload whose branch has no status entry (stale
+      // payload dir, or a payload the run never recorded): the PR genuinely
+      // exists, so the appended entry stays green and carries its URL, with a
+      // summary flagging the anomaly for review.
+      recordGroupOutcome(
+        statusFile,
+        payload.branch,
+        { prUrl: result.url },
+        {
+          status: "pr-prepared",
+          summary:
+            "Recorded by the open-pr step: this PR was opened from a payload whose branch had no status entry.",
+        },
+      );
     } else if (result.action === "blocked") {
       // Policy stop, such as human commits on the branch: not a process failure.
       // Record it but stay green — an in-progress human takeover of the PR branch
       // is expected and must not turn recurring runs red.
       console.log(`  blocked: ${result.error}`);
-      updateGroupStatus(statusFile, payload.branch, {
+      recordGroupOutcome(statusFile, payload.branch, {
         status: "open-pr-blocked",
         summary: `PR creation was blocked: ${result.error}`,
       });
     } else {
       console.error(`  failed: ${result.error}`);
-      updateGroupStatus(statusFile, payload.branch, {
+      recordGroupOutcome(statusFile, payload.branch, {
         status: "open-pr-failed",
         summary: `PR creation failed: ${result.error}`,
       });

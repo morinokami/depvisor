@@ -31,6 +31,29 @@ export interface PrPayload {
  */
 export const PR_PAYLOADS_DIR = "payloads";
 
+/**
+ * Read-back shape validation for a payload file. The tokenless step wrote it,
+ * so the token-holding open-pr step must not assume its shape: a JSON-parseable
+ * but non-PrPayload file (`{}`, a bare string, a mistyped field) would
+ * otherwise throw deep inside the push path (`payload.branch.startsWith`) and
+ * kill the whole per-payload loop. Shape only, rebuilt field-by-field so extra
+ * keys are dropped — content stays re-validated at the exit boundary as before
+ * (sanitizeSummary/sanitizePrBody/sanitizeLabels, and prepareCleanPush's branch
+ * and base checks). `labels` entries are deliberately not typed-checked here;
+ * sanitizeLabels re-validates each against the allowlist anyway. Returns null
+ * when the shape is wrong.
+ */
+export function parsePrPayload(raw: unknown): PrPayload | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const p = raw as Partial<PrPayload>;
+  if (typeof p.branch !== "string") return null;
+  if (typeof p.base !== "string") return null;
+  if (typeof p.title !== "string") return null;
+  if (typeof p.body !== "string") return null;
+  if (!Array.isArray(p.labels)) return null;
+  return { branch: p.branch, base: p.base, title: p.title, body: p.body, labels: p.labels };
+}
+
 export function slugify(s: string): string {
   return s
     .replace(/@/g, "")

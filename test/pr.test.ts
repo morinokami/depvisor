@@ -10,6 +10,7 @@ import {
   deriveLabels,
   emitPrPayload,
   extractVersionsMarker,
+  parsePrPayload,
   PR_PAYLOADS_DIR,
   sanitizeLabels,
   sanitizePrBody,
@@ -32,6 +33,45 @@ test("group branches derive from the stable key, not the member list", () => {
   assert.equal(branchNameForGroup("dev-minor"), "depvisor/dev-minor");
   assert.equal(branchNameForGroup("major/@types/node"), "depvisor/major-types-node");
   assert.equal(branchNameForGroup("prod/lru-cache"), "depvisor/prod-lru-cache");
+});
+
+test("parsePrPayload accepts a well-shaped payload and drops extra keys", () => {
+  const parsed = parsePrPayload({
+    branch: "depvisor/dev-minor",
+    base: "main",
+    title: "deps: update",
+    body: "body",
+    labels: ["depvisor"],
+    extra: "dropped",
+  });
+  assert.deepEqual(parsed, {
+    branch: "depvisor/dev-minor",
+    base: "main",
+    title: "deps: update",
+    body: "body",
+    labels: ["depvisor"],
+  });
+  // Label ENTRIES are deliberately not type-checked here; sanitizeLabels
+  // re-validates each against the allowlist at the exit boundary.
+  assert.ok(parsePrPayload({ branch: "b", base: "m", title: "t", body: "", labels: [42] }));
+});
+
+test("parsePrPayload rejects JSON-parseable non-payloads (untrusted read-back)", () => {
+  // The shapes that used to throw mid-push (payload.branch.startsWith on
+  // undefined) instead of being recorded as an open-pr failure.
+  for (const bad of [null, "a string", 42, true, [], {}]) {
+    assert.equal(parsePrPayload(bad), null, `${JSON.stringify(bad)} must be rejected`);
+  }
+  const valid = { branch: "b", base: "m", title: "t", body: "", labels: [] };
+  for (const field of ["branch", "base", "title", "body", "labels"] as const) {
+    const { [field]: _, ...missing } = valid;
+    assert.equal(parsePrPayload(missing), null, `missing ${field} must be rejected`);
+    assert.equal(
+      parsePrPayload({ ...valid, [field]: 7 }),
+      null,
+      `mistyped ${field} must be rejected`,
+    );
+  }
 });
 
 test("versionsMarker is order-independent (stable idempotency key)", () => {

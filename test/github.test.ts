@@ -4,6 +4,7 @@ import {
   buildSecureEnv,
   describePrCreateError,
   isNetworkRemote,
+  openPrWithGh,
   SAFE_PATH_DIRS,
 } from "../src/core/github.ts";
 
@@ -20,6 +21,28 @@ test("describePrCreateError passes unrecognized errors through unchanged", () =>
   for (const raw of ["pull request create failed: HTTP 502", ""]) {
     assert.equal(describePrCreateError(raw), raw);
   }
+});
+
+test("push-boundary policy refusals are failed (red), not blocked (green)", () => {
+  // `blocked` is reserved for the one expected policy stop — a human took over
+  // the PR branch — because open-pr records it as the green `open-pr-blocked`.
+  // A tampered payload must not ride that green path: it would end the whole
+  // job green with no PR opened (a silent no-PR outcome). Both checks below
+  // fire before any git/network work, so they are unit-testable as-is.
+  const payload = { base: "main", title: "t", body: "b", labels: [] };
+  const foreignBranch = openPrWithGh("/nonexistent", { ...payload, branch: "not-depvisor" });
+  assert.equal(foreignBranch.ok, false);
+  assert.equal(foreignBranch.action, "failed");
+  assert.match(foreignBranch.error ?? "", /not a depvisor branch/);
+
+  const depvisorBase = openPrWithGh("/nonexistent", {
+    ...payload,
+    branch: "depvisor/dev-minor",
+    base: "depvisor/other",
+  });
+  assert.equal(depvisorBase.ok, false);
+  assert.equal(depvisorBase.action, "failed");
+  assert.match(depvisorBase.error ?? "", /cannot be the base/);
 });
 
 test("isNetworkRemote accepts network remotes", () => {

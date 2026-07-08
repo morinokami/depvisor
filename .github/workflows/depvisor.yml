@@ -38,6 +38,7 @@ jobs:
           persist-credentials: false
 
       - uses: ./
+        id: depvisor
         with:
           llm_api_key: ${{ secrets.OPENAI_API_KEY }}
           llm_model: openai/gpt-5.5
@@ -50,3 +51,18 @@ jobs:
             pnpm run fmt:check
             pnpm run knip
             pnpm run test
+
+      # Consume the action outputs the way the README documents (env-mediated,
+      # if: always()) — doubles as an end-to-end check that outputs survive a
+      # red run.
+      - name: Show depvisor outputs
+        if: always()
+        env:
+          DEPVISOR_STATUS: ${{ steps.depvisor.outputs.status }}
+          DEPVISOR_FAILED: ${{ steps.depvisor.outputs.failed }}
+          DEPVISOR_PREPARED_COUNT: ${{ steps.depvisor.outputs.prepared_count }}
+          DEPVISOR_PR_URLS: ${{ steps.depvisor.outputs.pr_urls }}
+        run: |
+          echo "status=$DEPVISOR_STATUS failed=$DEPVISOR_FAILED prepared_count=$DEPVISOR_PREPARED_COUNT"
+          echo "pr_urls:"
+          echo "$DEPVISOR_PR_URLS"
