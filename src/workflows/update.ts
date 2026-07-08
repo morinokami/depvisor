@@ -93,7 +93,7 @@ const OPEN_PRS_FILE = process.env.DEPVISOR_OPEN_PRS_FILE;
 // This comes from workflow config, never from the agent-writable target tree.
 const VERIFY_COMMANDS = process.env.DEPVISOR_VERIFY_COMMANDS || "";
 // Ceiling on the number of open depvisor PRs (Dependabot's open-pull-requests-limit
-// model). Empty = unset = 1. Refreshing an existing PR never consumes a slot.
+// model). Empty = unset = 5. Refreshing an existing PR never consumes a slot.
 const MAX_OPEN_PRS_RAW = process.env.DEPVISOR_MAX_OPEN_PRS || "";
 // Minimum age (days) a version must have been public on the npm registry
 // before depvisor updates to it — the supply-chain cooldown (core/release-age.ts).
