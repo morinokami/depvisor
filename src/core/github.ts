@@ -7,12 +7,22 @@ import { type PrPayload, sanitizeLabels, sanitizePrBody, sanitizeSummary } from 
 
 export interface OpenPrResult {
   ok: boolean;
-  /** created: new PR; updated: existing PR refreshed; blocked: policy stop. */
+  /** created: new PR; updated: existing PR refreshed; blocked: human takeover. */
   action: "created" | "updated" | "blocked" | "failed";
   url: string | null;
   error: string | null;
 }
 
+/**
+ * Reserved for the ONE expected policy stop: a human took over the PR branch
+ * (the remote tip carries their commits), which open-pr records as the green
+ * `open-pr-blocked` — exactly what the README documents that status to mean.
+ * Every other push-boundary refusal (non-depvisor branch or base, foreign
+ * authorship in the local range, non-network remote) signals payload/config
+ * tampering or misconfiguration and must go through failed(): a green
+ * "blocked" there would end the whole job green with no PR opened — a silent
+ * no-PR outcome, which the status design promises to surface.
+ */
 function blocked(error: string): OpenPrResult {
   return { ok: false, action: "blocked", url: null, error };
 }
@@ -164,10 +174,10 @@ interface PreparedPush {
  */
 function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | OpenPrResult {
   if (!payload.branch.startsWith("depvisor/")) {
-    return blocked(`refusing to push '${payload.branch}': not a depvisor branch`);
+    return failed(`refusing to push '${payload.branch}': not a depvisor branch`);
   }
   if (payload.base.startsWith("depvisor/")) {
-    return blocked(
+    return failed(
       `refusing to open a PR against base '${payload.base}': a depvisor branch cannot be the base`,
     );
   }
@@ -214,9 +224,13 @@ function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | Open
         .filter((email) => email !== AGENT_EMAIL),
     ),
   ];
+  // Foreign authorship in the LOCAL base..branch range is tampering, not a
+  // human takeover: in CI nothing human can commit to the checkout between the
+  // agent step and this one (the remote-tip takeover check below in
+  // openPrWithGh is the expected-green case).
   if (foreign.length > 0) {
     return fail(
-      blocked(
+      failed(
         `branch ${payload.branch} has commits not authored by depvisor (${foreign.join(", ")}); refusing to push`,
       ),
     );
@@ -298,7 +312,7 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       return failed("cannot resolve a remote URL to push to");
     }
     if (!isNetworkRemote(pushUrl)) {
-      return blocked(
+      return failed(
         `refusing to push to non-network remote '${pushUrl}': a local/file/helper target would run its server-side hooks in this token-holding process`,
       );
     }
