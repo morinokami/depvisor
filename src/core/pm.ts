@@ -49,6 +49,15 @@ export interface PmToolchain {
    */
   lockfiles: readonly string[];
   /**
+   * Extra root manifests a legitimate update may rewrite, for the mechanical
+   * bump commit (exact root paths, not basenames). pnpm: pnpm-workspace.yaml —
+   * a catalog-pinned bump moves its `catalog`/`catalogs` entry there, and
+   * without this the version change would land in the "fix" commit of the
+   * two-commit split. The scope gate's catalog carve-out (scope.ts) is what
+   * makes such a change legal; this list only routes it to the right commit.
+   */
+  extraBumpFiles: readonly string[];
+  /**
    * Install command that does not create a lockfile — the escape hatch a
    * lockfile-less repo sets as its explicit install_command.
    * Only used in guidance messages; a bare `npm install`/`pnpm install`
@@ -97,10 +106,39 @@ function npmUpdateInstruction(candidates: readonly Candidate[]): string {
  * workspace (and the root) that declares each package, leaves the rest
  * untouched, and preserves each dependency's section — so no `-D` and no
  * per-workspace flags. `-r` also drives the single-package case correctly.
+ *
+ * Catalog-pinned dependencies are the exception, instructed as a hand edit of
+ * pnpm-workspace.yaml: pnpm has no command that moves a catalog entry to a
+ * SPECIFIC version — `pnpm update <name>@<ver>` DE-catalogs instead (it
+ * rewrites each workspace's `catalog:` specifier to the plain version, leaving
+ * the catalog entry stale), and `--latest` (which does edit the catalog since
+ * pnpm 10.12.1) rejects version specs (ERR_PNPM_LATEST_WITH_SPEC) — verified
+ * on pnpm 11.9. `--no-frozen-lockfile` matters because CI=true flips pnpm's
+ * install default to frozen, which would fail on the just-edited catalog. The
+ * scope gate's catalog carve-out (scope.ts) deterministically confines the
+ * edit to exactly these packages at exactly these versions. `pinExact` mirrors
+ * bun's: a hand-written range is resolved fresh at install time, so under the
+ * minimum_release_age cooldown the entry must be exact or the install could
+ * reach back into the cooldown window.
  */
-function pnpmUpdateInstruction(candidates: readonly Candidate[]): string {
+function pnpmUpdateInstruction(
+  candidates: readonly Candidate[],
+  opts?: { pinExact?: boolean },
+): string {
   const specs = candidates.map((c) => `${c.name}@${c.latest}`).join(" ");
-  return instructionBlock([`pnpm -r update ${specs}`]);
+  const style = opts?.pinExact
+    ? "write the exact target version, no ^ or ~ (a range would let the install resolve past the vetted version)"
+    : "keeping the entry's existing range style (an entry `^1.0.0` becomes `^<target>`, an exact entry stays exact)";
+  return (
+    instructionBlock([`pnpm -r update ${specs}`]) +
+    "\n\nException — catalog-pinned packages: where one of these packages is declared " +
+    "with the `catalog:` protocol in a package.json, do NOT run the update command for " +
+    "it, and never replace a `catalog:` specifier in a package.json with a plain " +
+    "version. Instead edit that package's entry in the `catalog:`/`catalogs:` section " +
+    `of pnpm-workspace.yaml to its target version listed above — ${style} — and then ` +
+    "run `pnpm install --no-frozen-lockfile` once to refresh the lockfile. Change " +
+    "nothing else in pnpm-workspace.yaml."
+  );
 }
 
 /**
@@ -153,6 +191,7 @@ export const npmToolchain: PmToolchain = {
   runScript: (script) => `npm run ${script}`,
   updateInstruction: npmUpdateInstruction,
   lockfiles: NPM_LOCKFILES,
+  extraBumpFiles: [],
   noLockfileInstall: "npm install --package-lock=false",
   installCommand: (repoPath) =>
     NPM_LOCKFILES.some((f) => existsSync(join(repoPath, f))) ? "npm ci" : null,
@@ -166,6 +205,10 @@ export const pnpmToolchain: PmToolchain = {
   runScript: (script) => `pnpm run ${script}`,
   updateInstruction: pnpmUpdateInstruction,
   lockfiles: PNPM_LOCKFILES,
+  // pnpm ≥ 10.12.1's `pnpm update` rewrites catalog entries here itself; the
+  // composite action puts depvisor's own pinned pnpm on PATH, so CI always has
+  // catalog-capable pnpm.
+  extraBumpFiles: ["pnpm-workspace.yaml"],
   noLockfileInstall: "pnpm install --no-lockfile",
   installCommand: (repoPath) =>
     PNPM_LOCKFILES.some((f) => existsSync(join(repoPath, f)))
@@ -183,6 +226,9 @@ export const bunToolchain: PmToolchain = {
   runScript: (script) => `bun run ${script}`,
   updateInstruction: bunUpdateInstruction,
   lockfiles: BUN_LOCKFILES,
+  // bun keeps catalogs in package.json (a guarded field, no carve-out yet), so
+  // there is no extra manifest to route into the bump commit.
+  extraBumpFiles: [],
   // No escape hatch: `bun outdated` reads the committed lockfile, not the
   // installed tree, so `bun install --no-save` (which writes no lockfile)
   // leaves it erroring with "missing lockfile" — a lockfile-less bun repo

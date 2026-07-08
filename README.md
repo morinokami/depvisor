@@ -103,6 +103,16 @@ jobs:
   explicit `verify_commands`. For bun, workspace `workspaces` globs must be a
   literal directory or a single-level `dir/*` (deeper globs fail closed). yarn
   workspaces are not supported.
+- **pnpm catalogs are supported**: a dependency pinned via the `catalog:` protocol
+  is updated by moving its entry in `pnpm-workspace.yaml`'s `catalog`/`catalogs`
+  section to the target version. That file is otherwise off-limits to the agent —
+  a deterministic gate allows exactly this diff shape (existing entries of the
+  packages being updated, at the vetted target version) and rejects everything
+  else in it (`packages` globs, `overrides`, `onlyBuiltDependencies`, added or
+  removed catalog entries, non-version specifiers). While the
+  `minimum_release_age` cooldown is active, catalog entries are written as exact
+  versions (like bun's pins) so a later install cannot resolve a range back into
+  the cooldown window. bun's package.json catalogs are not supported yet.
 - `.gitignore` covers `node_modules/` and build output (depvisor refuses dirty trees).
 - You pay for the LLM calls with your own API key.
 - Note: PRs opened with the default `GITHUB_TOKEN` do not trigger your other
@@ -276,7 +286,10 @@ Details worth knowing:
 - **bun repos get exact pins while the cooldown is active**: bun resolves
   ranges at install time, so depvisor instructs `bun add <name>@<version>`
   (no `^`) to stop an install from reaching back into the cooldown window.
-  Your manifest then carries an exact version instead of a caret range.
+  Your manifest then carries an exact version instead of a caret range. pnpm
+  **catalog entries** get the same treatment for the same reason: a hand-edited
+  catalog range is resolved fresh by the follow-up install, so while the
+  cooldown is active the entry is written exact.
 - **A clamped major can move between PRs as it matures**: while a new major is
   inside the cooldown window, depvisor may open a PR for an older minor (e.g.
   `depvisor/prod-foo`); once the major has aged, the update moves to its own

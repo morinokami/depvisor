@@ -163,6 +163,26 @@ test("manifestBumpPaths selects every package.json and lockfile by basename (wor
   assert.deepEqual(fixFiles, ["src.ts"]);
 });
 
+test("manifestBumpPaths includes extra root manifests exactly, not by basename", () => {
+  const repo = tempRepo();
+  mkdirSync(join(repo, "packages/a"), { recursive: true });
+  writeFileSync(join(repo, "pnpm-workspace.yaml"), "catalog:\n  semver: ^7.3.0\n");
+  writeFileSync(join(repo, "packages/a/pnpm-workspace.yaml"), "x: 1\n");
+  execSync("git add -A && git -c user.email=t@t -c user.name=t commit -qm ws", { cwd: repo });
+
+  // A catalog bump touches pnpm-workspace.yaml + lockfile, plus a source fix —
+  // and a (meaningless-to-pnpm) nested same-named file the agent also touched.
+  writeFileSync(join(repo, "pnpm-workspace.yaml"), "catalog:\n  semver: ^7.7.3\n");
+  writeFileSync(join(repo, "pnpm-lock.yaml"), "v: 2\n");
+  writeFileSync(join(repo, "packages/a/pnpm-workspace.yaml"), "x: 2\n");
+  writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
+
+  assert.deepEqual(manifestBumpPaths(repo, ["pnpm-lock.yaml"], ["pnpm-workspace.yaml"]).sort(), [
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+  ]);
+});
+
 test("discardWorkPast drops commits, tracked edits, and untracked files", () => {
   const repo = tempRepo();
   const head = execSync("git rev-parse HEAD", { cwd: repo, encoding: "utf8" }).trim();

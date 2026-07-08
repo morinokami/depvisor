@@ -800,7 +800,16 @@ export default defineWorkflow({
           );
           continue;
         }
-        const scope = checkDiffScope(REPO, base);
+        // On pnpm targets, allow exactly this group's catalog version bumps in
+        // pnpm-workspace.yaml (pnpm's own `pnpm update` writes them); other PMs
+        // keep the flat deny — see scope.ts's catalog carve-out.
+        const scope = checkDiffScope(
+          REPO,
+          base,
+          pm.name === "pnpm"
+            ? { catalogBumps: new Map(members.map((m) => [m.name, m.latest])) }
+            : undefined,
+        );
         if (!scope.ok) {
           record(
             "scope-violation",
@@ -821,7 +830,11 @@ export default defineWorkflow({
 
         // Two commits: the mechanical manifest bump, then the agent's code fixes
         // — so a reviewer can see at a glance what the AI actually wrote.
-        commitPaths(REPO, manifestBumpPaths(REPO, pm.lockfiles), `deps: bump ${pkgList}`);
+        commitPaths(
+          REPO,
+          manifestBumpPaths(REPO, pm.lockfiles, pm.extraBumpFiles),
+          `deps: bump ${pkgList}`,
+        );
         commitAll(REPO, `fix: adapt code to ${pkgList} update`);
         log.info(`created deterministic commits for ${pkgList}`);
 

@@ -265,15 +265,22 @@ function commitStaged(repo: string, message: string): string {
  * The changed paths that make up the mechanical dependency bump: every
  * `package.json` (root or workspace) and the given package-manager lockfile(s),
  * matched by basename so nested workspace manifests are included without
- * enumerating workspaces. Feeds `commitPaths` for the first of the two commits;
- * the split is cosmetic (both commits land in the same PR), so this carries no
- * trust boundary.
+ * enumerating workspaces — plus the PM's extra root manifests (`extraBumpFiles`,
+ * exact root paths: pnpm's pnpm-workspace.yaml, whose catalog entries a
+ * catalog-pinned bump rewrites). Feeds `commitPaths` for the first of the two
+ * commits; the split is cosmetic (both commits land in the same PR), so this
+ * carries no trust boundary.
  */
-export function manifestBumpPaths(repo: string, lockfiles: readonly string[]): string[] {
+export function manifestBumpPaths(
+  repo: string,
+  lockfiles: readonly string[],
+  extraBumpFiles: readonly string[] = [],
+): string[] {
   const lock = new Set(lockfiles);
+  const extra = new Set(extraBumpFiles);
   return changedPaths(repo).filter((p) => {
     const base = p.slice(p.lastIndexOf("/") + 1);
-    return base === "package.json" || lock.has(base);
+    return base === "package.json" || lock.has(base) || extra.has(p);
   });
 }
 
