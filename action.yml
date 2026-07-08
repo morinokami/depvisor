@@ -36,7 +36,7 @@ inputs:
   max_open_prs:
     description: Maximum number of open depvisor PRs to keep at once; a run opens new PRs only up to this ceiling.
     required: false
-    default: "1"
+    default: "5"
   minimum_release_age:
     description: Minimum number of days a version must have been public on the npm registry before depvisor updates to it; "0" disables the cooldown.
     required: false

@@ -36,8 +36,9 @@ all of the following before writing anything:
    filesystem:
    - npm/pnpm without a committed lockfile: possible but degraded — the
      `install_command` input must be set to a command that does not create one
-     (a bare `npm install` would dirty the tree), and runs with
-     `max_open_prs > 1` lose the reinstall between dependency groups.
+     (a bare `npm install` would dirty the tree), and multi-group runs (the
+     norm: every package is its own group and `max_open_prs` defaults to 5)
+     lose the reinstall between dependency groups.
      Recommend committing a lockfile instead.
    - bun without a committed lockfile: **stop** — bun computes updates from
      the committed lockfile, so depvisor cannot update the repository at all.
@@ -95,7 +96,8 @@ made a choice in the conversation, treat it as binding.
    provide a GitHub App or PAT token via the `github_token` input; otherwise
    omit it.
 4. **Optional inputs** — keep the defaults unless the user asks:
-   `max_open_prs` (default: at most 1 open depvisor PR), `minimum_release_age`
+   `max_open_prs` (default: at most 5 open depvisor PRs; every PR updates
+   exactly one package), `minimum_release_age`
    (default: 1-day supply-chain cooldown — keep it enabled), `ignore`
    (packages never to update), `suggest_features` (default off — set `"true"`
    to add a display-only "new features that may be relevant" section to PRs;

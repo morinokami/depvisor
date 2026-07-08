@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyGroup, countOpenDepvisorPrs, parseMaxOpenPrs } from "../src/core/budget.ts";
 
-test("parseMaxOpenPrs defaults empty to 1 and accepts positive integers", () => {
-  assert.equal(parseMaxOpenPrs(""), 1);
-  assert.equal(parseMaxOpenPrs("   "), 1);
+test("parseMaxOpenPrs defaults empty to 5 and accepts positive integers", () => {
+  assert.equal(parseMaxOpenPrs(""), 5);
+  assert.equal(parseMaxOpenPrs("   "), 5);
   assert.equal(parseMaxOpenPrs("1"), 1);
   assert.equal(parseMaxOpenPrs("5"), 5);
   assert.equal(parseMaxOpenPrs(" 3 "), 3);
@@ -18,7 +18,7 @@ test("parseMaxOpenPrs rejects non-positive-integer input (fail-fast)", () => {
 
 test("countOpenDepvisorPrs counts only depvisor-owned branches", () => {
   assert.equal(
-    countOpenDepvisorPrs(["depvisor/dev-minor", "depvisor/prod-semver", "feature/x", "renovate/y"]),
+    countOpenDepvisorPrs(["depvisor/dev-knip", "depvisor/prod-semver", "feature/x", "renovate/y"]),
     2,
   );
   assert.equal(countOpenDepvisorPrs([]), 0);

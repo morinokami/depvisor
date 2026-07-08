@@ -62,9 +62,9 @@ export function slugify(s: string): string {
 }
 
 /**
- * Branch name for a group: derived from the stable group key, never from the
- * member list. The key is the PR identity; member churn in e.g. `dev-minor`
- * must not change the branch.
+ * Branch name for a group: derived from the stable group key (name/kind/
+ * updateType), never from the member list. The key is the PR identity; the
+ * same package must map to the same branch run after run.
  */
 export function branchNameForGroup(groupKey: string): string {
   return `depvisor/${slugify(groupKey)}`;

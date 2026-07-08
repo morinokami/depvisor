@@ -7,10 +7,14 @@
  * without the agent (the workflow module cannot be imported under plain node).
  */
 
-/** Parse the max_open_prs input: empty = 1; otherwise a positive integer, else null. */
+/**
+ * Parse the max_open_prs input: empty = 5 (Dependabot's open-pull-requests-limit
+ * default — every group is a single package, so 1 would throttle to one package
+ * per merge); otherwise a positive integer, else null.
+ */
 export function parseMaxOpenPrs(raw: string): number | null {
   const trimmed = raw.trim();
-  if (!trimmed) return 1;
+  if (!trimmed) return 5;
   if (!/^\d+$/.test(trimmed)) return null;
   const n = Number(trimmed);
   return Number.isInteger(n) && n >= 1 ? n : null;

@@ -128,7 +128,7 @@ jobs:
 | `llm_api_key`                 | (required) Provider API key — reaches **only** the agent step                                                                                                                                                                                                                                             |
 | `llm_model`                   | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                                                                                                                                                                                                         |
 | `verify_commands`             | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                                                                                |
-| `max_open_prs`                | Ceiling on the number of open depvisor PRs (default `1`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                                                                                              |
+| `max_open_prs`                | Ceiling on the number of open depvisor PRs (default `5`, matching Dependabot's `open-pull-requests-limit`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                                            |
 | `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                                                                            |
 | `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). **Exact names only** (full-line `#` comments allowed); globs, version ranges, and majors are not supported           |
 | `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; full-line `#` comments are allowed. Full version ranges and update-type rules are not supported yet                                                     |
@@ -227,10 +227,13 @@ the LLM key. Because a checkout that persists credentials would defeat this
 separation from the outside, depvisor checks for persisted credentials first
 and refuses to start if it finds any.
 
-For each update, deterministic code picks a stable dependency group and verifies
-the base branch first. The agent then reads release notes, updates the dependency,
-fixes any breakage, and gets your configured checks passing. Deterministic gates
-verify the final result before a PR is opened.
+Every PR updates exactly one package — majors, minors, and patches alike get
+their own PR, the model of Dependabot without `groups` (in a workspace monorepo,
+that one PR covers every workspace declaring the package). For each update,
+deterministic code picks a stable dependency group and verifies the base branch
+first. The agent then reads release notes, updates the dependency, fixes any
+breakage, and gets your configured checks passing. Deterministic gates verify
+the final result before a PR is opened.
 
 The update branch uses a stable name, so reruns update the same PR instead of
 creating duplicates. It contains two commits: `deps: bump …` for the manifest and
@@ -330,16 +333,29 @@ Details worth knowing:
   drops it a run early rather than letting it slip through.
 - **Existing PRs are left alone**: adding a package to `ignore` does not close a
   PR depvisor already opened for it — close or merge it yourself, since it
-  counts against `max_open_prs` until you do. (An `ignore` rule that only removes one
-  member of a grouped PR, like `dev-minor`, refreshes that PR to drop the
-  package.)
+  counts against `max_open_prs` until you do.
 - **Typos fail loudly**: an unrecognized entry stops the run with `bad-ignore`
   rather than silently ignoring nothing.
 
-By default depvisor keeps at most one open PR at a time. Raise `max_open_prs` to let a
-single run open several PRs — one per dependency group — up to that many open
-depvisor PRs at once. It fills empty slots as you merge or close existing PRs, and
-always refreshes the PRs it already opened (a refresh does not consume a slot).
+### One PR per package (`max_open_prs`)
+
+Every PR updates a single package, so `max_open_prs` directly controls how many
+independent updates can be in flight. It is a ceiling on **open** depvisor PRs
+(default `5`, matching Dependabot's `open-pull-requests-limit` default), not a
+per-run throughput cap. Concretely, with `max_open_prs: 5`, eight pending
+updates, and no depvisor PR currently open, a run opens five PRs — security
+fixes first — and reports the remaining three as `held-back-by-limit` (green);
+they open on later runs as you merge or close PRs. Open PRs from earlier runs
+count against the ceiling, and depvisor always refreshes the PRs it already
+opened when their targets drift (a refresh does not consume a slot).
+
+The one-package granularity is deliberate: unrelated updates never share a PR,
+so each one is reviewable — and mergeable or rejectable — on its own. The
+trade-off is volume: a repository with many pending dev-dependency updates gets
+many small PRs instead of one big one, throttled by the ceiling. Lower
+`max_open_prs` if that is too chatty; a user-declared grouping config
+(Dependabot's `groups`) is a recorded future feature, not present.
+
 Each group runs its own agent session with a fresh reinstall in between, so a
 higher `max_open_prs` costs proportionally more LLM calls and CI time. The
 between-groups reinstall happens even with `install_command: skip` (which only
@@ -353,7 +369,7 @@ The most urgent dependency update is the one that closes a known vulnerability,
 so depvisor processes those first. After grouping, it queries the
 [OSV.dev](https://osv.dev) database and stable-promotes any group whose update
 **resolves** a known advisory to the front of the run — ahead of routine
-`@types/*` or dev-dependency bumps. This matters most with `max_open_prs`: security
+dependency bumps. This matters most with `max_open_prs`: security
 fixes claim the run's PR slots before ordinary updates do. When a group is
 prioritized, its PR body gains a **Security** column linking each resolved
 advisory (`GHSA-…`) so a reviewer can see at a glance why the PR is worth merging
@@ -388,8 +404,7 @@ you structured signal. The labels are derived deterministically from the same
 data the PR body shows:
 
 - `depvisor` — on every PR, to select depvisor's PRs as a set.
-- `semver:patch` / `semver:minor` / `semver:major` — the group's highest update
-  level (majors are always their own PR, so a group mixes at most minor+patch).
+- `semver:patch` / `semver:minor` / `semver:major` — the update's semver level.
 - `security` — the update resolves at least one known advisory (see
   [Security prioritization](#security-prioritization)).
 - `dev-dependencies` — every package in the PR is a dev dependency.
