@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -8,6 +9,7 @@ import {
   runLogLine,
   RUN_STATUS_FILE,
   statusFailsJob,
+  toActionOutputs,
 } from "./core/status.ts";
 
 const DEFAULT_STATUS_FILE = fileURLToPath(
@@ -31,10 +33,30 @@ function appendMissingSummary(message: string): void {
   if (file) appendFileSync(file, `## depvisor\n\n${message}\n`);
 }
 
+/**
+ * Write the action outputs the composite `outputs:` mapping picks up. Values
+ * are charset-gated in toActionOutputs; the uniform heredoc form with a random
+ * delimiter is the standard defense against delimiter-collision injection, and
+ * keeps holding if a future output ever carries freer text. Must run before
+ * any exit(1) — outputs a failed step wrote still reach the mapping.
+ */
+function writeActionOutputs(outputs: Record<string, string>): void {
+  const file = process.env.GITHUB_OUTPUT;
+  if (!file) return;
+  const lines = Object.entries(outputs).flatMap(([name, value]) => {
+    const delimiter = `DEPVISOR_OUTPUT_${randomUUID()}`;
+    return [`${name}<<${delimiter}`, value, delimiter];
+  });
+  appendFileSync(file, `${lines.join("\n")}\n`);
+}
+
 function main(): void {
   const file = process.argv.find((arg, i) => i > 1 && !arg.startsWith("--")) ?? DEFAULT_STATUS_FILE;
   const status = readRunStatus(file);
   if (!status) {
+    // The crash-before-reporting case is when consumers most need a signal, so
+    // outputs (failed=true) are written even on this path, before the exit.
+    writeActionOutputs(toActionOutputs(null));
     const message =
       `depvisor did not emit ${RUN_STATUS_FILE}; a setup or agent step likely failed ` +
       "before reporting a result.";
@@ -42,6 +64,7 @@ function main(): void {
     appendMissingSummary(message);
     process.exit(1);
   }
+  writeActionOutputs(toActionOutputs(status));
 
   // Run-level annotation reflects the overall job outcome (a completed run with
   // a failed group is still a red job), then one error annotation per failing

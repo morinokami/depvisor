@@ -117,6 +117,42 @@ export function toRunOutput(run: RunStatus): v.InferOutput<typeof RUN_OUTPUT_SCH
   return v.parse(RUN_OUTPUT_SCHEMA, run);
 }
 
+// Charset gates for the `$GITHUB_OUTPUT` boundary. Outputs feed `${{ }}`
+// interpolation in consumer workflows — a classic command/shell-injection
+// surface — so only fixed-vocabulary statuses (every depvisor status is
+// kebab-case, `readRunStatus`'s "unknown" fallback included) and
+// strictly-shaped PR URLs pass; free text (summaries) is never emitted. The
+// URL charset has no `:` beyond the scheme, so a GHES `server_url` with a
+// custom port fails the gate — the URL is dropped (fail-closed), nothing else.
+const OUTPUT_STATUS_RE = /^[a-z-]+$/;
+const OUTPUT_PR_URL_RE = /^https:\/\/[A-Za-z0-9./_-]+$/;
+
+/**
+ * The action-outputs projection of a run: the bridge that lets consumer
+ * workflow steps branch on the result (notify on new PRs, skip follow-up
+ * jobs, …). `null` means the status file was never written — a setup or agent
+ * step crashed before reporting — and still yields `failed: "true"` so
+ * `if: always()` consumers get a signal exactly when they need it most.
+ * `prepared_count` counts `pr-prepared` groups as patched by the open-pr step,
+ * i.e. groups whose PR was opened or refreshed (a blocked/failed open-pr has
+ * already left that status); `pr_urls` is those PRs' URLs, newline-separated.
+ */
+export function toActionOutputs(run: RunStatus | null): Record<string, string> {
+  if (!run) return { status: "", failed: "true", prepared_count: "0", pr_urls: "" };
+  const urls = run.groups
+    .map((g) => g.prUrl)
+    .filter((url): url is string => url !== null && OUTPUT_PR_URL_RE.test(url));
+  return {
+    // An off-vocabulary status is dropped, not escaped; `failed` derives from
+    // the raw status (off-vocabulary is not in OK_STATUSES, so it fails), so
+    // the gate can never launder a failure into a green-looking output.
+    status: OUTPUT_STATUS_RE.test(run.status) ? run.status : "",
+    failed: runFailsJob(run) ? "true" : "false",
+    prepared_count: String(run.groups.filter((g) => g.status === "pr-prepared").length),
+    pr_urls: urls.join("\n"),
+  };
+}
+
 // Benign outcomes that stay green. Covers both run-level (`completed`,
 // `no-updates`) and group-level statuses. `open-pr-blocked` is green because a
 // human having taken over the PR branch is expected (see open-pr.ts);

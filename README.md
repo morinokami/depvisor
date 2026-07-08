@@ -140,6 +140,47 @@ The remaining inputs (`llm_api_key_env`, `github_token`, `base_branch`,
 `install_command`, `node_version`) are documented with their defaults in
 [`action.yml`](./action.yml).
 
+### Outputs
+
+The action exposes the run's result to the following steps of your workflow, so
+you can branch and notify on it — message a channel when a PR was opened, skip
+a follow-up job when nothing was prepared. PR labels serve the same purpose on
+the PR side (automation _after_ a PR exists); outputs are the in-workflow
+counterpart. All values are deliberately machine-shaped — fixed-vocabulary
+statuses, numbers, and strictly validated URLs, never the agent's free text —
+so they are safe to consume:
+
+| Output           | Value                                                                                                                                                      |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`         | Run-level status (`completed`, `no-updates`, or a red status — see the [status reference](#status-reference)). Empty when the run crashed before reporting |
+| `failed`         | `"true"` / `"false"` — whether the run fails the job. A `completed` run with one failed group is `"true"`, and so is a crash that never wrote a status     |
+| `prepared_count` | Number of dependency groups whose PR this run prepared (newly opened and refreshed alike)                                                                  |
+| `pr_urls`        | Newline-separated URLs of the PRs this run opened or refreshed                                                                                             |
+
+A red run fails the job, so steps that read the outputs need `if: always()` (or
+`!cancelled()`). Take values into `run:` scripts through `env:` rather than
+interpolating `${{ }}` directly — these outputs are validated, but the env
+indirection is the habit that keeps a workflow injection-safe as it grows:
+
+```yaml
+- id: depvisor
+  uses: morinokami/depvisor@v1
+  with:
+    llm_api_key: ${{ secrets.LLM_API_KEY }}
+    llm_model: openai/gpt-5.5
+
+- name: Notify about new depvisor PRs
+  if: always() && steps.depvisor.outputs.prepared_count != '0'
+  env:
+    PR_URLS: ${{ steps.depvisor.outputs.pr_urls }}
+  run: ./scripts/notify.sh "$PR_URLS"
+```
+
+One caveat: a known GitHub runner bug
+([actions/runner#2009](https://github.com/actions/runner/issues/2009)) loses
+step outputs when a composite action is nested inside _another_ composite
+action — consume these outputs from workflow steps directly.
+
 ## How depvisor works
 
 depvisor keeps the LLM and GitHub token in separate steps. Token-holding steps

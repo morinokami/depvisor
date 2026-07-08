@@ -12,6 +12,7 @@ import {
   statusFailsJob,
   statusPath,
   sumGroupUsage,
+  toActionOutputs,
   toRunOutput,
   updateGroupStatus,
   type GroupResult,
@@ -102,6 +103,58 @@ test("toRunOutput projects the workflow output, dropping packages, prUrl, and us
   assert.ok(!("packages" in g), "packages must be stripped from the workflow output");
   assert.ok(!("prUrl" in g), "prUrl must be stripped from the workflow output");
   assert.ok(!("usage" in g), "usage is record-only and must not appear in the workflow output");
+});
+
+test("toActionOutputs projects status, failed, prepared_count, and gated pr_urls", () => {
+  const outputs = toActionOutputs(
+    run({
+      groups: [
+        group({ prUrl: "https://github.com/o/r/pull/1" }),
+        group({
+          branch: "depvisor/prod-semver",
+          group: "prod/semver",
+          prUrl: "https://github.com/o/r/pull/2",
+        }),
+        group({ status: "held-back-by-limit", branch: "depvisor/types", group: "types" }),
+      ],
+    }),
+  );
+  assert.deepEqual(outputs, {
+    status: "completed",
+    failed: "false",
+    prepared_count: "2",
+    pr_urls: "https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/2",
+  });
+});
+
+test("toActionOutputs fails closed on off-vocabulary statuses and unsafe URLs", () => {
+  const outputs = toActionOutputs(
+    run({
+      status: "Weird::status",
+      groups: [group({ prUrl: "https://github.com/o/r/pull/1?x=`whoami`" })],
+    }),
+  );
+  assert.equal(outputs.status, "", "an off-vocabulary status is dropped, not escaped");
+  assert.equal(outputs.failed, "true", "failed derives from the raw status, not the gated one");
+  assert.equal(outputs.pr_urls, "", "a URL outside the strict charset is dropped");
+  assert.equal(outputs.prepared_count, "1");
+});
+
+test("toActionOutputs reports a missing status file (crash before reporting) as failed", () => {
+  assert.deepEqual(toActionOutputs(null), {
+    status: "",
+    failed: "true",
+    prepared_count: "0",
+    pr_urls: "",
+  });
+});
+
+test("toActionOutputs counts only pr-prepared groups; a red group flips failed", () => {
+  const outputs = toActionOutputs(
+    run({ groups: [group(), group({ status: "verification-failed", branch: "depvisor/x" })] }),
+  );
+  assert.equal(outputs.prepared_count, "1");
+  assert.equal(outputs.failed, "true", "a completed run with a failed group is still a failure");
 });
 
 test("runFailsJob fails a completed run when any group failed", () => {

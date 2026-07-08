@@ -12,7 +12,7 @@ one repository setting**. Your job is to inspect the repository first, tailor
 the workflow to what you find, and hand the user only the steps you cannot
 perform. This file is self-contained — you do not need to fetch anything else.
 The README (https://github.com/morinokami/depvisor#readme) documents every
-input and status in depth if the user asks for more.
+input, output, and status in depth if the user asks for more.
 
 ## Step 1: Inspect the repository
 
