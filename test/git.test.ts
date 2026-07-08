@@ -78,6 +78,16 @@ test("changedPaths reports quoting-triggering paths verbatim and they stay commi
   assert.deepEqual(changedPaths(repo).sort(), ['has"quote.txt']);
 });
 
+test("changedPaths lists files under a new untracked directory individually, not collapsed", () => {
+  const repo = tempRepo();
+  // git collapses a brand-new untracked dir to `pkgs/` by default, which would
+  // hide the package.json inside from the scope gate's basename check.
+  mkdirSync(join(repo, "pkgs/evil"), { recursive: true });
+  writeFileSync(join(repo, "pkgs/evil/package.json"), '{"name":"evil"}\n');
+  writeFileSync(join(repo, "pkgs/evil/index.js"), "module.exports = 1;\n");
+  assert.deepEqual(changedPaths(repo).sort(), ["pkgs/evil/index.js", "pkgs/evil/package.json"]);
+});
+
 test("changedPaths keeps only the destination of a staged rename (-z ORIG_PATH dropped)", () => {
   const repo = tempRepo();
   execSync("git mv src.ts renamed.ts", { cwd: repo });

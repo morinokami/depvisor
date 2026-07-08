@@ -171,7 +171,15 @@ export function changedPaths(repo: string): string[] {
   // (two status chars and a space, so the output must not be trimmed); a
   // rename/copy entry is `XY destination\0original` — the original is consumed
   // and dropped, keeping the destination as before.
-  const res = run(repo, ["status", "--porcelain", "-z"]);
+  //
+  // --untracked-files=all lists every file under a NEW directory individually;
+  // git's default collapses it to just `newdir/`. The scope gate keys its
+  // guarded-field check on the exact `package.json` filename, so a collapsed
+  // `packages/evil/` would let an agent smuggle a new package.json with a
+  // `postinstall`/`overrides` past the gate (the file is then committed by the
+  // catch-all `commitAll`). `all` still omits gitignored paths (node_modules),
+  // which are governed by --ignored, so this does not surface the install tree.
+  const res = run(repo, ["status", "--porcelain", "-z", "--untracked-files=all"]);
   if (res.code !== 0) {
     throw new GitError(`git status --porcelain failed: ${res.err}`);
   }

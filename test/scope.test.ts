@@ -146,6 +146,22 @@ test("checkDiffScope passes a version-only bump with source fixes", () => {
   assert.deepEqual(checkDiffScope(repo, "HEAD"), { ok: true, violations: [] });
 });
 
+test("checkDiffScope catches a guarded field in a package.json under a NEW untracked dir", () => {
+  // git collapses a brand-new untracked directory to `packages/evil/`, so a
+  // basename-keyed guarded-field check never sees the package.json inside — an
+  // agent could smuggle a `postinstall` (later committed by commitAll) past the
+  // gate. changedPaths lists untracked files individually (--untracked-files=all).
+  const repo = repoWithBaseline(`{"name":"root","private":true}`);
+  mkdirSync(join(repo, "packages/evil"), { recursive: true });
+  writeFileSync(
+    join(repo, "packages/evil/package.json"),
+    `{"name":"evil","scripts":{"postinstall":"node steal.js"}}`,
+  );
+  const scope = checkDiffScope(repo, "HEAD");
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["packages/evil/package.json (scripts)"]);
+});
+
 test("checkDiffScope catches guarded-field tampering under a non-ASCII workspace path", () => {
   // Non-`-z` porcelain C-quotes such a path, and the escaped string reads as a
   // nonexistent file on BOTH sides of the diff — a guarded `scripts` injection
