@@ -9,10 +9,8 @@ change (and any risks) in the PR body. It is **LLM-provider-agnostic** (bring yo
 API key: OpenAI, Anthropic, …) and ships as a GitHub Action. The final merge decision
 stays with you.
 
-> **Status: alpha.** depvisor runs end-to-end on real repositories, but interfaces
-> and configuration are still evolving. It currently supports npm, pnpm, and bun
-> projects and updates direct dependencies only; yarn stops with a clear error
-> rather than guessing.
+> depvisor currently supports npm, pnpm, and bun projects and updates direct
+> dependencies only; yarn stops with a clear error rather than guessing.
 
 ## Use it in your repository
 
@@ -180,6 +178,19 @@ One caveat: a known GitHub runner bug
 ([actions/runner#2009](https://github.com/actions/runner/issues/2009)) loses
 step outputs when a composite action is nested inside _another_ composite
 action — consume these outputs from workflow steps directly.
+
+## Versioning
+
+Pin to the movable major tag: `morinokami/depvisor@v1`. It always points at the
+latest `v1.x` release, so you get patches and backward-compatible features
+without changing the pin. A breaking change bumps the major to `v2`, which you
+opt into deliberately by editing the pin — `@v1` never moves to `v2` on its own.
+Prefer reproducibility over auto-updates? Pin an immutable release tag
+(`@v1.2.3`) or a commit SHA instead.
+
+Releases are cut from [Conventional Commits](https://www.conventionalcommits.org)
+on `main` (`feat` → minor, `fix` → patch, `!`/`BREAKING CHANGE` → major), and the
+[CHANGELOG](CHANGELOG.md) is generated per release.
 
 ## How depvisor works
 

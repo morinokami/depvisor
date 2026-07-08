@@ -1,0 +1,77 @@
+name: Release
+
+# Release automation for depvisor's own distribution (tags / CHANGELOG /
+# GitHub Release). Independent of ci.yml and the development depvisor.yml —
+# this touches no target checkout and runs no agent.
+#
+# release-please maintains one Release PR from Conventional Commits on main.
+# Merging that PR cuts the vX.Y.Z tag + GitHub Release; the tag-major job then
+# moves the v1 (and v1.x) movable tags so consumers pinning `@v1` (README) keep
+# resolving. release-please only ever creates immutable vX.Y.Z tags itself.
+
+on:
+  push:
+    branches: ["main"]
+
+# Locked down at the top; each job grants only what it needs.
+permissions: {}
+
+# Never run two release passes at once (a second push mid-release could race
+# the movable-tag rewrite). Do not cancel an in-flight release.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # version-bump commit, tag, and GitHub Release
+      pull-requests: write # the maintained Release PR
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      major: ${{ steps.release.outputs.major }}
+      minor: ${{ steps.release.outputs.minor }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          # Manifest mode: config + manifest live at the repo root.
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # The default GITHUB_TOKEN is enough today: no downstream workflow is
+          # keyed on the tag/release this creates, and GitHub suppresses
+          # recursive triggers from GITHUB_TOKEN anyway. Revisit (PAT / GitHub
+          # App) if a `release: published` publish workflow is ever added — see
+          # CLAUDE.md "Development workflow".
+          token: ${{ github.token }}
+
+  # release-please stops at immutable vX.Y.Z tags. Re-point the movable major
+  # (v1) and minor (v1.x) tags at the released commit so `morinokami/depvisor@v1`
+  # in the README follows the latest v1.x. Hand-carved shell — no extra pinned
+  # third-party action just to force-move two tags.
+  tag-major:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # force-push the movable tags
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # need the released commit + all tags present locally
+      # Values in env vars so nothing from the outputs can break out of the
+      # generated run script (matches action.yml's install-command handling).
+      - name: Move the v-major / v-minor tags to the released commit
+        env:
+          MAJOR: v${{ needs.release-please.outputs.major }}
+          MINOR: v${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}
+          SHA: ${{ needs.release-please.outputs.sha }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$MAJOR" "$SHA"
+          git tag -f "$MINOR" "$SHA"
+          git push -f origin "$MAJOR" "$MINOR"
