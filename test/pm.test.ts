@@ -171,6 +171,24 @@ test("pnpm updateInstruction: a single recursive command covers every workspace"
   assert.match(out, /pnpm -r update left-pad@1\.3\.0 isarray@2\.0\.5/);
   assert.doesNotMatch(out, /-w /);
   assert.doesNotMatch(out, /-D /);
+  // Catalog-pinned deps can't be moved to a specific version by any pnpm
+  // command (`update <name>@<ver>` de-catalogs instead), so the instruction
+  // routes them through a pnpm-workspace.yaml edit + a non-frozen install
+  // (CI=true defaults pnpm to a frozen install, which would fail).
+  assert.match(out, /catalog:/);
+  assert.match(out, /pnpm-workspace\.yaml/);
+  assert.match(out, /pnpm install --no-frozen-lockfile/);
+});
+
+test("pnpm updateInstruction: pinExact demands exact catalog entries", () => {
+  const candidates = [cand({ name: "left-pad", latest: "1.3.0" })];
+  // The command itself is unchanged (pnpm installs the exact target either
+  // way); only the catalog-edit guidance tightens: a hand-written range is
+  // resolved fresh at install time, so under the cooldown it must be exact.
+  const pinned = pnpmToolchain.updateInstruction(candidates, { pinExact: true });
+  assert.match(pinned, /pnpm -r update left-pad@1\.3\.0/);
+  assert.match(pinned, /exact target version, no \^ or ~/);
+  assert.match(pnpmToolchain.updateInstruction(candidates), /existing range style/);
 });
 
 test("bun updateInstruction: keeps the caret, -d marks dev deps (single-package)", () => {
@@ -195,14 +213,12 @@ test("bun updateInstruction: pinExact drops the caret so installs cannot outrun 
   assert.match(out, /bun add --cwd packages\/a -d isarray@2\.0\.5(\n|$)/);
   assert.doesNotMatch(out, /@\^/);
 
-  // npm/pnpm already install the exact target; the flag changes nothing there.
+  // npm already installs the exact target; the flag changes nothing there.
+  // (pnpm's command is likewise unchanged, but its catalog-edit guidance
+  // tightens under pinExact — covered in the pnpm instruction tests above.)
   assert.equal(
     npmToolchain.updateInstruction(candidates, { pinExact: true }),
     npmToolchain.updateInstruction(candidates),
-  );
-  assert.equal(
-    pnpmToolchain.updateInstruction(candidates, { pinExact: true }),
-    pnpmToolchain.updateInstruction(candidates),
   );
 });
 

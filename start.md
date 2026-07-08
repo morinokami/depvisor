@@ -24,7 +24,8 @@ all of the following before writing anything:
    package.json:
    - `package-lock.json` → npm, `pnpm-lock.yaml` → pnpm, `bun.lock` or
      `bun.lockb` → bun. All three are supported, including their workspace
-     monorepos.
+     monorepos; pnpm's `catalog:`-pinned dependencies are supported too
+     (bun's package.json catalogs are not yet).
    - `yarn.lock` → **stop**: depvisor does not support yarn. Tell the user and
      do not set anything up.
    - Lockfiles of several package managers at once: the `packageManager` field

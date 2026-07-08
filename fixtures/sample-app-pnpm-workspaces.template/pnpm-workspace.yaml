@@ -1,0 +1,7 @@
+# Both packages pin semver through the catalog, so updating it exercises the
+# scope gate's catalog carve-out: the version bump lands HERE, not in the
+# workspace package.json files.
+packages:
+  - packages/*
+catalog:
+  semver: 7.3.0

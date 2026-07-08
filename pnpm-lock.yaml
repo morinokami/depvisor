@@ -14,6 +14,9 @@ importers:
       valibot:
         specifier: 1.4.2
         version: 1.4.2(typescript@7.0.1-rc)
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
     devDependencies:
       '@flue/cli':
         specifier: 1.0.0-beta.9

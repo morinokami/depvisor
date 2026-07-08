@@ -14,7 +14,9 @@
 # --workspaces creates a monorepo variant from a separate template: two packages
 # that share a dependency, so it exercises workspace collection and scoped
 # updates. Default with --pm npm: fixtures/sample-app-workspaces (-w-scoped);
-# with --pm bun: fixtures/sample-app-bun-workspaces (--cwd-scoped).
+# with --pm bun: fixtures/sample-app-bun-workspaces (--cwd-scoped); with
+# --pm pnpm: fixtures/sample-app-pnpm-workspaces, whose shared dependency is
+# catalog-pinned in pnpm-workspace.yaml so it exercises the catalog carve-out.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,20 +42,24 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$ws" = "1" ]; then
-  # Monorepo variants exist for npm and bun (each with its own template — the
-  # root scripts differ per PM). pnpm workspaces are not templated yet; yarn is
-  # unsupported.
+  # Monorepo variants exist per PM, each with its own template — the root
+  # scripts differ, and the pnpm one catalog-pins the shared dependency. yarn
+  # is unsupported.
   case "$pm" in
     npm)
       template="$root/fixtures/sample-app-workspaces.template"
       dest="${dest:-$root/fixtures/sample-app-workspaces}"
+      ;;
+    pnpm)
+      template="$root/fixtures/sample-app-pnpm-workspaces.template"
+      dest="${dest:-$root/fixtures/sample-app-pnpm-workspaces}"
       ;;
     bun)
       template="$root/fixtures/sample-app-bun-workspaces.template"
       dest="${dest:-$root/fixtures/sample-app-bun-workspaces}"
       ;;
     *)
-      echo "--workspaces supports --pm npm or bun" >&2
+      echo "--workspaces supports --pm npm, pnpm, or bun" >&2
       exit 1
       ;;
   esac
@@ -79,7 +85,17 @@ fi
 mkdir -p "$dest"
 cp -R "$template/." "$dest/"
 cd "$dest"
-if [ "$ws" = "1" ] && [ "$pm" = "bun" ]; then
+if [ "$ws" = "1" ] && [ "$pm" = "pnpm" ]; then
+  # pnpm workspaces: the template ships its own pnpm-workspace.yaml (workspace
+  # globs + the catalog), which also stops pnpm from walking up into depvisor's
+  # workspace. Generate pnpm-lock.yaml BEFORE the baseline commit.
+  pnpm install
+  git init -q -b main
+  git add -A
+  git -c user.email=fixture@depvisor.dev -c user.name=depvisor-fixture \
+    commit -qm 'baseline: sample-pnpm-workspaces (deps intentionally outdated; semver catalog-pinned)'
+  pnpm run build >/dev/null
+elif [ "$ws" = "1" ] && [ "$pm" = "bun" ]; then
   # bun workspaces: the template ships no lockfile, so generate bun.lock BEFORE
   # the baseline commit, leaving a clean tree. `bun install` at the root installs
   # every workspace; the root scripts fan build/test out with `bun run --filter`.

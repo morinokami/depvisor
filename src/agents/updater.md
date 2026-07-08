@@ -21,8 +21,12 @@ Rules:
 - Never run git commands (no commit, branch, or push — that is handled outside).
 - Never modify git hooks (`.husky/`), CI configuration (`.github/`,
   `.circleci/`, `.gitlab-ci.yml`), or package-manager configuration (`.npmrc`,
-  `.yarnrc`/`.yarnrc.yml`, `.pnpmfile.cjs`, `pnpm-workspace.yaml`, `.yarn/`,
-  `bunfig.toml`).
+  `.yarnrc`/`.yarnrc.yml`, `.pnpmfile.cjs`, `.yarn/`, `bunfig.toml`).
+- `pnpm-workspace.yaml` allows exactly one kind of change: the `catalog`/
+  `catalogs` version of a package you were asked to update, moved to its target
+  version (the task prompt tells you how when it applies). Never add or remove
+  catalog entries, and never touch anything else in that file (`packages`,
+  `overrides`, `onlyBuiltDependencies`, any other setting).
 - Never change package.json's `scripts`, `packageManager`, `pnpm`, `overrides`,
   `resolutions`, `trustedDependencies`, `patchedDependencies`, `workspaces`,
   `catalog`, or `catalogs` fields.
