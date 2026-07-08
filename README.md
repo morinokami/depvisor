@@ -64,7 +64,7 @@ jobs:
         with:
           persist-credentials: false # required — depvisor refuses persisted tokens
 
-      - uses: morinokami/depvisor@v1
+      - uses: morinokami/depvisor@v1 # or pin a commit SHA for production; see Versioning below
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}
           llm_model: openai/gpt-5.5 # or anthropic/claude-sonnet-5, ... (BYOK)
@@ -181,12 +181,27 @@ action — consume these outputs from workflow steps directly.
 
 ## Versioning
 
-Pin to the movable major tag: `morinokami/depvisor@v1`. It always points at the
-latest `v1.x` release, so you get patches and backward-compatible features
-without changing the pin. A breaking change bumps the major to `v2`, which you
-opt into deliberately by editing the pin — `@v1` never moves to `v2` on its own.
-Prefer reproducibility over auto-updates? Pin an immutable release tag
-(`@v1.2.3`) or a commit SHA instead.
+Pin depvisor the way you would any privileged third-party action — it handles
+your tokens and opens PRs, so a version swapped out from under you is a real
+supply-chain risk. **Pin to a full-length commit SHA** and keep the version in a
+trailing comment; a SHA is the only truly immutable reference (a Git tag, even
+`@v1.2.3`, can be force-moved — the vector behind recent Actions supply-chain
+attacks), and it is how depvisor pins its own dependencies:
+
+```yaml
+- uses: morinokami/depvisor@<full-length-sha> # v1.2.3
+```
+
+Let [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot)
+or Renovate (the `github-actions` ecosystem) bump that SHA for you, so you keep
+depvisor's own security fixes without giving up immutability.
+
+Prefer convenience over that guarantee? The movable major tag
+`morinokami/depvisor@v1` always points at the latest `v1.x` release — you get
+patches and backward-compatible features without editing the pin, and a breaking
+change bumps the major to `v2`, which you opt into deliberately (`@v1` never
+rolls forward to `v2` on its own). It trades the supply-chain immutability above
+for auto-updates.
 
 Releases are cut from [Conventional Commits](https://www.conventionalcommits.org)
 on `main` (`feat` → minor, `fix` → patch, `!`/`BREAKING CHANGE` → major), and the
