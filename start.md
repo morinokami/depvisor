@@ -180,6 +180,12 @@ Tailor it per the Step 2 contract:
     @acme/design-tokens
   ```
 
+  Exact package names only, one per line (full-line `#` comments allowed).
+  Globs, version ranges, and majors are not supported — a pattern like
+  `@acme/*` must be expanded into one line per package. (pnpm's similarly
+  named `minimumReleaseAgeExclude` does accept globs; this input does not, so
+  a list carried over from `pnpm-workspace.yaml` may need expanding.)
+
 - **bun repositories**: insert before the depvisor step, pinning
   `bun-version` (depvisor parses `bun outdated`'s text output, so an unpinned
   bun that drifts with releases is a breakage risk — pin the version the
