@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   appendStepSummary,
@@ -56,10 +56,14 @@ function main(): void {
   if (!status) {
     // The crash-before-reporting case is when consumers most need a signal, so
     // outputs (failed=true) are written even on this path, before the exit.
+    // Missing and corrupt read the same (readRunStatus fails both toward
+    // null); only the message distinguishes them.
     writeActionOutputs(toActionOutputs(null));
-    const message =
-      `depvisor did not emit ${RUN_STATUS_FILE}; a setup or agent step likely failed ` +
-      "before reporting a result.";
+    const message = existsSync(file)
+      ? `depvisor wrote an unreadable ${RUN_STATUS_FILE} (corrupt or truncated); ` +
+        "treating the run as failed."
+      : `depvisor did not emit ${RUN_STATUS_FILE}; a setup or agent step likely failed ` +
+        "before reporting a result.";
     emitAnnotation("error", message);
     appendMissingSummary(message);
     process.exit(1);

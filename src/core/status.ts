@@ -127,6 +127,14 @@ export function toRunOutput(run: RunStatus): v.InferOutput<typeof RUN_OUTPUT_SCH
 const OUTPUT_STATUS_RE = /^[a-z-]+$/;
 const OUTPUT_PR_URL_RE = /^https:\/\/[A-Za-z0-9./_-]+$/;
 
+/** The action's `outputs:` values, keyed exactly as action.yml declares them. */
+export type ActionOutputs = {
+  status: string;
+  failed: string;
+  prepared_count: string;
+  pr_urls: string;
+};
+
 /**
  * The action-outputs projection of a run: the bridge that lets consumer
  * workflow steps branch on the result (notify on new PRs, skip follow-up
@@ -137,7 +145,7 @@ const OUTPUT_PR_URL_RE = /^https:\/\/[A-Za-z0-9./_-]+$/;
  * i.e. groups whose PR was opened or refreshed (a blocked/failed open-pr has
  * already left that status); `pr_urls` is those PRs' URLs, newline-separated.
  */
-export function toActionOutputs(run: RunStatus | null): Record<string, string> {
+export function toActionOutputs(run: RunStatus | null): ActionOutputs {
   if (!run) return { status: "", failed: "true", prepared_count: "0", pr_urls: "" };
   const urls = run.groups
     .map((g) => g.prUrl)
@@ -267,7 +275,20 @@ function parseUsage(raw: unknown): GroupUsage | null {
 
 export function readRunStatus(file: string): RunStatus | null {
   if (!existsSync(file)) return null;
-  const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<RunStatus>;
+  // The status file is untrusted at read-back (the tokenless step wrote it,
+  // like the payloads), and the reporter exists to surface failures — so a
+  // truncated/corrupt write or a non-object root must read as null (= no
+  // status), the direction every caller already fails toward, not crash the
+  // report before it can write its outputs (or crash open-pr mid-loop and
+  // break its per-payload isolation).
+  let parsed: Partial<RunStatus>;
+  try {
+    const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!raw || typeof raw !== "object") return null;
+    parsed = raw as Partial<RunStatus>;
+  } catch {
+    return null;
+  }
   return {
     status: String(parsed.status ?? "unknown"),
     base: typeof parsed.base === "string" ? parsed.base : null,
@@ -279,21 +300,48 @@ export function readRunStatus(file: string): RunStatus | null {
 }
 
 /**
- * Patch the group entry whose branch matches `branch` and rewrite the file. Used
- * by the token-holding open-pr step to write back per-PR results (the PR URL, or
- * an open-pr-blocked/open-pr-failed status) without disturbing other groups.
+ * Record one payload's outcome from the token-holding open-pr step: patch the
+ * group entry whose branch matches (the PR URL, or an open-pr-blocked/
+ * open-pr-failed status) without disturbing other groups — or, when no entry
+ * matches (an unreadable payload with no known branch, or a payload naming a
+ * branch the run never recorded), APPEND a synthetic entry instead. The
+ * append matters: this file is what the report step projects the job result
+ * from, and a payload failure that leaves the stale `pr-prepared` entry
+ * standing would report `failed="false"` while the open-pr step's non-zero
+ * exit turns the job red. `fallback` supplies the appended entry's
+ * status/summary when `patch` carries neither (the opened-PR path patches only
+ * `prUrl`); without it the append fails toward `open-pr-failed`. Returns null
+ * when the status file is missing/unreadable — report-status's null path
+ * already reports that as a failure.
  */
-export function updateGroupStatus(
+export function recordGroupOutcome(
   file: string,
-  branch: string,
+  branch: string | null,
   patch: Partial<GroupResult>,
+  fallback?: Pick<GroupResult, "status" | "summary">,
 ): RunStatus | null {
   const current = readRunStatus(file);
   if (!current) return null;
-  const next: RunStatus = {
-    ...current,
-    groups: current.groups.map((g) => (g.branch === branch ? { ...g, ...patch } : g)),
-  };
+  let matched = false;
+  const groups = current.groups.map((g) => {
+    if (branch === null || g.branch !== branch) return g;
+    matched = true;
+    return { ...g, ...patch };
+  });
+  if (!matched) {
+    groups.push({
+      status: "open-pr-failed",
+      branch,
+      group: null,
+      summary: "",
+      packages: [],
+      verification: [],
+      prUrl: null,
+      ...fallback,
+      ...patch,
+    });
+  }
+  const next: RunStatus = { ...current, groups };
   writeFileSync(file, JSON.stringify(next, null, 2));
   return next;
 }
