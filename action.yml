@@ -98,9 +98,19 @@ runs:
         echo "DEPVISOR_HOME=$GITHUB_ACTION_PATH" >> "$GITHUB_ENV"
         echo "DEPVISOR_PNPM_VERSION=$(node -p "require(process.env.GITHUB_ACTION_PATH + '/package.json').packageManager.split('@')[1]")" >> "$GITHUB_ENV"
 
+    # We pin depvisor's own pnpm via `version`, but action-setup ALSO reads the
+    # `packageManager` field from `package_json_file` (default `package.json`,
+    # resolved against GITHUB_WORKSPACE = the target checkout) and refuses with
+    # "Multiple versions of pnpm specified" when it differs from `version`. Point
+    # `package_json_file` at depvisor's own manifest so the target repo's
+    # `packageManager` is never read: the absolute path mangles (joined to
+    # GITHUB_WORKSPACE) to a nonexistent file, action-setup swallows the ENOENT,
+    # and `version` alone stands — and if the mangling is ever fixed it would
+    # read depvisor's own pin, which equals `version`. Either way, no conflict.
     - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       with:
         version: ${{ env.DEPVISOR_PNPM_VERSION }}
+        package_json_file: ${{ env.DEPVISOR_HOME }}/package.json
 
     - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
