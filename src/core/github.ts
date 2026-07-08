@@ -17,8 +17,8 @@ export interface OpenPrResult {
  * Reserved for the ONE expected policy stop: a human took over the PR branch
  * (the remote tip carries their commits), which open-pr records as the green
  * `open-pr-blocked` — exactly what the README documents that status to mean.
- * Every other push-boundary refusal (non-depvisor branch or base, foreign
- * authorship in the local range, non-network remote) signals payload/config
+ * Every other push-boundary refusal (non-depvisor branch or base, a foreign
+ * committer in the local range, non-network remote) signals payload/config
  * tampering or misconfiguration and must go through failed(): a green
  * "blocked" there would end the whole job green with no PR opened — a silent
  * no-PR outcome, which the status design promises to surface.
@@ -168,7 +168,9 @@ interface PreparedPush {
  *   1. the branch name must be one depvisor produces,
  *   2. the base must be a real, non-depvisor branch (the payload is written in
  *      the tokenless step, so its `base` is not trusted),
- *   3. every commit in base..branch must be authored by depvisor.
+ *   3. every commit in base..branch must have depvisor as its COMMITTER — the
+ *      author is deliberately a resolvable display identity (git.ts) and so
+ *      proves nothing.
  * On any doubt nothing is prepared and the temp dir is removed. On success the
  * caller owns `workDir` and must remove it.
  */
@@ -209,10 +211,13 @@ function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | Open
   }
   const branchSha = git(env, clone, ["rev-parse", branchRef]).out;
 
-  const log = git(env, clone, ["log", "--format=%ae", `${baseRef}..${branchRef}`]);
+  // %ce, not %ae: the author is deliberately a resolvable display identity
+  // (git.ts:AGENT_AUTHOR), so only the committer marks depvisor's own commit
+  // objects — and any human rebase/amend/web-UI edit rewrites the committer.
+  const log = git(env, clone, ["log", "--format=%ce", `${baseRef}..${branchRef}`]);
   if (log.code !== 0) {
     return fail(
-      failed(`cannot verify authorship of ${payload.base}..${payload.branch}: ${log.err}`),
+      failed(`cannot verify the committers of ${payload.base}..${payload.branch}: ${log.err}`),
     );
   }
   const foreign = [
@@ -224,14 +229,14 @@ function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | Open
         .filter((email) => email !== AGENT_EMAIL),
     ),
   ];
-  // Foreign authorship in the LOCAL base..branch range is tampering, not a
+  // A foreign committer in the LOCAL base..branch range is tampering, not a
   // human takeover: in CI nothing human can commit to the checkout between the
   // agent step and this one (the remote-tip takeover check below in
   // openPrWithGh is the expected-green case).
   if (foreign.length > 0) {
     return fail(
       failed(
-        `branch ${payload.branch} has commits not authored by depvisor (${foreign.join(", ")}); refusing to push`,
+        `branch ${payload.branch} has commits whose committer is not depvisor (${foreign.join(", ")}); refusing to push`,
       ),
     );
   }
@@ -327,15 +332,16 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
     // ambient credentials from being picked up.
     gh(env, clone, ["auth", "setup-git"]);
 
-    // Human-commit guard: a non-depvisor author at the remote tip means a
-    // force-push would overwrite human work.
+    // Human-commit guard: a non-depvisor committer at the remote tip means a
+    // force-push would overwrite human work. %ce for the same reason as the
+    // local-range check above — the resolvable author proves nothing.
     const fetched = git(env, clone, ["fetch", "origin", payload.branch]);
     let expectedSha = ""; // empty lease = "the remote ref must not exist yet"
     if (fetched.code === 0) {
-      const tipAuthor = git(env, clone, ["log", "-1", "--format=%ae", "FETCH_HEAD"]).out;
-      if (tipAuthor !== AGENT_EMAIL) {
+      const tipCommitter = git(env, clone, ["log", "-1", "--format=%ce", "FETCH_HEAD"]).out;
+      if (tipCommitter !== AGENT_EMAIL) {
         return blocked(
-          `remote ${payload.branch} tip is authored by ${tipAuthor}; refusing to force-push over human commits`,
+          `remote ${payload.branch} tip was committed by ${tipCommitter}; refusing to force-push over human commits`,
         );
       }
       expectedSha = git(env, clone, ["rev-parse", "FETCH_HEAD"]).out;
