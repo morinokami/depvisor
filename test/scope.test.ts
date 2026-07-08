@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   checkDiffScope,
+  packageJsonCatalogProtocolChanges,
   packageJsonGuardedFieldChanges,
   pnpmWorkspaceCatalogViolations,
   scopeViolations,
@@ -109,6 +110,24 @@ test("guarded fields: key reordering alone is not a change", () => {
   assert.deepEqual(packageJsonGuardedFieldChanges(base, reordered), []);
 });
 
+test("catalog protocol specs in package.json must be preserved", () => {
+  const base = `{
+    "dependencies": { "semver": "catalog:", "left-pad": "1.1.0" },
+    "devDependencies": { "@types/node": "catalog:types" }
+  }`;
+  assert.deepEqual(
+    packageJsonCatalogProtocolChanges(
+      base,
+      `{
+        "dependencies": { "semver": "7.7.3", "left-pad": "catalog:" },
+        "devDependencies": { "@types/node": "catalog:types" }
+      }`,
+    ),
+    ['dependencies: "semver" catalog protocol', 'dependencies: "left-pad" catalog protocol'],
+  );
+  assert.deepEqual(packageJsonCatalogProtocolChanges(base, base), []);
+});
+
 const CATALOG_ALLOWED = new Map([["semver", "7.7.3"]]);
 
 test("catalog carve-out: a member's catalog bump to the vetted version passes", () => {
@@ -179,6 +198,22 @@ test("catalog carve-out: entry add/remove, non-members, and off-target versions 
       ['pnpm-workspace.yaml (catalog: "semver")'],
     );
   }
+});
+
+test("catalog carve-out: prototype-named catalog entries are still own keys", () => {
+  const before = "catalog:\n  semver: ^7.3.0\n";
+  const allowed = new Map([
+    ["semver", "7.7.3"],
+    ["constructor", "1.0.0"],
+  ]);
+  assert.deepEqual(
+    pnpmWorkspaceCatalogViolations(
+      before,
+      "catalog:\n  semver: ^7.7.3\n  constructor: 1.0.0\n",
+      allowed,
+    ),
+    ['pnpm-workspace.yaml (catalog: "constructor" added)'],
+  );
 });
 
 test("catalog carve-out: dependency-source redirection is structurally impossible", () => {
@@ -290,6 +325,35 @@ test("checkDiffScope: catalogBumps opts pnpm-workspace.yaml into the carve-out",
   assert.deepEqual(checkDiffScope(repo, "HEAD", { catalogBumps: new Map([["semver", "7.9.9"]]) }), {
     ok: false,
     violations: ['pnpm-workspace.yaml (catalog: "semver")'],
+  });
+});
+
+test("checkDiffScope: pnpm catalog carve-out does not allow de-cataloging package.json", () => {
+  const repo = repoWithBaseline(`{"name":"root","private":true}`);
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo });
+  mkdirSync(join(repo, "packages/a"), { recursive: true });
+  writeFileSync(
+    join(repo, "pnpm-workspace.yaml"),
+    "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\n",
+  );
+  writeFileSync(
+    join(repo, "packages/a/package.json"),
+    `{"name":"a","dependencies":{"semver":"catalog:"}}`,
+  );
+  sh("git add -A");
+  sh("git -c user.email=t@t -c user.name=t commit -qm add-catalog-workspace");
+  writeFileSync(
+    join(repo, "pnpm-workspace.yaml"),
+    "packages:\n  - packages/*\ncatalog:\n  semver: ^7.7.3\n",
+  );
+  writeFileSync(
+    join(repo, "packages/a/package.json"),
+    `{"name":"a","dependencies":{"semver":"7.7.3"}}`,
+  );
+
+  assert.deepEqual(checkDiffScope(repo, "HEAD", { catalogBumps: CATALOG_ALLOWED }), {
+    ok: false,
+    violations: ['packages/a/package.json (dependencies: "semver" catalog protocol)'],
   });
 });
 

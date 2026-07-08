@@ -59,6 +59,13 @@ const GUARDED_FIELDS = [
   "catalogs",
 ] as const;
 
+const DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+] as const;
+
 /** A named field of a package.json source; undefined when absent/unparseable. */
 function fieldOf(source: string | null, field: string): unknown {
   if (source === null) return undefined;
@@ -87,6 +94,23 @@ function asPlainMap(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function parseJsonMap(source: string | null): Record<string, unknown> | null {
+  if (source === null) return null;
+  try {
+    return asPlainMap(JSON.parse(source));
+  } catch {
+    return null;
+  }
+}
+
+function hasOwn(map: Record<string, unknown>, key: string): boolean {
+  return Object.hasOwn(map, key);
+}
+
+function isCatalogProtocol(value: unknown): boolean {
+  return typeof value === "string" && value.startsWith("catalog:");
 }
 
 /**
@@ -120,9 +144,9 @@ function catalogMapViolations(
   const afterMap = after === undefined ? {} : asPlainMap(after);
   if (!beforeMap || !afterMap) return [`${PNPM_WORKSPACE_FILE} (${label} is not a map)`];
   for (const key of new Set([...Object.keys(beforeMap), ...Object.keys(afterMap)])) {
-    if (!(key in afterMap)) {
+    if (!hasOwn(afterMap, key)) {
       violations.push(`${PNPM_WORKSPACE_FILE} (${label}: "${key}" removed)`);
-    } else if (!(key in beforeMap)) {
+    } else if (!hasOwn(beforeMap, key)) {
       violations.push(`${PNPM_WORKSPACE_FILE} (${label}: "${key}" added)`);
     } else if (canonical(beforeMap[key]) !== canonical(afterMap[key])) {
       const latest = allowed.get(key);
@@ -188,9 +212,9 @@ export function pnpmWorkspaceCatalogViolations(
     violations.push(`${PNPM_WORKSPACE_FILE} (catalogs is not a map)`);
   } else {
     for (const name of new Set([...Object.keys(beforeCatalogs), ...Object.keys(afterCatalogs)])) {
-      if (!(name in afterCatalogs)) {
+      if (!hasOwn(afterCatalogs, name)) {
         violations.push(`${PNPM_WORKSPACE_FILE} (catalogs: "${name}" removed)`);
-      } else if (!(name in beforeCatalogs)) {
+      } else if (!hasOwn(beforeCatalogs, name)) {
         violations.push(`${PNPM_WORKSPACE_FILE} (catalogs: "${name}" added)`);
       } else {
         violations.push(
@@ -220,6 +244,36 @@ export function packageJsonGuardedFieldChanges(
   return GUARDED_FIELDS.filter(
     (field) => canonical(fieldOf(before, field)) !== canonical(fieldOf(after, field)),
   );
+}
+
+/**
+ * Dependency-section `catalog:` protocol entries are package-manager source
+ * selectors, not ordinary version strings. A version bump may move the backing
+ * catalog entry (for pnpm, in pnpm-workspace.yaml), but it must not add, remove,
+ * or rewrite the package.json protocol specifier itself.
+ */
+export function packageJsonCatalogProtocolChanges(
+  before: string | null,
+  after: string | null,
+): string[] {
+  const beforePkg = parseJsonMap(before);
+  const afterPkg = parseJsonMap(after);
+  const violations: string[] = [];
+  for (const field of DEPENDENCY_FIELDS) {
+    const beforeMap = asPlainMap(beforePkg?.[field]) ?? {};
+    const afterMap = asPlainMap(afterPkg?.[field]) ?? {};
+    for (const key of new Set([...Object.keys(beforeMap), ...Object.keys(afterMap)])) {
+      const beforeValue = hasOwn(beforeMap, key) ? beforeMap[key] : undefined;
+      const afterValue = hasOwn(afterMap, key) ? afterMap[key] : undefined;
+      if (
+        (isCatalogProtocol(beforeValue) || isCatalogProtocol(afterValue)) &&
+        canonical(beforeValue) !== canonical(afterValue)
+      ) {
+        violations.push(`${field}: "${key}" catalog protocol`);
+      }
+    }
+  }
+  return violations;
 }
 
 /**
@@ -263,6 +317,9 @@ export function checkDiffScope(
     if (!isPackageJson(p)) continue;
     const after = workingTreeFile(p);
     for (const field of packageJsonGuardedFieldChanges(fileAtRef(repo, base, p), after)) {
+      violations.push(`${p} (${field})`);
+    }
+    for (const field of packageJsonCatalogProtocolChanges(fileAtRef(repo, base, p), after)) {
       violations.push(`${p} (${field})`);
     }
   }

@@ -109,7 +109,9 @@ jobs:
   a deterministic gate allows exactly this diff shape (existing entries of the
   packages being updated, at the vetted target version) and rejects everything
   else in it (`packages` globs, `overrides`, `onlyBuiltDependencies`, added or
-  removed catalog entries, non-version specifiers). While the
+  removed catalog entries, non-version specifiers). The `catalog:` specifier in
+  package.json must stay in place; replacing it with a plain version is rejected.
+  While the
   `minimum_release_age` cooldown is active, catalog entries are written as exact
   versions (like bun's pins) so a later install cannot resolve a range back into
   the cooldown window. bun's package.json catalogs are not supported yet.

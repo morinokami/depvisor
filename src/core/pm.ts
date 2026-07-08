@@ -33,13 +33,13 @@ export interface PmToolchain {
    * `locations`). Built per group so a monorepo update touches only the right
    * manifests instead of adding dependencies to the root — see updater.md.
    *
-   * `pinExact` makes the command resolve to exactly `candidate.latest`, at the
-   * cost of an exact (range-less) manifest entry. Only bun's instruction
-   * changes: bun writes the given specifier verbatim AND resolves a range at
-   * install time, so its usual `@^<latest>` would let an install pull a
-   * version newer than the one the minimum_release_age clamp chose. npm and
-   * pnpm already install the exact target (their caret is written by the
-   * tool, not resolved from a range), so they ignore the flag.
+   * `pinExact` makes the update resolve to exactly `candidate.latest`, at the
+   * cost of an exact (range-less) manifest/catalog entry where a PM would
+   * otherwise write or resolve a range. bun's command changes because bun writes
+   * the given specifier verbatim AND resolves ranges at install time. pnpm's
+   * command is unchanged, but its catalog-edit guidance tightens to exact
+   * entries for the same reason: the follow-up install resolves catalog ranges.
+   * npm already installs the exact target, so it ignores the flag.
    */
   updateInstruction(candidates: readonly Candidate[], opts?: { pinExact?: boolean }): string;
   /**
