@@ -339,7 +339,21 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
   }
 
   const raw = (res.stdout || "").trim();
-  if (!raw) return [];
+  if (!raw) {
+    // npm/pnpm print JSON (at least `{}`) even when everything is current, and
+    // their normal "updates exist" path is exit 1 WITH output — so empty output
+    // plus a non-zero exit is a hard failure (e.g. a killed process), never "no
+    // updates". Fail closed instead of reporting a green empty scan. bun's
+    // non-zero exit already threw above.
+    if (res.status !== 0) {
+      const stderr = (res.stderr ?? "").trim();
+      throw new Error(
+        `${pm.name} outdated produced no output (exit ${res.status})` +
+          (stderr ? `: ${stderr.slice(0, 200)}` : ""),
+      );
+    }
+    return [];
+  }
 
   if (pm.name === "bun") {
     // Resolved outside the try so an unsupported workspaces glob surfaces its own
@@ -367,6 +381,28 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
         (stderr ? ` — stderr: ${stderr.slice(0, 200)}` : ""),
     );
   }
+
+  // With --json, npm reports hard failures (unreachable registry, broken
+  // manifest, …) as an `error` OBJECT on stdout — the same exit 1 as the normal
+  // "updates exist" path — and the parsers below would read that shape as zero
+  // candidates, turning a registry outage into a green "no updates" run. A real
+  // dependency named `error` still parses: its outdated entry (object or
+  // per-workspace array) never carries `code`/`summary` keys.
+  const errInfo = data.error;
+  if (
+    errInfo !== null &&
+    typeof errInfo === "object" &&
+    !("latest" in errInfo) &&
+    ("code" in errInfo || "summary" in errInfo)
+  ) {
+    const { code, summary } = errInfo as { code?: unknown; summary?: unknown };
+    throw new Error(
+      `${pm.name} outdated failed (exit ${res.status}): ` +
+        (typeof code === "string" ? `${code}: ` : "") +
+        (typeof summary === "string" ? summary.slice(0, 200) : "unknown error"),
+    );
+  }
+
   if (pm.name === "pnpm") return parsePnpmOutdated(data, repoPath);
   return parseOutdated(data);
 }

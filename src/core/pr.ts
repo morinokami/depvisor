@@ -161,14 +161,33 @@ export function sanitizeSummary(s: string): string {
 /** Strict marker shape: no chars that can close the comment or add structure. */
 const VERSIONS_MARKER_RE = /<!-- depvisor:versions=[A-Za-z0-9@._,/~+-]* -->/;
 
+// End-anchored (trailing whitespace tolerated for CRLF/web-edited bodies):
+// buildPrPayload writes the marker as the body's last line, so the authentic
+// marker is only ever the trailing one. An unanchored search would also match a
+// marker-shaped string smuggled earlier in the body inside a code span — which
+// sanitizeSummary deliberately preserves — letting agent narrative override the
+// marker and pin skip-if-up-to-date to versions the PR does not deliver.
+const TRAILING_VERSIONS_MARKER_RE = new RegExp(`${VERSIONS_MARKER_RE.source}\\s*$`);
+
+/**
+ * The strictly validated marker at the END of a PR body, or null. Shared by the
+ * exit-boundary re-sanitize below and the workflow's skip-if-up-to-date
+ * comparison, so both read the marker from the one position buildPrPayload
+ * writes it to.
+ */
+export function extractVersionsMarker(body: string): string | null {
+  const m = TRAILING_VERSIONS_MARKER_RE.exec(body);
+  return m ? m[0].trimEnd() : null;
+}
+
 /**
  * Exit-boundary sanitize for a full PR body. The tokenless step writes the
  * payload file, so the push step re-sanitizes it before passing it to `gh`.
  * The versions marker is the one HTML comment that must survive for idempotency;
- * only a strictly validated marker is extracted and re-appended.
+ * only a strictly validated trailing marker is extracted and re-appended.
  */
 export function sanitizePrBody(body: string): string {
-  const marker = body.match(VERSIONS_MARKER_RE)?.[0];
+  const marker = extractVersionsMarker(body);
   const clean = sanitizeSummary(body);
   return marker ? `${clean}\n\n${marker}` : clean;
 }

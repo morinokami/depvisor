@@ -6,10 +6,12 @@ import { join } from "node:path";
 import {
   bunWorkspaceMap,
   classifyUpdate,
+  collectCandidates,
   parseBunOutdated,
   parseOutdated,
   parsePnpmOutdated,
 } from "../src/core/collect.ts";
+import { npmToolchain, type PmToolchain } from "../src/core/pm.ts";
 
 test("classifyUpdate: patch/minor/major", () => {
   assert.equal(classifyUpdate("1.2.3", "1.2.4"), "patch");
@@ -353,4 +355,52 @@ test("parsePnpmOutdated defaults to the root location when no dependents are lis
     "/repo",
   );
   assert.deepEqual(out[0]!.locations, [""]);
+});
+
+test("collectCandidates fails closed on npm's --json error object (registry outage)", () => {
+  // npm reports hard failures as `{"error":{code,summary,detail}}` on STDOUT
+  // with the same exit 1 as the normal "updates exist" path; parsed naively it
+  // reads as zero candidates and a registry outage becomes a green "no
+  // updates" run. Fake the spawn with a node one-liner printing the real shape.
+  const repo = mkdtempSync(join(tmpdir(), "depvisor-collect-"));
+  const errorJson = JSON.stringify({
+    error: { code: "ECONNREFUSED", summary: "request to https://registry/x failed" },
+  });
+  const pm: PmToolchain = {
+    ...npmToolchain,
+    outdatedArgv: ["node", "-e", `console.log(${JSON.stringify(errorJson)}); process.exit(1)`],
+  };
+  assert.throws(() => collectCandidates(repo, pm), /ECONNREFUSED/);
+});
+
+test("collectCandidates fails closed on empty output with a non-zero exit", () => {
+  // npm/pnpm print JSON (at least `{}`) even when everything is current, so
+  // empty output plus a non-zero exit is a hard failure, never "no updates".
+  const repo = mkdtempSync(join(tmpdir(), "depvisor-collect-"));
+  const pm: PmToolchain = { ...npmToolchain, outdatedArgv: ["node", "-e", "process.exit(2)"] };
+  assert.throws(() => collectCandidates(repo, pm), /produced no output \(exit 2\)/);
+});
+
+test("collectCandidates still parses a real dependency that happens to be named 'error'", () => {
+  // The error-shape detection must not misfire on the real npm package `error`:
+  // an outdated ENTRY carries current/latest, which npm's error object lacks.
+  const repo = mkdtempSync(join(tmpdir(), "depvisor-collect-"));
+  const outdatedJson = JSON.stringify({
+    error: {
+      current: "7.0.0",
+      wanted: "7.0.0",
+      latest: "10.4.0",
+      type: "dependencies",
+      dependedByLocation: "",
+    },
+  });
+  const pm: PmToolchain = {
+    ...npmToolchain,
+    outdatedArgv: ["node", "-e", `console.log(${JSON.stringify(outdatedJson)}); process.exit(1)`],
+  };
+  const out = collectCandidates(repo, pm);
+  assert.deepEqual(
+    out.map((c) => [c.name, c.current, c.latest]),
+    [["error", "7.0.0", "10.4.0"]],
+  );
 });

@@ -373,7 +373,21 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       // (fail-soft, separate from the title/body edit so a label hiccup cannot
       // undo it). --add-label only adds, so a group whose top semver level rose
       // between runs may briefly carry both the old and new semver:* label.
-      gh(env, clone, ["pr", "edit", payload.branch, "--title", title, "--body", body]);
+      // A failed edit stays fail-soft (the push above already refreshed the
+      // commits, and the stale marker makes the next run retry the refresh) but
+      // must not be silent.
+      const edited = gh(env, clone, [
+        "pr",
+        "edit",
+        payload.branch,
+        "--title",
+        title,
+        "--body",
+        body,
+      ]);
+      if (edited.code !== 0) {
+        console.warn(`note: could not refresh title/body of ${payload.branch}: ${edited.err}`);
+      }
       applyLabels(env, clone, payload.branch, labels);
       return { ok: true, action: "updated", url: existing.out, error: null };
     }

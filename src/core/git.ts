@@ -163,21 +163,33 @@ export function isClean(repo: string): boolean {
 
 /** Paths touched in the working tree (modified, added, deleted, renamed, untracked). */
 export function changedPaths(repo: string): string[] {
-  // Porcelain status is two chars and may start with a space (` M foo`), so
-  // trimmed output would shift the first path by one character.
-  const res = run(repo, ["status", "--porcelain"]);
+  // -z terminates entries with NUL and prints paths verbatim: without it, git
+  // C-quotes any path with special bytes (`"\346…"` for non-ASCII, escaped
+  // quotes/backslashes), and that escaped string no longer names the real file
+  // — a `git add` pathspec built from it fails, and a scope-gate read of the
+  // changed package.json sees nothing on either side. Entries are `XY path`
+  // (two status chars and a space, so the output must not be trimmed); a
+  // rename/copy entry is `XY destination\0original` — the original is consumed
+  // and dropped, keeping the destination as before.
+  //
+  // --untracked-files=all lists every file under a NEW directory individually;
+  // git's default collapses it to just `newdir/`. The scope gate keys its
+  // guarded-field check on the exact `package.json` filename, so a collapsed
+  // `packages/evil/` would let an agent smuggle a new package.json with a
+  // `postinstall`/`overrides` past the gate (the file is then committed by the
+  // catch-all `commitAll`). `all` still omits gitignored paths (node_modules),
+  // which are governed by --ignored, so this does not surface the install tree.
+  const res = run(repo, ["status", "--porcelain", "-z", "--untracked-files=all"]);
   if (res.code !== 0) {
     throw new GitError(`git status --porcelain failed: ${res.err}`);
   }
-  const out = res.out.replace(/\n+$/, "");
-  if (!out) return [];
+  const tokens = res.out.split("\0");
   const paths: string[] = [];
-  for (const line of out.split("\n")) {
-    let p = line.slice(3);
-    const arrow = p.indexOf(" -> ");
-    if (arrow !== -1) p = p.slice(arrow + 4); // rename: keep the destination
-    if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-    paths.push(p);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const entry = tokens[i];
+    if (!entry) continue; // trailing NUL leaves a final empty token
+    paths.push(entry.slice(3));
+    if (/[RC]/.test(entry.slice(0, 2))) i += 1; // skip the rename/copy ORIG_PATH
   }
   return paths;
 }

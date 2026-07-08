@@ -40,6 +40,7 @@ import {
   buildPrPayload,
   clearPrPreview,
   emitPrPayload,
+  extractVersionsMarker,
   slugify,
   versionsMarker,
 } from "../core/pr.ts";
@@ -633,7 +634,12 @@ export default defineWorkflow({
         }
         seenBranches.add(branch);
         const hasOpenPr = bodyByBranch.has(branch);
-        const upToDate = bodyByBranch.get(branch)?.includes(versionsMarker(members)) ?? false;
+        // Compare only the body's TRAILING marker (where buildPrPayload writes
+        // it), never a substring search: a marker-shaped string can survive
+        // sanitizing inside a code span mid-body, and an includes() over the
+        // whole body would let such narrative pin this group as up to date.
+        const upToDate =
+          extractVersionsMarker(bodyByBranch.get(branch) ?? "") === versionsMarker(members);
         const disposition = classifyGroup({ hasOpenPr, upToDate, newSlots });
 
         // (a) Skip-if-up-to-date: an open PR on this branch already covers
