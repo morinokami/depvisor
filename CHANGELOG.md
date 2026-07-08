@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/morinokami/depvisor/compare/v1.0.1...v1.1.0) (2026-07-08)
+
+
+### Features
+
+* update pnpm catalog-pinned dependencies via a scoped pnpm-workspace.yaml carve-out ([#42](https://github.com/morinokami/depvisor/issues/42)) ([8c7cfc0](https://github.com/morinokami/depvisor/commit/8c7cfc0839f1c7cc094dc791068a6b4cee7b6368))
+
 ## [1.0.1](https://github.com/morinokami/depvisor/compare/v1.0.0...v1.0.1) (2026-07-08)
 
 
