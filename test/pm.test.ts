@@ -141,95 +141,125 @@ test("outdatedArgv: workspace-aware flags", () => {
   assert.deepEqual(bunToolchain.outdatedArgv, ["bun", "outdated", "-r"]);
 });
 
-test("npm updateInstruction: single-package uses no -w, -D marks dev deps", () => {
-  const out = npmToolchain.updateInstruction([
-    cand({ name: "left-pad", latest: "1.3.0" }),
-    cand({ name: "eslint", latest: "9.0.0", kind: "dev" }),
-  ]);
-  assert.match(out, /npm install left-pad@1\.3\.0(\n|$)/);
-  assert.match(out, /npm install -D eslint@9\.0\.0(\n|$)/);
-  assert.doesNotMatch(out, /-w /); // no workspace flags for root-only deps
-});
+// updatePlan builds the deterministic per-PM, per-workspace update as argv
+// arrays the executor (bump.ts) runs directly, so the installed version and the
+// branch/PR identity are fixed by code. These assert exact argv parity per PM.
 
-test("npm updateInstruction: scopes -w to declaring workspaces, root gets its own line", () => {
-  const out = npmToolchain.updateInstruction([
-    cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
-    cand({ name: "ms", latest: "2.1.3", locations: ["", "packages/a"] }),
-  ]);
-  assert.match(out, /npm install left-pad@1\.3\.0 -w packages\/a -w packages\/b/);
-  // Declared in both root and a workspace → two commands, one scoped, one not.
-  assert.match(out, /npm install ms@2\.1\.3(\n|$)/);
-  assert.match(out, /npm install ms@2\.1\.3 -w packages\/a/);
-});
-
-test("pnpm updateInstruction: a single recursive command covers every workspace", () => {
-  const out = pnpmToolchain.updateInstruction([
-    cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
-    cand({ name: "isarray", latest: "2.0.5", kind: "dev", locations: ["packages/a"] }),
-  ]);
-  // One command, no -w, no -D: pnpm -r update preserves each dep's section.
-  assert.match(out, /pnpm -r update left-pad@1\.3\.0 isarray@2\.0\.5/);
-  assert.doesNotMatch(out, /-w /);
-  assert.doesNotMatch(out, /-D /);
-  // Catalog-pinned deps can't be moved to a specific version by any pnpm
-  // command (`update <name>@<ver>` de-catalogs instead), so the instruction
-  // routes them through a pnpm-workspace.yaml edit + a non-frozen install
-  // (CI=true defaults pnpm to a frozen install, which would fail).
-  assert.match(out, /catalog:/);
-  assert.match(out, /pnpm-workspace\.yaml/);
-  assert.match(out, /pnpm install --no-frozen-lockfile/);
-});
-
-test("pnpm updateInstruction: pinExact demands exact catalog entries", () => {
-  const candidates = [cand({ name: "left-pad", latest: "1.3.0" })];
-  // The command itself is unchanged (pnpm installs the exact target either
-  // way); only the catalog-edit guidance tightens: a hand-written range is
-  // resolved fresh at install time, so under the cooldown it must be exact.
-  const pinned = pnpmToolchain.updateInstruction(candidates, { pinExact: true });
-  assert.match(pinned, /pnpm -r update left-pad@1\.3\.0/);
-  assert.match(pinned, /exact target version, no \^ or ~/);
-  assert.match(pnpmToolchain.updateInstruction(candidates), /existing range style/);
-});
-
-test("bun updateInstruction: keeps the caret, -d marks dev deps (single-package)", () => {
-  const out = bunToolchain.updateInstruction([
-    cand({ name: "chalk", latest: "5.0.0" }),
-    cand({ name: "@types/node", latest: "22.0.0", kind: "dev" }),
-  ]);
-  assert.match(out, /bun add chalk@\^5\.0\.0(\n|$)/);
-  assert.match(out, /bun add -d @types\/node@\^22\.0\.0(\n|$)/);
-  assert.doesNotMatch(out, /--cwd/); // root-only deps take no --cwd
-});
-
-test("bun updateInstruction: pinExact drops the caret so installs cannot outrun a release-age clamp", () => {
-  const candidates = [
-    cand({ name: "chalk", latest: "5.0.0" }),
-    cand({ name: "isarray", latest: "2.0.5", kind: "dev", locations: ["packages/a"] }),
-  ];
-  const out = bunToolchain.updateInstruction(candidates, { pinExact: true });
-  // bun writes the specifier verbatim AND resolves ranges at install time, so
-  // only the exact form is guaranteed to land on candidate.latest.
-  assert.match(out, /bun add chalk@5\.0\.0(\n|$)/);
-  assert.match(out, /bun add --cwd packages\/a -d isarray@2\.0\.5(\n|$)/);
-  assert.doesNotMatch(out, /@\^/);
-
-  // npm already installs the exact target; the flag changes nothing there.
-  // (pnpm's command is likewise unchanged, but its catalog-edit guidance
-  // tightens under pinExact — covered in the pnpm instruction tests above.)
-  assert.equal(
-    npmToolchain.updateInstruction(candidates, { pinExact: true }),
-    npmToolchain.updateInstruction(candidates),
+test("npm updatePlan mirrors the instruction argv (root deps, -D for dev, no catalogs)", () => {
+  const plan = npmToolchain.updatePlan(
+    [
+      cand({ name: "left-pad", latest: "1.3.0" }),
+      cand({ name: "eslint", latest: "9.0.0", kind: "dev" }),
+    ],
+    repoWith({}), // repoPath is unused by npm
   );
+  assert.deepEqual(plan.catalogEdits, []);
+  assert.deepEqual(plan.commands, [
+    ["npm", "install", "left-pad@1.3.0"],
+    ["npm", "install", "-D", "eslint@9.0.0"],
+  ]);
+  assert.equal(plan.pinExact, false);
 });
 
-test("bun updateInstruction: scopes --cwd to declaring workspaces, root gets its own line", () => {
-  const out = bunToolchain.updateInstruction([
-    cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
-    cand({ name: "isarray", latest: "2.0.5", kind: "dev", locations: ["packages/a"] }),
-    cand({ name: "ms", latest: "2.1.3", locations: [""] }),
+test("npm updatePlan scopes -w to declaring workspaces, root gets its own command", () => {
+  const plan = npmToolchain.updatePlan(
+    [
+      cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
+      cand({ name: "ms", latest: "2.1.3", locations: ["", "packages/a"] }),
+    ],
+    repoWith({}),
+  );
+  assert.deepEqual(plan.commands, [
+    ["npm", "install", "left-pad@1.3.0", "-w", "packages/a", "-w", "packages/b"],
+    ["npm", "install", "ms@2.1.3"],
+    ["npm", "install", "ms@2.1.3", "-w", "packages/a"],
   ]);
-  assert.match(out, /bun add --cwd packages\/a left-pad@\^1\.3\.0(\n|$)/);
-  assert.match(out, /bun add --cwd packages\/b left-pad@\^1\.3\.0(\n|$)/);
-  assert.match(out, /bun add --cwd packages\/a -d isarray@\^2\.0\.5(\n|$)/);
-  assert.match(out, /bun add ms@\^2\.1\.3(\n|$)/); // root → no --cwd
+});
+
+test("npm updatePlan records pinExact but leaves the argv unchanged", () => {
+  const candidates = [cand({ name: "left-pad", latest: "1.3.0" })];
+  const repo = repoWith({});
+  const pinned = npmToolchain.updatePlan(candidates, repo, { pinExact: true });
+  assert.equal(pinned.pinExact, true);
+  assert.deepEqual(pinned.commands, npmToolchain.updatePlan(candidates, repo).commands);
+});
+
+test("pnpm updatePlan uses a single recursive command when no member is catalog-pinned", () => {
+  const repo = repoWith({}); // no pnpm-workspace.yaml → no catalog names
+  const plan = pnpmToolchain.updatePlan(
+    [
+      cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a"] }),
+      cand({ name: "isarray", latest: "2.0.5", kind: "dev", locations: ["packages/a"] }),
+    ],
+    repo,
+  );
+  assert.deepEqual(plan.catalogEdits, []);
+  assert.deepEqual(plan.commands, [["pnpm", "-r", "update", "left-pad@1.3.0", "isarray@2.0.5"]]);
+});
+
+test("pnpm updatePlan routes catalog-pinned members to catalogEdits, not the command", () => {
+  const repo = repoWith({
+    "pnpm-workspace.yaml":
+      "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\ncatalogs:\n  react:\n    react: ^18.0.0\n",
+  });
+  const plan = pnpmToolchain.updatePlan(
+    [
+      cand({ name: "semver", latest: "7.7.3" }), // top-level catalog
+      cand({ name: "react", latest: "19.0.0" }), // a named catalog
+      cand({ name: "left-pad", latest: "1.3.0" }), // plain
+    ],
+    repo,
+  );
+  // Catalog members become edits (target = latest; range style is decided later,
+  // in the executor); only the plain member stays in the recursive command, and
+  // the refresh install is appended because catalog edits exist.
+  assert.deepEqual(plan.catalogEdits, [
+    { name: "semver", target: "7.7.3" },
+    { name: "react", target: "19.0.0" },
+  ]);
+  assert.deepEqual(plan.commands, [
+    ["pnpm", "-r", "update", "left-pad@1.3.0"],
+    ["pnpm", "install", "--no-frozen-lockfile"],
+  ]);
+});
+
+test("pnpm updatePlan emits only the refresh install when every member is catalog-pinned", () => {
+  const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  semver: ^7.3.0\n" });
+  const plan = pnpmToolchain.updatePlan([cand({ name: "semver", latest: "7.7.3" })], repo);
+  assert.deepEqual(plan.catalogEdits, [{ name: "semver", target: "7.7.3" }]);
+  assert.deepEqual(plan.commands, [["pnpm", "install", "--no-frozen-lockfile"]]);
+});
+
+test("bun updatePlan mirrors the instruction argv (caret, --cwd, -d, no catalogs)", () => {
+  const plan = bunToolchain.updatePlan(
+    [
+      cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a", "packages/b"] }),
+      cand({ name: "isarray", latest: "2.0.5", kind: "dev", locations: ["packages/a"] }),
+      cand({ name: "ms", latest: "2.1.3", locations: [""] }),
+    ],
+    repoWith({}),
+  );
+  assert.deepEqual(plan.catalogEdits, []);
+  assert.deepEqual(plan.commands, [
+    ["bun", "add", "--cwd", "packages/a", "left-pad@^1.3.0"],
+    ["bun", "add", "--cwd", "packages/b", "left-pad@^1.3.0"],
+    ["bun", "add", "--cwd", "packages/a", "-d", "isarray@^2.0.5"],
+    ["bun", "add", "ms@^2.1.3"], // root → no --cwd
+  ]);
+});
+
+test("bun updatePlan drops the caret under pinExact (cannot outrun a release-age clamp)", () => {
+  const plan = bunToolchain.updatePlan(
+    [
+      cand({ name: "chalk", latest: "5.0.0" }),
+      cand({ name: "@types/node", latest: "22.0.0", kind: "dev" }),
+    ],
+    repoWith({}),
+    { pinExact: true },
+  );
+  assert.equal(plan.pinExact, true);
+  assert.deepEqual(plan.commands, [
+    ["bun", "add", "chalk@5.0.0"],
+    ["bun", "add", "-d", "@types/node@22.0.0"],
+  ]);
 });

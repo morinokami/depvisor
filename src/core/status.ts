@@ -19,13 +19,17 @@ export interface StatusPackage {
 }
 
 /**
- * Token/cost usage for the agent session that processed one group, projected
- * from Flue's `PromptResultResponse.usage`/`.model` at the workflow boundary
- * (kept structural, so core stays Flue-free). Numbers only — no untrusted text,
- * so it never touches token separation or the gates. `costUsd` is Flue's
- * provider-priced estimate (BYOK-approximate), not an invoice.
+ * Token/cost usage for ONE agent operation within a group, projected from Flue's
+ * `PromptResultResponse.usage`/`.model` at the workflow boundary (kept
+ * structural, so core stays Flue-free). Numbers only — no untrusted text, so it
+ * never touches token separation or the gates. `costUsd` is Flue's
+ * provider-priced estimate (BYOK-approximate), not an invoice. `role` names
+ * which operation spent it: the agent-as-fixer flow can run up to two per group
+ * (the failure-path `fixer` and the PR `digest`), recorded as separate entries —
+ * see GroupResult.usage.
  */
 export interface GroupUsage {
+  role: "fixer" | "digest";
   input: number;
   output: number;
   cacheRead: number;
@@ -59,21 +63,21 @@ export interface GroupResult {
   packages: StatusPackage[];
   verification: VerifyResult[];
   /**
-   * Test-looking files the agent changed while adapting this update (visibility,
-   * not a gate — see core/test-changes.ts). Optional/absent when none changed;
-   * record-only, so it is deliberately NOT in RUN_OUTPUT_SCHEMA below.
+   * Test-looking files this update changed (visibility, not a gate — see
+   * core/test-changes.ts; the fixer or a lifecycle script can both be the
+   * writer). Optional/absent when none changed; record-only, so it is
+   * deliberately NOT in RUN_OUTPUT_SCHEMA below.
    */
   testChanges?: NumstatEntry[];
   /**
-   * Token/cost usage for this group's agent session (visibility only). Absent
-   * for outcomes that never ran the agent (skip/held-back/branch-collision/
-   * release-age-unavailable) and for the `no-structured-result` case where the
-   * prompt threw before returning a response (`ResultUnavailableError`); the
-   * other `no-structured-result` case — a returned response whose defensive
-   * re-parse rejected — does carry usage (tokens were spent). Record-only, like
-   * `testChanges` — NOT in RUN_OUTPUT_SCHEMA.
+   * Token/cost usage for this group's agent operations (visibility only), one
+   * entry per operation that actually ran: 0 for outcomes that ran no agent
+   * (skip/held-back/branch-collision/release-age-unavailable/bump-failed, or a
+   * prompt that threw before returning), 1 when only one of fixer/digest ran, 2
+   * when both did. Absent/empty when zero ran. Record-only, like `testChanges` —
+   * NOT in RUN_OUTPUT_SCHEMA.
    */
-  usage?: GroupUsage;
+  usage?: GroupUsage[];
   prUrl: string | null;
 }
 
@@ -166,8 +170,10 @@ export function toActionOutputs(run: RunStatus | null): ActionOutputs {
 // human having taken over the PR branch is expected (see open-pr.ts);
 // `held-back-by-limit` is green because the open_pull_requests_limit ceiling doing its job is
 // normal operation, not a failure. Everything else — including the
-// `in-progress` marker the workflow writes incrementally, which only a
-// graceful finish upgrades to `completed` — fails the job.
+// `in-progress` marker the workflow writes incrementally (which only a graceful
+// finish upgrades to `completed`) and the per-group `bump-failed` (the
+// deterministic bump or its install failed for a group — agent-as-fixer;
+// red, per-group, the run continues) — fails the job.
 const OK_STATUSES = new Set([
   "completed",
   "no-updates",
@@ -189,14 +195,17 @@ export function statusPackages(candidates: Candidate[]): StatusPackage[] {
 }
 
 /**
- * Sum the per-group usage of every group whose agent ran (groups without
- * `usage` — skips, hold-backs, no-structured-result — contribute nothing).
- * Returns null when no group ran the agent, so callers render nothing rather
- * than a misleading zero-token row.
+ * Sum usage across every group AND every agent operation within it (a group can
+ * now carry a fixer entry and a digest entry). Groups without `usage` — skips,
+ * hold-backs, bump-failed, no-structured-result — contribute nothing. Returns
+ * null when no operation ran anywhere, so callers render nothing rather than a
+ * misleading zero-token row. `groupCount` counts GROUPS that ran ≥1 operation,
+ * not operations, so a two-operation group still counts once.
  */
 export function sumGroupUsage(groups: GroupResult[]): RunUsage | null {
-  const withUsage = groups.flatMap((g) => (g.usage ? [g.usage] : []));
-  if (withUsage.length === 0) return null;
+  const groupsWithUsage = groups.filter((g) => (g.usage?.length ?? 0) > 0);
+  const all = groupsWithUsage.flatMap((g) => g.usage ?? []);
+  if (all.length === 0) return null;
   const models = new Set<string>();
   const total: RunUsage = {
     input: 0,
@@ -206,9 +215,9 @@ export function sumGroupUsage(groups: GroupResult[]): RunUsage | null {
     totalTokens: 0,
     costUsd: 0,
     models: [],
-    groupCount: withUsage.length,
+    groupCount: groupsWithUsage.length,
   };
-  for (const u of withUsage) {
+  for (const u of all) {
     total.input += u.input;
     total.output += u.output;
     total.cacheRead += u.cacheRead;
@@ -248,10 +257,11 @@ function parseGroup(raw: Partial<GroupResult>): GroupResult {
   if (Array.isArray(raw.testChanges) && raw.testChanges.length > 0) {
     group.testChanges = raw.testChanges as NumstatEntry[];
   }
-  // Same round-trip concern for usage — a numeric-only record, re-normalized
-  // defensively (a hand-edited/truncated status file must not crash the report).
-  const usage = parseUsage(raw.usage);
-  if (usage) group.usage = usage;
+  // Same round-trip concern for usage — a list of numeric-only records,
+  // re-normalized defensively (a hand-edited/truncated status file must not
+  // crash the report), so it survives the open-pr read→rewrite intact.
+  const usage = parseUsageList(raw.usage);
+  if (usage.length > 0) group.usage = usage;
   return group;
 }
 
@@ -259,10 +269,22 @@ function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function parseUsageList(raw: unknown): GroupUsage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    const u = parseUsage(entry);
+    return u ? [u] : [];
+  });
+}
+
 function parseUsage(raw: unknown): GroupUsage | null {
   if (!raw || typeof raw !== "object") return null;
   const u = raw as Partial<GroupUsage>;
+  // A usage entry with no recognized role is illegible; drop it (display-only,
+  // so failing toward "render nothing" is the safe direction).
+  if (u.role !== "fixer" && u.role !== "digest") return null;
   return {
+    role: u.role,
     input: num(u.input),
     output: num(u.output),
     cacheRead: num(u.cacheRead),
@@ -408,6 +430,27 @@ function fmtCost(n: number): string {
   return `~$${n.toFixed(4)}`;
 }
 
+/** Sum a group's per-operation usage entries into the digest's numeric shape. */
+function sumUsageEntries(list: readonly GroupUsage[]): {
+  totalTokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number;
+} {
+  const total = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
+  for (const u of list) {
+    total.totalTokens += u.totalTokens;
+    total.input += u.input;
+    total.output += u.output;
+    total.cacheRead += u.cacheRead;
+    total.cacheWrite += u.cacheWrite;
+    total.costUsd += u.costUsd;
+  }
+  return total;
+}
+
 /**
  * One-line token/cost digest shared by the run header and per-group tables. The
  * numbers are Flue-provided (no user input); the model id is charset-escaped via
@@ -461,7 +504,7 @@ function verificationTable(results: VerifyResult[]): string {
 }
 
 /**
- * A step-summary block flagging test files the agent changed, so a maintainer
+ * A step-summary block flagging test files this update changed, so a maintainer
  * sees it in the Actions UI before the PR is even opened. Paths are charset-
  * validated (`isDisplayablePath`) before embedding, exactly like the PR body;
  * any dropped for unsafe names are still counted.
@@ -472,7 +515,7 @@ function testChangesTable(changes: NumstatEntry[]): string {
   const omitted = changes.length - safe.length;
   const rows = safe.map((c) => `| \`${c.path}\` | ${formatNumstatLines(c)} |`);
   return [
-    `#### ⚠️ Tests modified by the agent (${changes.length})`,
+    `#### ⚠️ Tests modified in this update (${changes.length})`,
     "",
     ...(rows.length > 0 ? ["| File | Lines |", "|---|---|", ...rows, ""] : []),
     ...(omitted > 0 ? [`_${omitted} file(s) with unsafe names omitted._`, ""] : []),
@@ -483,8 +526,16 @@ function renderGroup(group: GroupResult): string {
   const heading = `### Group \`${mdCell(group.group ?? "?")}\` — \`${mdCell(group.status)}\``;
   const rows = [`| Branch | ${group.branch ? `\`${mdCell(group.branch)}\`` : "none"} |`];
   if (group.prUrl) rows.push(`| PR | ${mdCell(group.prUrl)} |`);
-  if (group.usage) {
-    rows.push(`| LLM usage | ${usageDigest(group.usage)} — \`${mdCell(group.usage.model)}\` |`);
+  if (group.usage && group.usage.length > 0) {
+    // Group total, then a compact per-role breakdown (`fixer 12,345 + digest
+    // 2,111`) so a two-operation group shows where the tokens went. Distinct
+    // models are joined (usually one).
+    const summed = sumUsageEntries(group.usage);
+    const breakdown = group.usage.map((u) => `${u.role} ${fmtTokens(u.totalTokens)}`).join(" + ");
+    const models = [...new Set(group.usage.map((u) => u.model).filter((m) => m.length > 0))];
+    rows.push(
+      `| LLM usage | ${usageDigest(summed)} · ${breakdown} — \`${mdCell(models.join(", "))}\` |`,
+    );
   }
   return [
     heading,

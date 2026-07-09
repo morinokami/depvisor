@@ -1,11 +1,12 @@
 # Set Up depvisor in a Repository
 
 You are helping the user add depvisor to their repository. depvisor is a GitHub
-Action whose AI agent investigates dependency updates, applies them, fixes any
-breakage they cause, verifies with the repository's own checks, and opens an
-explained PR — a Dependabot/Renovate-style updater that also does the
-code-fixing work. It is BYOK (the user pays for LLM calls with their own API
-key) and never merges anything itself.
+Action that updates a repository's dependencies and verifies each update with the
+repository's own checks deterministically; when an update breaks those checks, an
+AI agent makes the code fixes needed to get them passing again, and a read-only
+agent explains the change in the PR body. It is a Dependabot/Renovate-style updater
+that also does the code-fixing work. It is BYOK (the user pays for LLM calls with
+their own API key) and never merges anything itself.
 
 The finished setup is small: **one workflow file, one repository secret, and
 one repository setting**. Your job is to inspect the repository first, tailor
@@ -258,14 +259,15 @@ into the chat** — `gh secret set` prompts for the value directly:
 
 Common first-run failures and their fixes:
 
-| Status                    | Fix                                                                                                             |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `persisted-credentials`   | Set `persist-credentials: false` on `actions/checkout`.                                                         |
-| `no-verify-scripts`       | package.json defines none of `build`/`lint`/`test` — set `verify_commands`.                                     |
-| `baseline-red`            | The checks already fail on the base branch; fix the base first.                                                 |
-| `dirty-tree`              | An install/build wrote files git does not ignore — extend `.gitignore` or fix `install_command`.                |
-| `release-age-unavailable` | A private-registry package the public npm registry cannot vouch for — list it in `minimum_release_age_exclude`. |
-| `open-pr-failed`          | Enable "Allow GitHub Actions to create and approve pull requests", and check the `permissions` block.           |
+| Status                    | Fix                                                                                                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `persisted-credentials`   | Set `persist-credentials: false` on `actions/checkout`.                                                                                                                 |
+| `no-verify-scripts`       | package.json defines none of `build`/`lint`/`test` — set `verify_commands`.                                                                                             |
+| `baseline-red`            | The checks already fail on the base branch; fix the base first.                                                                                                         |
+| `dirty-tree`              | An install/build wrote files git does not ignore — extend `.gitignore` or fix `install_command`.                                                                        |
+| `release-age-unavailable` | A private-registry package the public npm registry cannot vouch for — list it in `minimum_release_age_exclude`.                                                         |
+| `bump-failed`             | A dependency conflict blocked the deterministic bump (e.g. npm `ERESOLVE`); the summary names the failing step. Resolve the conflict upstream, or `ignore` the package. |
+| `open-pr-failed`          | Enable "Allow GitHub Actions to create and approve pull requests", and check the `permissions` block.                                                                   |
 
 Every other status is documented in the README's status reference:
 https://github.com/morinokami/depvisor#status-reference

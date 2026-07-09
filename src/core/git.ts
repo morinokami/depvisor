@@ -108,12 +108,6 @@ export function revParse(repo: string, ref: string): string {
   return git(repo, ["rev-parse", ref]);
 }
 
-/** Contents of `path` at `ref`, or null when absent. Output stays untrimmed. */
-export function fileAtRef(repo: string, ref: string, path: string): string | null {
-  const res = probe(repo, ["show", `${ref}:${path}`]);
-  return res.code === 0 ? res.out : null;
-}
-
 /** Return to base at the end of a clean run; dirty trees stay for inspection. */
 export function tryCheckout(repo: string, ref: string): boolean {
   return probe(repo, ["checkout", ref]).code === 0;
@@ -181,9 +175,9 @@ export function changedPaths(repo: string): string[] {
   // and dropped, keeping the destination as before.
   //
   // --untracked-files=all lists every file under a NEW directory individually;
-  // git's default collapses it to just `newdir/`. The scope gate keys its
-  // guarded-field check on the exact `package.json` filename, so a collapsed
-  // `packages/evil/` would let an agent smuggle a new package.json with a
+  // git's default collapses it to just `newdir/`. The fixer scope gate keys its
+  // manifest deny on the exact `package.json` filename, so a collapsed
+  // `packages/evil/` would let a fixer smuggle a new package.json with a
   // `postinstall`/`overrides` past the gate (the file is then committed by the
   // catch-all `commitAll`). `all` still omits gitignored paths (node_modules),
   // which are governed by --ignored, so this does not surface the install tree.
@@ -250,6 +244,25 @@ export function diffNumstat(repo: string, from: string, to: string): NumstatEntr
     });
   }
   return entries;
+}
+
+/**
+ * The textual diff (hunks) of `from..to` restricted to dependency MANIFESTS —
+ * every package.json (root or workspace) and pnpm-workspace.yaml — and nothing
+ * else. The fixer is shown these hunks so it knows exactly what the deterministic
+ * bump changed, WITHOUT the lockfile hunks: a pnpm-lock.yaml diff runs to
+ * thousands of lines and would swamp the fixer's context (lockfiles reach it as
+ * numstat lines only, never hunks). The `:(glob)` pathspec matches nested and
+ * root manifests alike. Goes through `run()` (not `git()`, which trims) so hunk
+ * whitespace survives, and throws on a non-zero exit so a failed diff cannot
+ * masquerade as an empty one.
+ */
+export function manifestDiff(repo: string, from: string, to: string): string {
+  const res = run(repo, ["diff", from, to, "--", ":(glob)**/package.json", "pnpm-workspace.yaml"]);
+  if (res.code !== 0) {
+    throw new GitError(`git diff ${from} ${to} (manifests) failed (exit ${res.code}): ${res.err}`);
+  }
+  return res.out;
 }
 
 function hasStaged(repo: string): boolean {

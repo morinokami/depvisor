@@ -10,7 +10,7 @@ export interface Candidate {
   /**
    * Repo-relative paths of the workspaces that declare this dependency; the root
    * package.json is "" (a single-package repo is therefore `[""]`). Drives the
-   * workspace-scoped update command (`PmToolchain.updateInstruction`). For pnpm
+   * workspace-scoped update command (`PmToolchain.updatePlan`). For pnpm
    * this may omit occurrences that `pnpm outdated -r` collapsed behind a
    * name-key collision — harmless, because `pnpm -r update` updates every
    * declaring workspace regardless.

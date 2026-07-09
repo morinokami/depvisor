@@ -1,7 +1,7 @@
 name: depvisor
 description: >-
-  AI agent that investigates dependency updates, applies them, fixes any
-  breakage, verifies with your build/test suite, and opens an explained PR.
+  Updates your dependencies, fixes any breakage the update causes with an AI
+  agent, verifies with your build/test suite, and opens an explained PR.
 branding:
   icon: package
   color: purple
@@ -161,8 +161,9 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
       run: gh pr list --state open --limit 1000 --json headRefName,body > "$RUNNER_TEMP/depvisor-open-prs.json"
 
-    # Agent step: investigates, updates, fixes, verifies, and emits the PR
-    # payload. It has the LLM key and nothing else.
+    # Agent step: runs the deterministic bump, install, and verification, uses
+    # the LLM only to fix breakage (fixer) and write the PR digest, and emits
+    # the PR payload. It has the LLM key and nothing else.
     - name: Run depvisor (agent — no tokens)
       shell: bash
       working-directory: ${{ env.DEPVISOR_HOME }}

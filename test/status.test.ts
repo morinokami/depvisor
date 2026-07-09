@@ -40,6 +40,7 @@ const group = (patch: Partial<GroupResult> = {}): GroupResult => ({
 });
 
 const usage = (patch: Partial<GroupUsage> = {}): GroupUsage => ({
+  role: "fixer",
   input: 1000,
   output: 200,
   cacheRead: 50,
@@ -84,6 +85,7 @@ test("status failure policy keeps benign outcomes green and fail-closed stops re
     "missing-base-branch",
     "no-changes",
     "open-pr-failed",
+    "bump-failed",
   ]) {
     assert.equal(statusFailsJob(status), true);
   }
@@ -91,7 +93,7 @@ test("status failure policy keeps benign outcomes green and fail-closed stops re
 
 test("toRunOutput projects the workflow output, dropping packages, prUrl, and usage", () => {
   const output = toRunOutput(
-    run({ groups: [group({ prUrl: "https://github.com/o/r/pull/1", usage: usage() })] }),
+    run({ groups: [group({ prUrl: "https://github.com/o/r/pull/1", usage: [usage()] })] }),
   );
   assert.equal(output.status, "completed");
   assert.equal(output.base, "main");
@@ -311,7 +313,7 @@ test("step summary surfaces a test-changes warning, validating and counting unsa
       ],
     }),
   );
-  assert.ok(summary.includes("#### ⚠️ Tests modified by the agent (3)"));
+  assert.ok(summary.includes("#### ⚠️ Tests modified in this update (3)"));
   assert.ok(summary.includes("| `test/a.test.ts` | +2 / -9 |"));
   assert.ok(summary.includes("| `snap.bin` | binary |"));
   // The backtick-bearing path is dropped from the list but still counted.
@@ -322,11 +324,13 @@ test("step summary surfaces a test-changes warning, validating and counting unsa
 test("sumGroupUsage sums agent-run groups, dedupes models, and is null when none ran", () => {
   // Groups that never ran the agent carry no usage → nothing to sum.
   assert.equal(sumGroupUsage([group(), group({ status: "held-back-by-limit" })]), null);
+  // An empty usage array counts as "no agent ran".
+  assert.equal(sumGroupUsage([group({ usage: [] })]), null);
 
   const total = sumGroupUsage([
-    group({ usage: usage() }),
+    group({ usage: [usage()] }),
     group({
-      usage: usage({ input: 500, output: 100, cacheRead: 0, totalTokens: 600, costUsd: 0.005 }),
+      usage: [usage({ input: 500, output: 100, cacheRead: 0, totalTokens: 600, costUsd: 0.005 })],
     }),
     // A held-back group ran no agent, so it contributes nothing to the totals.
     group({ status: "held-back-by-limit" }),
@@ -341,25 +345,80 @@ test("sumGroupUsage sums agent-run groups, dedupes models, and is null when none
   assert.deepEqual(total.models, ["anthropic/claude-opus-4-8"]);
 });
 
+test("sumGroupUsage sums across both operations in a two-operation group", () => {
+  // A group that ran fixer AND digest carries two entries; both are summed, but
+  // the group still counts once toward groupCount.
+  const total = sumGroupUsage([
+    group({
+      usage: [
+        usage({ role: "fixer", totalTokens: 1260 }),
+        usage({
+          role: "digest",
+          input: 500,
+          output: 100,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 600,
+          costUsd: 0.005,
+        }),
+      ],
+    }),
+  ]);
+  assert.equal(total?.groupCount, 1, "one group, even though two operations ran");
+  assert.equal(total?.totalTokens, 1860);
+  assert.equal(total?.input, 1500);
+});
+
 test("sumGroupUsage keeps distinct models", () => {
   const total = sumGroupUsage([
-    group({ usage: usage({ model: "anthropic/claude-opus-4-8" }) }),
-    group({ usage: usage({ model: "openai/gpt-5" }) }),
+    group({ usage: [usage({ model: "anthropic/claude-opus-4-8" })] }),
+    group({ usage: [usage({ model: "openai/gpt-5" })] }),
   ]);
   assert.deepEqual(total?.models, ["anthropic/claude-opus-4-8", "openai/gpt-5"]);
 });
 
-test("usage survives the open-pr read/rewrite round-trip (parseGroup preserves it)", () => {
+test("usage survives the open-pr read/rewrite round-trip (parseGroup preserves the list)", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = emitRunStatus(dir, run({ groups: [group({ usage: usage() })] }));
+  const usages = [usage({ role: "fixer" }), usage({ role: "digest", totalTokens: 600 })];
+  const file = emitRunStatus(dir, run({ groups: [group({ usage: usages })] }));
   recordGroupOutcome(file, "depvisor/dev-knip", { prUrl: "https://github.com/o/r/pull/7" });
   const g = readRunStatus(file)?.groups[0];
   assert.equal(g?.prUrl, "https://github.com/o/r/pull/7");
-  assert.deepEqual(g?.usage, usage());
+  assert.deepEqual(g?.usage, usages);
+});
+
+test("parseGroup drops a usage entry with no recognized role (untrusted read-back)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
+  const file = statusPath(dir);
+  // A hand-edited or truncated status file whose usage entry lacks a valid role
+  // must not crash the report; the illegible entry is dropped, the valid one kept.
+  writeFileSync(
+    file,
+    JSON.stringify({
+      status: "completed",
+      base: "main",
+      summary: "s",
+      groups: [
+        {
+          status: "pr-prepared",
+          branch: "b",
+          group: "g",
+          summary: "s",
+          packages: [],
+          verification: [],
+          prUrl: null,
+          usage: [{ totalTokens: 5 }, { role: "digest", totalTokens: 600, model: "m" }],
+        },
+      ],
+    }),
+  );
+  const g = readRunStatus(file)?.groups[0];
+  assert.equal(g?.usage?.length, 1);
+  assert.equal(g?.usage?.[0]?.role, "digest");
 });
 
 test("step summary renders run-total and per-group LLM usage rows", () => {
-  const summary = renderStepSummary(run({ groups: [group({ usage: usage() })] }));
+  const summary = renderStepSummary(run({ groups: [group({ usage: [usage()] })] }));
   // Both the run header and the group table carry a usage row.
   assert.equal(summary.split("| LLM usage |").length - 1, 2);
   // The breakdown names every additive bucket (in + out + cache read + cache
@@ -370,13 +429,40 @@ test("step summary renders run-total and per-group LLM usage rows", () => {
   assert.ok(summary.includes("`anthropic/claude-opus-4-8`"));
 });
 
+test("step summary shows the group total plus a per-role breakdown", () => {
+  const summary = renderStepSummary(
+    run({
+      groups: [
+        group({
+          usage: [
+            usage({ role: "fixer", totalTokens: 12345 }),
+            usage({
+              role: "digest",
+              input: 2000,
+              output: 111,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2111,
+              costUsd: 0.004,
+            }),
+          ],
+        }),
+      ],
+    }),
+  );
+  // Group total sums both operations …
+  assert.ok(summary.includes("14,456 tokens"), "group total sums fixer + digest tokens");
+  // … and the compact per-role breakdown shows where they went.
+  assert.ok(summary.includes("fixer 12,345 + digest 2,111"));
+});
+
 test("step summary omits the usage row when no group ran the agent", () => {
   const summary = renderStepSummary(run({ groups: [group({ status: "held-back-by-limit" })] }));
   assert.ok(!summary.includes("| LLM usage |"), "no agent ran, so no usage row is rendered");
 });
 
 test("runLogLine reports summed tokens and estimated cost", () => {
-  const line = runLogLine(run({ groups: [group({ usage: usage() })] }));
+  const line = runLogLine(run({ groups: [group({ usage: [usage()] })] }));
   assert.ok(line.includes("tokens=1260"));
   assert.ok(line.includes("cost=~$0.0123"));
 });

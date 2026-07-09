@@ -1,13 +1,14 @@
 /**
- * Deterministic, LLM-free release-notes fetcher exposed to the updater agent as
- * a bounded tool. The agent supplies only a package name and version window;
- * this code fixes the endpoints (npm registry, then GitHub Releases), so the
- * model never chooses a URL and untrusted text enters through one narrow path.
+ * Deterministic, LLM-free release-notes fetcher. The fixer agent reaches it
+ * through a bounded tool (supplying only a package name and version window), and
+ * the workflow calls it directly to feed the PR digest. Either way this code
+ * fixes the endpoints (npm registry, then GitHub Releases), so the model never
+ * chooses a URL and untrusted text enters through one narrow path.
  *
  * A tool's `run` executes in the trusted host process (not the sandbox or the
  * model), so this is ordinary deterministic core code: LLM-free and unit-tested.
  * Network/HTTP failures return a structured "unavailable" note instead of
- * throwing, so the agent can proceed without retrying blindly.
+ * throwing, so the caller can proceed without retrying blindly.
  */
 
 import { compareTriple, type Triple } from "./version-core.ts";

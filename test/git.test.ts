@@ -12,6 +12,7 @@ import {
   discardWorkPast,
   isRepoRoot,
   manifestBumpPaths,
+  manifestDiff,
   refExists,
   resetToBase,
 } from "../src/core/git.ts";
@@ -305,6 +306,41 @@ test("diffNumstat surfaces a test moved out of the test dir via its old path", (
     .map((e) => e.path)
     .sort();
   assert.deepEqual(paths, ["src/x.ts", "test/x.test.ts"]);
+});
+
+test("manifestDiff returns hunks for manifests only, never lockfiles or source", () => {
+  const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo });
+  mkdirSync(join(repo, "packages/a"), { recursive: true });
+  writeFileSync(join(repo, "packages/a/package.json"), `{"name":"a"}\n`);
+  writeFileSync(join(repo, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm ws");
+
+  // A bump touches root + nested manifests, pnpm-workspace.yaml, the lockfile,
+  // and (say) source — only the first three should appear in the hunks.
+  writeFileSync(join(repo, "package.json"), `{"dependencies":{"x":"2.0.0"}}\n`);
+  writeFileSync(
+    join(repo, "packages/a/package.json"),
+    `{"name":"a","dependencies":{"y":"3.0.0"}}\n`,
+  );
+  writeFileSync(
+    join(repo, "pnpm-workspace.yaml"),
+    "packages:\n  - packages/*\ncatalog:\n  z: 1.0.0\n",
+  );
+  writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n# churn\n");
+  writeFileSync(join(repo, "src.ts"), "export const changed = true;\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm change");
+
+  const diff = manifestDiff(repo, "HEAD~1", "HEAD");
+  assert.match(diff, /b\/package\.json/); // root manifest
+  assert.match(diff, /b\/packages\/a\/package\.json/); // nested manifest
+  assert.match(diff, /b\/pnpm-workspace\.yaml/);
+  assert.match(diff, /catalog:/);
+  // Lockfile diffs (thousands of lines) and source stay out — lockfiles reach
+  // the fixer as numstat lines only, never hunks.
+  assert.doesNotMatch(diff, /pnpm-lock\.yaml/);
+  assert.doesNotMatch(diff, /src\.ts/);
 });
 
 test("diffNumstat returns [] for an empty diff", () => {

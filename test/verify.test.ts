@@ -4,7 +4,12 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { npmToolchain, pnpmToolchain } from "../src/core/pm.ts";
-import { parseVerifyCommands, runVerification, verifyStepsFor } from "../src/core/verify.ts";
+import {
+  parseVerifyCommands,
+  runVerification,
+  stripVerifyTails,
+  verifyStepsFor,
+} from "../src/core/verify.ts";
 
 test("parseVerifyCommands: one command per line, trimmed, blanks dropped", () => {
   assert.deepEqual(parseVerifyCommands("npm run check\n\n  npm run test:unit  \n"), [
@@ -58,7 +63,8 @@ test("runVerification: runs steps in order and reports exit codes", () => {
     { name: "ok", run: `node -e "process.exit(0)"` },
     { name: "also-ok", run: `node -e "process.exit(0)"` },
   ]);
-  assert.deepEqual(results, [
+  // The internal tail is compared out; the persisted shape stays {name,ok,code}.
+  assert.deepEqual(stripVerifyTails(results), [
     { name: "ok", ok: true, code: 0 },
     { name: "also-ok", ok: true, code: 0 },
   ]);
@@ -70,5 +76,19 @@ test("runVerification: first failure stops the gate", () => {
     { name: "fails", run: `node -e "process.exit(3)"` },
     { name: "never-runs", run: `node -e "process.exit(0)"` },
   ]);
-  assert.deepEqual(results, [{ name: "fails", ok: false, code: 3 }]);
+  assert.deepEqual(stripVerifyTails(results), [{ name: "fails", ok: false, code: 3 }]);
+});
+
+test("runVerification: captures a bounded output tail; stripVerifyTails removes it", () => {
+  const repo = mkdtempSync(join(tmpdir(), "depvisor-verify-"));
+  const results = runVerification(repo, [
+    { name: "noisy", run: `node -e "process.stdout.write('hello-tail'); process.exit(1)"` },
+  ]);
+  // The tail is captured for the fixer's failure diagnostics …
+  assert.equal(results.length, 1);
+  assert.match(results[0]?.tail ?? "", /hello-tail/);
+  // … but stripped before a result crosses the record/payload boundary, so the
+  // status file and PR body see only {name, ok, code}.
+  assert.deepEqual(stripVerifyTails(results), [{ name: "noisy", ok: false, code: 1 }]);
+  assert.equal(stripVerifyTails(results)[0]?.tail, undefined);
 });

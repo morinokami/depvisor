@@ -5,7 +5,7 @@ import type { NumstatEntry } from "./git.ts";
 import type { LicenseChange } from "./license.ts";
 import { RUN_STATUS_FILE } from "./status-file.ts";
 import { formatNumstatLines } from "./test-changes.ts";
-import type { Candidate, RelevantNewFeature, UpdateNarrative } from "./types.ts";
+import type { Candidate, NotableChange, RelevantNewFeature, UpdateNarrative } from "./types.ts";
 import type { VerifyResult } from "./verify.ts";
 
 export interface PrPayload {
@@ -342,9 +342,9 @@ export function isDisplayablePath(path: string): boolean {
 }
 
 /**
- * A warning section listing test-looking files the agent changed. The scope
- * gate cannot deny tests (a poisoned agent can weaken assertions the same way an
- * honest update adapts them — see core/test-changes.ts), so this raises review
+ * A warning section listing test-looking files this update changed. The scope
+ * gate cannot deny tests (a poisoned fixer could weaken assertions the same way
+ * an honest update adapts them — see core/test-changes.ts), so this raises review
  * attention where the verification gate cannot vouch. Only charset-safe paths
  * are listed; any dropped for unsafe names are still counted, and the wording
  * never implies that an empty section on other PRs proves no test was touched.
@@ -360,12 +360,12 @@ function testChangesSection(changes: readonly NumstatEntry[]): string {
       ? `\n\n_${omitted} changed test file(s) with names that cannot be safely displayed were omitted from the list above._`
       : "";
   return (
-    "## ⚠️ Tests were modified by the agent\n\n" +
-    `The agent changed ${changes.length} file(s) that look like tests while adapting this ` +
-    "update. Adapting tests to a changed API is often legitimate, but it can also weaken the " +
-    "checks that verified this PR — please review these diffs with extra care. Detection is " +
-    "heuristic (common naming conventions only); an empty section on other PRs is not a " +
-    "guarantee that no test was touched.\n\n" +
+    "## ⚠️ Tests were modified in this update\n\n" +
+    `This update changed ${changes.length} file(s) that look like tests. Adapting tests to a ` +
+    "changed API is often legitimate, but it can also weaken the checks that verified this PR " +
+    "— please review these diffs with extra care. Detection is heuristic (common naming " +
+    "conventions only); an empty section on other PRs is not a guarantee that no test was " +
+    "touched.\n\n" +
     table +
     omittedNote +
     "\n\n"
@@ -425,7 +425,7 @@ function licenseChangesSection(changes: readonly LicenseChange[]): string {
 const MAX_NEW_FEATURE_BULLETS = 5;
 
 /**
- * A display-only section listing newly added capabilities the agent noticed in
+ * A display-only section listing newly added capabilities depvisor noticed in
  * this update's release notes that may relate to code already in the repository
  * (the opt-in suggest_features feature — see core/suggest-features.ts). This is
  * NOT a gate and depvisor never adopts a suggestion; the wording says so and
@@ -459,14 +459,80 @@ function newFeaturesSection(
     omitted > 0 ? `\n\n_${omitted} further suggestion(s) were omitted to keep this short._` : "";
   return (
     "## 💡 New features that may be relevant\n\n" +
-    "While updating, the agent noticed these newly added capabilities that look related to " +
-    "code already in this repository. This is heuristic and not exhaustive, and depvisor did " +
-    "NOT change any code to use them — they are surfaced for your consideration only, to pick " +
-    "up in a separate change if you find them worthwhile.\n\n" +
+    "While preparing this update, depvisor noticed these newly added capabilities that look " +
+    "related to code already in this repository. This is heuristic and not exhaustive, and " +
+    "depvisor did NOT change any code to use them — they are surfaced for your consideration " +
+    "only, to pick up in a separate change if you find them worthwhile.\n\n" +
     shown.join("\n") +
     omittedNote +
     "\n\n"
   );
+}
+
+/**
+ * What the read-only PR digest agent reports (agent-as-fixer §5.2): what changed
+ * UPSTREAM. `summary` describes the update; `upstreamChanges` is the per-package
+ * release-notes items relevant to this repo (rendered as "Notable changes");
+ * `reviewNotes` is what a reviewer should double-check. Display-only and
+ * untrusted (release notes + LLM judgment), so pr.ts sanitizes each field when
+ * it renders. Internal camelCase, like the existing narrative fields.
+ */
+export interface DigestReport {
+  summary: string;
+  upstreamChanges: NotableChange[];
+  reviewNotes: string[];
+}
+
+/**
+ * What the failure-path fixer agent reports (agent-as-fixer §5.2): what it FIXED.
+ * `summary` is the fixer's account of the fix; `fixesApplied` are the breaking
+ * changes it adapted to (rendered as "Breaking changes addressed");
+ * `residualRisks` are risks it judges remain. Absent on the fast path (no fixer
+ * ran). Same untrusted/sanitized treatment as DigestReport.
+ */
+export interface FixerReport {
+  summary: string;
+  fixesApplied: string[];
+  residualRisks: string[];
+}
+
+/** Deterministic fallback summary when the digest agent produced nothing. */
+function membersSummary(members: readonly Candidate[]): string {
+  if (members.length === 0) return "Updates dependencies.";
+  return members.map((m) => `Updates ${m.name} from ${m.current} to ${m.latest}.`).join(" ");
+}
+
+/**
+ * Compose the `UpdateNarrative` buildPrPayload consumes from the split
+ * agent-as-fixer reports, mapping them onto today's PR sections (§5.2) so the
+ * generated PR is byte-compatible in shape:
+ *   - summary → "What changed": the digest's summary, with the fixer's summary
+ *     appended as its own paragraph when a fixer ran.
+ *   - notableChanges → "Notable changes": the digest's upstream_changes.
+ *   - breakingChangesAddressed → "Breaking changes addressed": the fixer's
+ *     fixes_applied (empty on the fast path, so the section is omitted — today's
+ *     behaviour, since bulletSection drops empty lists).
+ *   - residualRisks → "Residual risks": the fixer's residual_risks then the
+ *     digest's review_notes.
+ * When `digest` is null (the digest agent failed — display-only and fail-soft
+ * per §5.4), the digest-owned fields fall back to a deterministic member summary
+ * and empty arrays, so a PR is still described.
+ */
+export function composeNarrative(
+  digest: DigestReport | null,
+  fixer: FixerReport | null,
+  members: readonly Candidate[],
+): UpdateNarrative {
+  const digestSummary = digest ? digest.summary : membersSummary(members);
+  const summary = fixer
+    ? [digestSummary.trim(), fixer.summary.trim()].filter((s) => s.length > 0).join("\n\n")
+    : digestSummary;
+  return {
+    summary,
+    notableChanges: digest ? digest.upstreamChanges : [],
+    breakingChangesAddressed: fixer?.fixesApplied ?? [],
+    residualRisks: [...(fixer?.residualRisks ?? []), ...(digest ? digest.reviewNotes : [])],
+  };
 }
 
 /**
@@ -481,7 +547,7 @@ export function buildPrPayload(args: {
   sourceRepos?: ReadonlyMap<string, string | null>;
   /** Package name → advisory ids the update resolves; adds a Security column. */
   advisories?: ReadonlyMap<string, string[]>;
-  /** Test-looking files the agent changed; non-empty adds a warning section. */
+  /** Test-looking files this update changed; non-empty adds a warning section. */
   testChanges?: readonly NumstatEntry[];
   /** Packages whose declared license changed; non-empty adds a warning section. */
   licenseChanges?: readonly LicenseChange[];
