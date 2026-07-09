@@ -120,6 +120,25 @@ test("commitPaths/commitAll split manifests from code fixes", () => {
   assert.equal(commitAll(repo, "x"), null);
 });
 
+test("commits split identity: resolvable author, unclaimable sentinel committer", () => {
+  // Vercel-class Git integrations resolve the AUTHOR to a GitHub account and
+  // refuse to build when it maps to none (#46), so the author must resolve;
+  // the push-boundary guards key on the COMMITTER, which must stay unclaimable.
+  const repo = tempRepo();
+  writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
+  assert.ok(commitAll(repo, "fix: adapt"));
+  const [authorName, authorEmail, committerName, committerEmail] = execSync(
+    "git log -1 --format=%an%n%ae%n%cn%n%ce",
+    { cwd: repo, encoding: "utf8" },
+  )
+    .trim()
+    .split("\n");
+  assert.equal(authorName, "github-actions[bot]");
+  assert.equal(authorEmail, "41898282+github-actions[bot]@users.noreply.github.com");
+  assert.equal(committerName, "depvisor");
+  assert.equal(committerEmail, "depvisor[bot]@users.noreply.github.com");
+});
+
 test("manifestBumpPaths selects every package.json and lockfile by basename (workspaces)", () => {
   const repo = tempRepo();
   mkdirSync(join(repo, "packages/a"), { recursive: true });

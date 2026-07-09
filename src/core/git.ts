@@ -1,11 +1,19 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 
-/** Commit identity; github.ts uses the email to detect human commits. */
+/** Committer identity; github.ts uses the committer email to detect human commits. */
 const AGENT_NAME = "depvisor";
 // GitHub's noreply domain never delivers mail, and `[`/`]` are invalid in
 // usernames, so no account can ever claim this address for attribution.
 export const AGENT_EMAIL = "depvisor[bot]@users.noreply.github.com";
+// The author, by contrast, must RESOLVE to a GitHub account: Vercel-class Git
+// integrations refuse to build a PR whose commit author maps to no account
+// (#46). github-actions[bot]'s canonical id-prefixed address resolves; the
+// push-boundary guards in github.ts key on the committer (%ce), which stays the
+// unclaimable AGENT_EMAIL sentinel — keeping that field unchanged is also what
+// lets PR branches created before this split keep refreshing (their tips carry
+// the sentinel in both fields).
+const AGENT_AUTHOR = "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>";
 
 class GitError extends Error {}
 
@@ -249,12 +257,15 @@ function hasStaged(repo: string): boolean {
 }
 
 function commitStaged(repo: string, message: string): string {
+  // `-c user.*` sets the committer (the guards' sentinel); `--author` overrides
+  // only the author with the resolvable display identity.
   git(repo, [
     "-c",
     `user.email=${AGENT_EMAIL}`,
     "-c",
     `user.name=${AGENT_NAME}`,
     "commit",
+    `--author=${AGENT_AUTHOR}`,
     "-m",
     message,
   ]);

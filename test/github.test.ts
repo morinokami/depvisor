@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { commitAll } from "../src/core/git.ts";
 import {
   buildSecureEnv,
   describePrCreateError,
@@ -7,6 +12,17 @@ import {
   openPrWithGh,
   SAFE_PATH_DIRS,
 } from "../src/core/github.ts";
+
+/** A local target repo with one human-committed base commit; no origin remote. */
+function tempTargetRepo(): { repo: string; base: string; sh: (cmd: string) => string } {
+  const repo = mkdtempSync(join(tmpdir(), "depvisor-github-"));
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  sh("git init -q");
+  writeFileSync(join(repo, "src.ts"), "export {};\n");
+  sh("git add -A && git -c user.email=human@example.com -c user.name=human commit -qm init");
+  const base = sh("git rev-parse --abbrev-ref HEAD").trim();
+  return { repo, base, sh };
+}
 
 test("describePrCreateError appends the repo-setting hint to the Actions-forbidden error", () => {
   const raw =
@@ -43,6 +59,56 @@ test("push-boundary policy refusals are failed (red), not blocked (green)", () =
   assert.equal(depvisorBase.ok, false);
   assert.equal(depvisorBase.action, "failed");
   assert.match(depvisorBase.error ?? "", /cannot be the base/);
+});
+
+test("push is refused when a base..branch commit has a foreign committer, even with a depvisor author", () => {
+  const { repo, base, sh } = tempTargetRepo();
+  sh("git checkout -qb depvisor/prod-x");
+  writeFileSync(join(repo, "src.ts"), "export const changed = true;\n");
+  // Forged author: the resolvable display identity proves nothing, so the guard
+  // must key on the committer and refuse this commit.
+  sh(
+    "git -c user.email=human@example.com -c user.name=human commit -aqm work " +
+      '--author="github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"',
+  );
+  const res = openPrWithGh(repo, {
+    branch: "depvisor/prod-x",
+    base,
+    title: "t",
+    body: "b",
+    labels: [],
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.action, "failed");
+  assert.match(res.error ?? "", /committer is not depvisor/);
+  assert.match(res.error ?? "", /human@example\.com/);
+});
+
+test("depvisor-committed commits pass the committer guard in both the split and pre-split styles", () => {
+  const { repo, base, sh } = tempTargetRepo();
+  sh("git checkout -qb depvisor/prod-x");
+  writeFileSync(join(repo, "src.ts"), "export const a = 1;\n");
+  // New style: resolvable github-actions[bot] author + sentinel committer.
+  assert.ok(commitAll(repo, "deps: bump"));
+  writeFileSync(join(repo, "src.ts"), "export const a = 2;\n");
+  // Pre-split style (sentinel in BOTH fields): tips of PR branches created
+  // before the author/committer split carry these and must keep refreshing.
+  sh(
+    'git -c "user.email=depvisor[bot]@users.noreply.github.com" -c user.name=depvisor ' +
+      "commit -aqm old-style",
+  );
+  const res = openPrWithGh(repo, {
+    branch: "depvisor/prod-x",
+    base,
+    title: "t",
+    body: "b",
+    labels: [],
+  });
+  // The committer guard let both commits through; the run then stops at remote
+  // resolution because this fixture has no origin — reaching that point (and
+  // not the committer refusal) is the assertion.
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /cannot resolve a remote URL/);
 });
 
 test("isNetworkRemote accepts network remotes", () => {
