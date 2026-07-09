@@ -37,9 +37,9 @@ const DAY_MS = 86_400_000;
 /**
  * Parse the minimum_release_age input (days): empty = 1 (the default, matching
  * pnpm's minimumReleaseAge); "0" explicitly disables the cooldown; otherwise a
- * non-negative integer, else null (same shape as budget.ts's parseMaxOpenPrs).
+ * non-negative integer, else null (same shape as budget.ts's parseOpenPullRequestsLimit).
  */
-export function parseMinReleaseAge(raw: string): number | null {
+export function parseMinimumReleaseAge(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return 1;
   if (!/^\d+$/.test(trimmed)) return null;
@@ -60,7 +60,7 @@ export type ParsedReleaseAgeExclude =
  * a bad entry would be the "thought I excluded it" trap, except here the trap
  * is a run that stays red (`release-age-unavailable`) despite the exclusion.
  */
-export function parseMinReleaseAgeExclude(raw: string): ParsedReleaseAgeExclude {
+export function parseMinimumReleaseAgeExclude(raw: string): ParsedReleaseAgeExclude {
   const exclude = new Set<string>();
   const invalid: string[] = [];
   for (const line of raw.split(/\r?\n/)) {

@@ -33,7 +33,7 @@ inputs:
     description: Newline-separated verification commands; replaces automatic build/lint/test script detection.
     required: false
     default: ""
-  max_open_prs:
+  open_pull_requests_limit:
     description: Maximum number of open depvisor PRs to keep at once; a run opens new PRs only up to this ceiling.
     required: false
     default: "5"
@@ -152,7 +152,7 @@ runs:
 
     # Deterministic, token-holding: snapshot open PRs so the (token-free)
     # agent step can skip groups whose PR is already up to date AND count open
-    # depvisor PRs against the max_open_prs ceiling. The ceiling fails open if the
+    # depvisor PRs against the open_pull_requests_limit ceiling. The ceiling fails open if the
     # snapshot is truncated, hence the generous --limit (gh paginates; only
     # repos with more open PRs than this can undercount).
     - name: Snapshot open PRs
@@ -169,13 +169,13 @@ runs:
       env:
         LLM_API_KEY: ${{ inputs.llm_api_key }}
         LLM_API_KEY_ENV: ${{ inputs.llm_api_key_env }}
-        DEPVISOR_MODEL: ${{ inputs.llm_model }}
+        DEPVISOR_LLM_MODEL: ${{ inputs.llm_model }}
         DEPVISOR_TARGET_REPO: ${{ github.workspace }}
         DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
         DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
-        DEPVISOR_MAX_OPEN_PRS: ${{ inputs.max_open_prs }}
-        DEPVISOR_MIN_RELEASE_AGE: ${{ inputs.minimum_release_age }}
-        DEPVISOR_MIN_RELEASE_AGE_EXCLUDE: ${{ inputs.minimum_release_age_exclude }}
+        DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: ${{ inputs.open_pull_requests_limit }}
+        DEPVISOR_MINIMUM_RELEASE_AGE: ${{ inputs.minimum_release_age }}
+        DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: ${{ inputs.minimum_release_age_exclude }}
         DEPVISOR_IGNORE: ${{ inputs.ignore }}
         DEPVISOR_SUGGEST_FEATURES: ${{ inputs.suggest_features }}
         # Forwarded for the reset between dependency groups: a custom command is
@@ -189,19 +189,19 @@ runs:
         # does not enforce it for (composite) actions — so enforce it here.
         # Without a model, the key may be exported under the wrong provider's
         # env var and fail later during the agent run.
-        if [ -z "$DEPVISOR_MODEL" ]; then
+        if [ -z "$DEPVISOR_LLM_MODEL" ]; then
           echo "::error::The llm_model input is required (e.g. openai/gpt-5.5, anthropic/claude-sonnet-5). It selects the provider your llm_api_key belongs to."
           exit 1
         fi
         # Hand the key to Flue under the env var its provider expects
         # (@flue/cli docs/guide/models.md).
         if [ -z "$LLM_API_KEY_ENV" ]; then
-          case "$DEPVISOR_MODEL" in
+          case "$DEPVISOR_LLM_MODEL" in
             openai/*)     LLM_API_KEY_ENV=OPENAI_API_KEY ;;
             anthropic/*)  LLM_API_KEY_ENV=ANTHROPIC_API_KEY ;;
             openrouter/*) LLM_API_KEY_ENV=OPENROUTER_API_KEY ;;
             *)
-              echo "::error::No default key env var for llm_model '$DEPVISOR_MODEL'; set the llm_api_key_env input."
+              echo "::error::No default key env var for llm_model '$DEPVISOR_LLM_MODEL'; set the llm_api_key_env input."
               exit 1 ;;
           esac
         fi

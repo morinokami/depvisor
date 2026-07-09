@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { collectCandidates } from "../core/collect.ts";
 import { groupCandidates } from "../core/grouping.ts";
 import { detectPackageManager } from "../core/pm.ts";
-import { applyReleaseAge, parseMinReleaseAge } from "../core/release-age.ts";
+import { applyReleaseAge, parseMinimumReleaseAge } from "../core/release-age.ts";
 import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/verify.ts";
 
 /**
@@ -11,9 +11,9 @@ import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/ve
  * result, so a human can eyeball the pipeline without going through the agent.
  * It is not part of the CI/composite-action flow — hence its home under dev/.
  *
- *   node src/dev/scan.ts [repoPath] [--verify] [--min-release-age=<days>]
+ *   node src/dev/scan.ts [repoPath] [--verify] [--minimum-release-age=<days>]
  *
- * --min-release-age applies the workflow's cooldown clamp (opt-in here, so the
+ * --minimum-release-age applies the workflow's cooldown clamp (opt-in here, so the
  * default scan stays offline); it hits the real npm registry.
  */
 
@@ -22,10 +22,12 @@ async function main(): Promise<void> {
   const repoArg = args.find((a) => !a.startsWith("--")) ?? "fixtures/sample-app";
   const repoPath = resolve(process.cwd(), repoArg);
   const doVerify = args.includes("--verify");
-  const ageArg = args.find((a) => a.startsWith("--min-release-age="));
-  const minReleaseAge = ageArg ? parseMinReleaseAge(ageArg.slice("--min-release-age=".length)) : 0;
-  if (minReleaseAge === null) {
-    console.log(`--min-release-age must be a non-negative integer (days): "${ageArg}"\n`);
+  const ageArg = args.find((a) => a.startsWith("--minimum-release-age="));
+  const minimumReleaseAge = ageArg
+    ? parseMinimumReleaseAge(ageArg.slice("--minimum-release-age=".length))
+    : 0;
+  if (minimumReleaseAge === null) {
+    console.log(`--minimum-release-age must be a non-negative integer (days): "${ageArg}"\n`);
     process.exitCode = 1;
     return;
   }
@@ -52,9 +54,9 @@ async function main(): Promise<void> {
     console.log(`  ${c.name.padEnd(22)} ${c.current} → ${c.latest}  [${c.updateType}, ${c.kind}]`);
   }
 
-  if (minReleaseAge > 0) {
-    console.log(`\nApplying minimum release age of ${minReleaseAge} day(s) (npm registry)...`);
-    const aged = await applyReleaseAge(candidates, minReleaseAge);
+  if (minimumReleaseAge > 0) {
+    console.log(`\nApplying minimum release age of ${minimumReleaseAge} day(s) (npm registry)...`);
+    const aged = await applyReleaseAge(candidates, minimumReleaseAge);
     for (const c of aged.clamped) console.log(`  clamped    ${c.name} ${c.from} → ${c.to}`);
     for (const c of aged.heldBack) {
       console.log(`  held back  ${c.name} (no version newer than ${c.current} is old enough)`);

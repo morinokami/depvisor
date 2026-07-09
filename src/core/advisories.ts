@@ -6,7 +6,7 @@ import { compareTriple, type Triple } from "./version-core.ts";
  * for known advisories affecting each candidate's CURRENT version, and decide
  * which update groups RESOLVE at least one advisory (current affected, target
  * not). Those groups are stable-promoted to the front of the processing order,
- * so a run's max_open_prs budget spends its slots on security fixes first.
+ * so a run's open_pull_requests_limit budget spends its slots on security fixes first.
  *
  * This is an OPTIMIZATION, not a defense, so — unlike release-age.ts — it is
  * FAIL-SOFT: any fetch/parse failure degrades to "no advisory known" and the

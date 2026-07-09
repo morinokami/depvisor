@@ -1,6 +1,6 @@
 /**
- * The max_open_prs budget: deterministic, LLM-free decisions the update workflow
- * makes per group. `max_open_prs` is a ceiling on the number of open depvisor PRs
+ * The open_pull_requests_limit budget: deterministic, LLM-free decisions the update workflow
+ * makes per group. `open_pull_requests_limit` is a ceiling on the number of open depvisor PRs
  * (Dependabot's open-pull-requests-limit model), not a per-run throughput cap:
  * a run opens new PRs only up to the ceiling, but always refreshes existing ones
  * (a refresh never consumes a slot). Extracted here so it is unit-testable
@@ -8,11 +8,11 @@
  */
 
 /**
- * Parse the max_open_prs input: empty = 5 (Dependabot's open-pull-requests-limit
+ * Parse the open_pull_requests_limit input: empty = 5 (Dependabot's open-pull-requests-limit
  * default — every group is a single package, so 1 would throttle to one package
  * per merge); otherwise a positive integer, else null.
  */
-export function parseMaxOpenPrs(raw: string): number | null {
+export function parseOpenPullRequestsLimit(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return 5;
   if (!/^\d+$/.test(trimmed)) return null;

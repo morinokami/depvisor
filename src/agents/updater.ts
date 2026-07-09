@@ -11,10 +11,10 @@ export const description =
 // Composite actions forward unset inputs as "", so falsy means "not set".
 // Throw from the factory so importing this module stays side-effect-free.
 function requireModel(): string {
-  const model = process.env.DEPVISOR_MODEL;
+  const model = process.env.DEPVISOR_LLM_MODEL;
   if (!model) {
     throw new Error(
-      "DEPVISOR_MODEL is not set. Set it to a model specifier such as " +
+      "DEPVISOR_LLM_MODEL is not set. Set it to a model specifier such as " +
         "openai/gpt-5.5 or anthropic/claude-sonnet-5 (the llm_model input " +
         "in CI; .env for local runs).",
     );

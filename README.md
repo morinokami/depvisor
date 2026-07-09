@@ -128,7 +128,7 @@ jobs:
 | `llm_api_key`                 | (required) Provider API key — reaches **only** the agent step                                                                                                                                                                                                                                             |
 | `llm_model`                   | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                                                                                                                                                                                                         |
 | `verify_commands`             | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                                                                                |
-| `max_open_prs`                | Ceiling on the number of open depvisor PRs (default `5`, matching Dependabot's `open-pull-requests-limit`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                                            |
+| `open_pull_requests_limit`    | Ceiling on the number of open depvisor PRs (default `5`, matching Dependabot's `open-pull-requests-limit`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                                            |
 | `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                                                                            |
 | `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). **Exact names only** (full-line `#` comments allowed); globs, version ranges, and majors are not supported           |
 | `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; full-line `#` comments are allowed. Full version ranges and update-type rules are not supported yet                                                     |
@@ -282,7 +282,7 @@ Details worth knowing:
   The exemption is meant for packages the public registry cannot vouch for.
   Excluding a package that _does_ exist on npmjs removes a real supply-chain
   defense for it, so keep the list to your private packages. Malformed entries
-  fail loudly (`bad-min-release-age-exclude`); a _misspelled_ name is still a
+  fail loudly (`bad-minimum-release-age-exclude`); a _misspelled_ name is still a
   valid package name, so it parses, exempts nothing, and the package it was
   meant to exempt keeps failing the run with `release-age-unavailable`. Either
   way a bad entry never silently drops the cooldown — it only ever fails to
@@ -299,7 +299,7 @@ Details worth knowing:
   inside the cooldown window, depvisor may open a PR for an older minor (e.g.
   `depvisor/prod-foo`); once the major has aged, the update moves to its own
   `depvisor/major-foo` PR. The earlier PR is not closed automatically — close
-  or merge it yourself, since it counts against `max_open_prs` until you do.
+  or merge it yourself, since it counts against `open_pull_requests_limit` until you do.
 
 ### Ignoring packages (`ignore`)
 
@@ -333,16 +333,16 @@ Details worth knowing:
   drops it a run early rather than letting it slip through.
 - **Existing PRs are left alone**: adding a package to `ignore` does not close a
   PR depvisor already opened for it — close or merge it yourself, since it
-  counts against `max_open_prs` until you do.
+  counts against `open_pull_requests_limit` until you do.
 - **Typos fail loudly**: an unrecognized entry stops the run with `bad-ignore`
   rather than silently ignoring nothing.
 
-### One PR per package (`max_open_prs`)
+### One PR per package (`open_pull_requests_limit`)
 
-Every PR updates a single package, so `max_open_prs` directly controls how many
+Every PR updates a single package, so `open_pull_requests_limit` directly controls how many
 independent updates can be in flight. It is a ceiling on **open** depvisor PRs
 (default `5`, matching Dependabot's `open-pull-requests-limit` default), not a
-per-run throughput cap. Concretely, with `max_open_prs: 5`, eight pending
+per-run throughput cap. Concretely, with `open_pull_requests_limit: 5`, eight pending
 updates, and no depvisor PR currently open, a run opens five PRs — security
 fixes first — and reports the remaining three as `held-back-by-limit` (green);
 they open on later runs as you merge or close PRs. Open PRs from earlier runs
@@ -353,11 +353,11 @@ The one-package granularity is deliberate: unrelated updates never share a PR,
 so each one is reviewable — and mergeable or rejectable — on its own. The
 trade-off is volume: a repository with many pending dev-dependency updates gets
 many small PRs instead of one big one, throttled by the ceiling. Lower
-`max_open_prs` if that is too chatty; a user-declared grouping config
+`open_pull_requests_limit` if that is too chatty; a user-declared grouping config
 (Dependabot's `groups`) is a recorded future feature, not present.
 
 Each group runs its own agent session with a fresh reinstall in between, so a
-higher `max_open_prs` costs proportionally more LLM calls and CI time. The
+higher `open_pull_requests_limit` costs proportionally more LLM calls and CI time. The
 between-groups reinstall happens even with `install_command: skip` (which only
 skips the install before the first group) and uses the package manager's
 lockfile-faithful install — so multi-group runs need a committed lockfile;
@@ -369,7 +369,7 @@ The most urgent dependency update is the one that closes a known vulnerability,
 so depvisor processes those first. After grouping, it queries the
 [OSV.dev](https://osv.dev) database and stable-promotes any group whose update
 **resolves** a known advisory to the front of the run — ahead of routine
-dependency bumps. This matters most with `max_open_prs`: security
+dependency bumps. This matters most with `open_pull_requests_limit`: security
 fixes claim the run's PR slots before ordinary updates do. When a group is
 prioritized, its PR body gains a **Security** column linking each resolved
 advisory (`GHSA-…`) so a reviewer can see at a glance why the PR is worth merging
@@ -480,7 +480,7 @@ deliberately rather than by default:
 - **It costs extra tokens.** The suggestions come only from release notes the
   agent already fetched for the update (it never fetches notes just to look for
   features), but forming and grounding them still adds to each run's LLM bill —
-  the same reason `max_open_prs` is worth watching under BYOK.
+  the same reason `open_pull_requests_limit` is worth watching under BYOK.
 - **It widens the agent's engagement with untrusted release notes.** Release
   notes are untrusted external text, and asking the agent to mine them for
   features encourages reading them more closely (and on more updates) than a
@@ -523,7 +523,7 @@ so repeated test output is easier to scan.
 
 Each group that ran the agent also reports its LLM token usage and an estimated
 cost (with the model name), and the run header shows the total across all groups
-— handy under BYOK, where you pay per run, and when raising `max_open_prs`, since cost
+— handy under BYOK, where you pay per run, and when raising `open_pull_requests_limit`, since cost
 scales with the number of groups. The cost is a provider-priced estimate (shown
 `est. ~$…`), not an invoice; groups that opened no agent session (skipped,
 held back, or dropped before the agent) contribute nothing.
@@ -545,27 +545,27 @@ Green — working as intended:
 | `pr-up-to-date`      | An open PR already covers exactly these target versions; the group was skipped.                                                       |
 | `deferred`           | The agent judged the update too risky and said why; it is retried next run. Add the package to `ignore` if it keeps deferring.        |
 | `open-pr-blocked`    | A human pushed to the PR branch, so depvisor refuses to force-push over their commits. Merge or close the PR to hand the branch back. |
-| `held-back-by-limit` | The `max_open_prs` ceiling is reached; the group is opened once an open depvisor PR is merged or closed.                              |
+| `held-back-by-limit` | The `open_pull_requests_limit` ceiling is reached; the group is opened once an open depvisor PR is merged or closed.                  |
 
 Red — needs your attention (the annotation and run summary carry the specifics):
 
-| Status                                                                                                             | Meaning — and what to do                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `persisted-credentials`                                                                                            | The checkout carries a token. Set `persist-credentials: false` on `actions/checkout`.                                                                                                                            |
-| `dirty-tree`                                                                                                       | Uncommitted changes before any update — usually an install that wrote files git does not ignore. Extend `.gitignore` or fix `install_command`.                                                                   |
-| `unsupported-package-manager`                                                                                      | The repo uses a package manager depvisor does not support (e.g. yarn).                                                                                                                                           |
-| `ambiguous-package-manager`                                                                                        | Lockfiles of several package managers, with no `packageManager` field to disambiguate. Remove the stale lockfile or set the field.                                                                               |
-| `bad-base` / `missing-base`                                                                                        | The base branch cannot be used or was not fetched. Set the `base_branch` input, or dispatch the run from the default branch.                                                                                     |
-| `no-verify-scripts`                                                                                                | package.json defines none of `build`/`lint`/`test`, so no gate can vouch for an update. Set `verify_commands`.                                                                                                   |
-| `bad-max-open-prs` / `bad-min-release-age` / `bad-min-release-age-exclude` / `bad-ignore` / `bad-suggest-features` | The named input does not parse; the annotation shows the offending value.                                                                                                                                        |
-| `baseline-red`                                                                                                     | Your checks already fail on the base branch before any update. Fix the base first.                                                                                                                               |
-| `reset-failed`                                                                                                     | The tree reset between groups left the checks failing (e.g. a leaked build artifact). Re-run; if it persists, file an issue.                                                                                     |
-| `release-age-unavailable`                                                                                          | The npm registry could not vouch for a version's age (network failure, or a private-registry package). Transient failures heal on the next run; list private-registry packages in `minimum_release_age_exclude`. |
-| `reinstall-unavailable`                                                                                            | Multi-group runs need a reinstall between groups, but `install_command: skip` with no committed lockfile leaves no way to run one. Commit a lockfile or set `install_command`.                                   |
-| `branch-collision`                                                                                                 | Two group names slugify to the same branch (rare — e.g. `@babel/core` vs `babel-core`). `ignore` one of the two packages.                                                                                        |
-| `no-structured-result`                                                                                             | The agent returned no validated result (tokens may still have been spent). Usually transient; if it recurs, consider a stronger `llm_model`.                                                                     |
-| `unexpected-commits` / `scope-violation`                                                                           | The agent stepped outside its box (ran git, or touched denied paths); nothing was trusted or committed. Re-run; a recurrence is worth an issue.                                                                  |
-| `verification-failed`                                                                                              | The update broke your checks and the agent could not fix them; no PR. The step summary shows which command failed.                                                                                               |
-| `no-changes`                                                                                                       | The agent reported success but changed nothing; no PR. Re-run; a recurrence is worth an issue.                                                                                                                   |
-| `open-pr-failed`                                                                                                   | The push or PR creation failed — most often the "Allow GitHub Actions to create and approve pull requests" repository setting is off, or the workflow lacks `contents: write` / `pull-requests: write`.          |
-| `in-progress`                                                                                                      | The run crashed mid-loop before writing a final status; the log has the failure. Groups recorded before the stop are intact.                                                                                     |
+| Status                                                                                                                                 | Meaning — and what to do                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `persisted-credentials`                                                                                                                | The checkout carries a token. Set `persist-credentials: false` on `actions/checkout`.                                                                                                                            |
+| `dirty-tree`                                                                                                                           | Uncommitted changes before any update — usually an install that wrote files git does not ignore. Extend `.gitignore` or fix `install_command`.                                                                   |
+| `unsupported-package-manager`                                                                                                          | The repo uses a package manager depvisor does not support (e.g. yarn).                                                                                                                                           |
+| `ambiguous-package-manager`                                                                                                            | Lockfiles of several package managers, with no `packageManager` field to disambiguate. Remove the stale lockfile or set the field.                                                                               |
+| `bad-base-branch` / `missing-base-branch`                                                                                              | The base branch cannot be used or was not fetched. Set the `base_branch` input, or dispatch the run from the default branch.                                                                                     |
+| `no-verify-scripts`                                                                                                                    | package.json defines none of `build`/`lint`/`test`, so no gate can vouch for an update. Set `verify_commands`.                                                                                                   |
+| `bad-open-pull-requests-limit` / `bad-minimum-release-age` / `bad-minimum-release-age-exclude` / `bad-ignore` / `bad-suggest-features` | The named input does not parse; the annotation shows the offending value.                                                                                                                                        |
+| `baseline-red`                                                                                                                         | Your checks already fail on the base branch before any update. Fix the base first.                                                                                                                               |
+| `reset-failed`                                                                                                                         | The tree reset between groups left the checks failing (e.g. a leaked build artifact). Re-run; if it persists, file an issue.                                                                                     |
+| `release-age-unavailable`                                                                                                              | The npm registry could not vouch for a version's age (network failure, or a private-registry package). Transient failures heal on the next run; list private-registry packages in `minimum_release_age_exclude`. |
+| `reinstall-unavailable`                                                                                                                | Multi-group runs need a reinstall between groups, but `install_command: skip` with no committed lockfile leaves no way to run one. Commit a lockfile or set `install_command`.                                   |
+| `branch-collision`                                                                                                                     | Two group names slugify to the same branch (rare — e.g. `@babel/core` vs `babel-core`). `ignore` one of the two packages.                                                                                        |
+| `no-structured-result`                                                                                                                 | The agent returned no validated result (tokens may still have been spent). Usually transient; if it recurs, consider a stronger `llm_model`.                                                                     |
+| `unexpected-commits` / `scope-violation`                                                                                               | The agent stepped outside its box (ran git, or touched denied paths); nothing was trusted or committed. Re-run; a recurrence is worth an issue.                                                                  |
+| `verification-failed`                                                                                                                  | The update broke your checks and the agent could not fix them; no PR. The step summary shows which command failed.                                                                                               |
+| `no-changes`                                                                                                                           | The agent reported success but changed nothing; no PR. Re-run; a recurrence is worth an issue.                                                                                                                   |
+| `open-pr-failed`                                                                                                                       | The push or PR creation failed — most often the "Allow GitHub Actions to create and approve pull requests" repository setting is off, or the workflow lacks `contents: write` / `pull-requests: write`.          |
+| `in-progress`                                                                                                                          | The run crashed mid-loop before writing a final status; the log has the failure. Groups recorded before the stop are intact.                                                                                     |

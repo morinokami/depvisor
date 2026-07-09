@@ -1,18 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyGroup, countOpenDepvisorPrs, parseMaxOpenPrs } from "../src/core/budget.ts";
+import {
+  classifyGroup,
+  countOpenDepvisorPrs,
+  parseOpenPullRequestsLimit,
+} from "../src/core/budget.ts";
 
-test("parseMaxOpenPrs defaults empty to 5 and accepts positive integers", () => {
-  assert.equal(parseMaxOpenPrs(""), 5);
-  assert.equal(parseMaxOpenPrs("   "), 5);
-  assert.equal(parseMaxOpenPrs("1"), 1);
-  assert.equal(parseMaxOpenPrs("5"), 5);
-  assert.equal(parseMaxOpenPrs(" 3 "), 3);
+test("parseOpenPullRequestsLimit defaults empty to 5 and accepts positive integers", () => {
+  assert.equal(parseOpenPullRequestsLimit(""), 5);
+  assert.equal(parseOpenPullRequestsLimit("   "), 5);
+  assert.equal(parseOpenPullRequestsLimit("1"), 1);
+  assert.equal(parseOpenPullRequestsLimit("5"), 5);
+  assert.equal(parseOpenPullRequestsLimit(" 3 "), 3);
 });
 
-test("parseMaxOpenPrs rejects non-positive-integer input (fail-fast)", () => {
+test("parseOpenPullRequestsLimit rejects non-positive-integer input (fail-fast)", () => {
   for (const raw of ["0", "-1", "1.5", "abc", "2x", "1e3", "  0 "]) {
-    assert.equal(parseMaxOpenPrs(raw), null, `expected null for '${raw}'`);
+    assert.equal(parseOpenPullRequestsLimit(raw), null, `expected null for '${raw}'`);
   }
 });
 
@@ -41,10 +45,10 @@ test("classifyGroup: a new group opens only while slots remain, else held back",
 });
 
 test("budget scenario: ceiling reached by existing PRs opens no new PR", () => {
-  // max_open_prs=2, two existing open depvisor PRs already at the ceiling.
-  const maxOpenPrs = parseMaxOpenPrs("2") as number;
+  // open_pull_requests_limit=2, two existing open depvisor PRs already at the ceiling.
+  const openPullRequestsLimit = parseOpenPullRequestsLimit("2") as number;
   const open = ["depvisor/major-chalk", "depvisor/major-lru-cache"];
-  let newSlots = Math.max(0, maxOpenPrs - countOpenDepvisorPrs(open));
+  let newSlots = Math.max(0, openPullRequestsLimit - countOpenDepvisorPrs(open));
   assert.equal(newSlots, 0);
 
   // A brand-new group is held back; an existing (drifted) one still refreshes.
@@ -53,8 +57,8 @@ test("budget scenario: ceiling reached by existing PRs opens no new PR", () => {
 });
 
 test("budget scenario: successful new PRs consume slots in order", () => {
-  const maxOpenPrs = parseMaxOpenPrs("2") as number;
-  let newSlots = Math.max(0, maxOpenPrs - countOpenDepvisorPrs([])); // 2
+  const openPullRequestsLimit = parseOpenPullRequestsLimit("2") as number;
+  let newSlots = Math.max(0, openPullRequestsLimit - countOpenDepvisorPrs([])); // 2
   const dispositions: string[] = [];
   // Three new groups, each succeeds → only the first two open, third held back.
   for (let i = 0; i < 3; i++) {

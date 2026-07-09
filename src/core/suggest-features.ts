@@ -13,7 +13,7 @@
  * "empty string = not set" convention, the value is trimmed, then `""` or
  * `"false"` mean off and `"true"` means on; anything else is fail-closed
  * (`null` → the run stops with `bad-suggest-features`), mirroring the other
- * config knobs (parseMaxOpenPrs / parseMinReleaseAge / parseIgnore) so a typo
+ * config knobs (parseOpenPullRequestsLimit / parseMinimumReleaseAge / parseIgnore) so a typo
  * fails loudly now rather than silently leaving the feature off.
  */
 export function parseSuggestFeatures(raw: string): boolean | null {
