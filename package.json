@@ -1,6 +1,6 @@
 {
   "name": "depvisor",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "description": "GitHub Action that investigates, updates, fixes and explains dependency updates.",
   "type": "module",
