@@ -5,8 +5,8 @@ import {
   clampCandidate,
   describeReleaseAge,
   fetchPackument,
-  parseMinReleaseAge,
-  parseMinReleaseAgeExclude,
+  parseMinimumReleaseAge,
+  parseMinimumReleaseAgeExclude,
   versionTimes,
   type Packument,
 } from "../src/core/release-age.ts";
@@ -53,18 +53,18 @@ function stubFetch(routes: Record<string, () => Response>, calls: string[] = [])
   return impl as typeof fetch;
 }
 
-test("parseMinReleaseAge defaults empty to 1 and accepts non-negative integers", () => {
-  assert.equal(parseMinReleaseAge(""), 1);
-  assert.equal(parseMinReleaseAge("   "), 1);
-  assert.equal(parseMinReleaseAge("0"), 0); // explicit disable
-  assert.equal(parseMinReleaseAge("1"), 1);
-  assert.equal(parseMinReleaseAge("14"), 14);
-  assert.equal(parseMinReleaseAge(" 3 "), 3);
+test("parseMinimumReleaseAge defaults empty to 1 and accepts non-negative integers", () => {
+  assert.equal(parseMinimumReleaseAge(""), 1);
+  assert.equal(parseMinimumReleaseAge("   "), 1);
+  assert.equal(parseMinimumReleaseAge("0"), 0); // explicit disable
+  assert.equal(parseMinimumReleaseAge("1"), 1);
+  assert.equal(parseMinimumReleaseAge("14"), 14);
+  assert.equal(parseMinimumReleaseAge(" 3 "), 3);
 });
 
-test("parseMinReleaseAge rejects everything else (fail-fast)", () => {
+test("parseMinimumReleaseAge rejects everything else (fail-fast)", () => {
   for (const raw of ["-1", "1.5", "abc", "2x", "1e3", "0.5"]) {
-    assert.equal(parseMinReleaseAge(raw), null, `expected null for '${raw}'`);
+    assert.equal(parseMinimumReleaseAge(raw), null, `expected null for '${raw}'`);
   }
 });
 
@@ -332,30 +332,30 @@ test("describeReleaseAge reports clamps, hold-backs, exclusions, and drops; sile
   assert.match(note, /dropped @acme\/private \(release age unverifiable\)/);
 });
 
-test("parseMinReleaseAgeExclude accepts names, skipping blanks and # comments", () => {
-  const parsed = parseMinReleaseAgeExclude(
+test("parseMinimumReleaseAgeExclude accepts names, skipping blanks and # comments", () => {
+  const parsed = parseMinimumReleaseAgeExclude(
     "# private registry — npmjs cannot vouch for these\n@acme/internal\n\n  left-pad  \n@acme/internal\n",
   );
   assert.ok(parsed.ok);
   assert.deepEqual([...parsed.exclude].sort(), ["@acme/internal", "left-pad"]);
 });
 
-test("parseMinReleaseAgeExclude returns an empty set for empty/whitespace input", () => {
+test("parseMinimumReleaseAgeExclude returns an empty set for empty/whitespace input", () => {
   for (const raw of ["", "   ", "\n\n"]) {
-    const parsed = parseMinReleaseAgeExclude(raw);
+    const parsed = parseMinimumReleaseAgeExclude(raw);
     assert.ok(parsed.ok);
     assert.equal(parsed.exclude.size, 0);
   }
 });
 
-test("parseMinReleaseAgeExclude fails closed on majors, patterns, and invalid names", () => {
+test("parseMinimumReleaseAgeExclude fails closed on majors, patterns, and invalid names", () => {
   for (const raw of ["lru-cache@11", "@acme/*", "bad name", "../etc/passwd", "@"]) {
-    const parsed = parseMinReleaseAgeExclude(raw);
+    const parsed = parseMinimumReleaseAgeExclude(raw);
     assert.ok(!parsed.ok, `expected failure for '${raw}'`);
     assert.deepEqual(parsed.invalid, [raw.trim()]);
   }
   // One valid line does not rescue the input; every bad entry is reported.
-  const mixed = parseMinReleaseAgeExclude("good-name\npkg@2\n@scope/*");
+  const mixed = parseMinimumReleaseAgeExclude("good-name\npkg@2\n@scope/*");
   assert.ok(!mixed.ok);
   assert.deepEqual(mixed.invalid, ["pkg@2", "@scope/*"]);
 });
