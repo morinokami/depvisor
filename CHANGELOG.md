@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/morinokami/depvisor/compare/v1.2.1...v1.2.2) (2026-07-09)
+
+
+### Miscellaneous
+
+* release 1.2.2 ([203ddfc](https://github.com/morinokami/depvisor/commit/203ddfc4d0730498c48e6bc649ec43c45cdec342))
+
 ## [1.2.1](https://github.com/morinokami/depvisor/compare/v1.2.0...v1.2.1) (2026-07-09)
 
 
