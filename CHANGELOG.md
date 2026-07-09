@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/morinokami/depvisor/compare/v1.2.0...v1.2.1) (2026-07-09)
+
+
+### Bug Fixes
+
+* author commits as the resolvable github-actions[bot] identity ([#47](https://github.com/morinokami/depvisor/issues/47)) ([7cc7994](https://github.com/morinokami/depvisor/commit/7cc799420d829e04ea1ef133127fb91808ec9a00))
+
 ## [1.2.0](https://github.com/morinokami/depvisor/compare/v1.1.0...v1.2.0) (2026-07-08)
 
 
