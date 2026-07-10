@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/morinokami/depvisor/compare/v1.2.2...v1.3.0) (2026-07-10)
+
+
+### Features
+
+* apply updates deterministically and shrink the agent to fixer + digest roles ([#51](https://github.com/morinokami/depvisor/issues/51)) ([2a7ef70](https://github.com/morinokami/depvisor/commit/2a7ef70585023a3038f08c01a0001ac68be9e102))
+
 ## [1.2.2](https://github.com/morinokami/depvisor/compare/v1.2.1...v1.2.2) (2026-07-09)
 
 
