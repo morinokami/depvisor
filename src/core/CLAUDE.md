@@ -42,6 +42,7 @@ Duplicating one of these is the mistake; adding an obvious fifth helper to one i
 - `manifest.ts` — `DEPENDENCY_FIELDS` + `asPlainMap`, shared by `pm.ts`'s planner and `scope.ts`'s bump gate so the sections one classifies and the other allow-lists cannot drift apart.
 - `text.ts` — `tail` (the one end-of-log budget) and `logSafeText`.
 - `status-file.ts` — `RUN_STATUS_FILE` alone, so `pr.ts` and `status.ts` avoid an import cycle.
+- `ref-guard.ts` — the per-group expected-ref state over `git.ts`'s snapshot/diff/restore leaves; policy stays in the workflow because target-script drift fails the group while post-digest drift is display-only.
 
 ## Untrusted text has exactly two exit boundaries
 
@@ -52,7 +53,7 @@ Registry data (licenses, release notes, packuments) and agent output are both un
 
 ## One registry round-trip per package
 
-`release-age.ts` fills a packument cache that the PR body's source-repo links, `license.ts`, and the digest's `fetchReleaseNotes(…, { slug })` all reuse. Do not add a second fetch per member. When the cooldown is disabled, `update.ts` fetches each member's packument once for the same purpose.
+`release-age.ts` fills a packument cache that the PR body's source-repo links, `license.ts`, and the digest's `fetchReleaseNotes(…, { slug })` all reuse. Do not add a second fetch per member. When the cooldown is disabled, `workflows/update/process-group.ts` fetches each member's packument once for the same purpose.
 
 ## Config parsers share one shape
 

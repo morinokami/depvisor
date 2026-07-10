@@ -4,13 +4,15 @@
 
 ## The plain-node / Flue-bundler split
 
-`agents/depvisor.ts` imports its instructions with `with { type: "markdown" }`, a Flue-bundler-only feature, so it loads **only** under `flue run` / `flue build` — never under plain `node` (`ERR_UNKNOWN_FILE_EXTENSION`).
+`agents/depvisor.ts` imports its instructions with `with { type: "markdown" }`, a Flue-bundler-only feature, so that discovered entrypoint loads **only** under `flue run` / `flue build` — never under plain `node` (`ERR_UNKNOWN_FILE_EXTENSION`).
 
-Keep it that way: nothing on a plain-node path (`core/`, `open-pr.ts`, `report-status.ts`, `install-target.ts`, `check-credentials.ts`, `dev/scan.ts`, the tests) may import an agent or workflow module.
+Flue discovers each immediate `agents/*.ts` / `workflows/*.ts` file as an entrypoint; nested files are ordinary support modules. Keep helpers that tests or other plain-node paths import nested (`agents/shared/tasks.ts`, `workflows/update/process-group.ts`), and never import the discovered `agents/depvisor.ts` or `workflows/update.ts` entrypoints from a plain-node path.
 
 ## The agent boundary — capability, not instruction
 
 `agents/depvisor.ts` is a `defineAgent` root that is **never prompted**. It exists only to select Flue's in-memory virtual sandbox (`cwd: /workspace`, so built-in fs/shell cannot see the runner) and to hold the two `defineAgentProfile`s the workflow delegates to via `session.task(prompt, { agent, result })`.
+
+`agents/shared/tasks.ts` owns the two task prompts and their Valibot result schemas. `workflows/update/process-group.ts` owns one processable group's deterministic gates and the two task calls; its explicit outcome returns the group result, run-level stop, reset requirement, slot consumption, and sealed payload to the top-level loop. Neither nested module is a separately discovered Flue surface.
 
 - **fixer** (`agents/fixer.md`) — repo-jailed read tools, `write_repo_file` / `replace_repo_text` / `remove_repo_file`, and the bounded `fetch_release_notes` (`tools/release-notes.ts`), which is the single narrow door for untrusted external text. Never raw agent HTTP. It runs **only** on the failure path, has **no host shell**, and cannot run verification itself — the workflow owns the sole authoritative post-fix run.
 - **digest** — `list_repo_files` / `read_repo_file` / `search_repo` only, no write or exec capability. Runs for every prepared PR, strictly after the commits are sealed. Release notes are fetched deterministically and injected into its prompt.
