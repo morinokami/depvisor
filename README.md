@@ -94,7 +94,7 @@ jobs:
   `github_token` if you want CI checks on depvisor PRs.
 
 Workspace monorepos, pnpm `catalog:` pins, bun specifics, and running without a
-committed lockfile are all supported with caveats — see
+committed lockfile (npm/pnpm only) are all supported with caveats — see
 [Repository requirements](./docs/configuration.md#repository-requirements).
 
 ### Inputs
