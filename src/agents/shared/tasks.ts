@@ -66,8 +66,9 @@ function describeTargets(members: readonly Candidate[]): string {
 
 /**
  * The fixer task prompt: a bounded account of an already-applied,
- * already-committed bump plus the failing checks. It shows manifest hunks only
- * (never lockfiles) and recaps the source-only constraint the scope gate owns.
+ * already-committed bump plus the failing checks. It shows MANIFEST diff hunks
+ * only because lockfile diffs would swamp the context (see `manifestDiff`), and
+ * recaps the source-only constraint the scope gate owns.
  */
 export function fixerPrompt(
   members: readonly Candidate[],
@@ -107,8 +108,10 @@ export function fixerPrompt(
 }
 
 /**
- * Release notes for the digest, fetched deterministically and capped per
- * package. Reuses already-fetched packuments when resolving source repositories.
+ * Release notes for the digest, fetched deterministically and never throws —
+ * the same core fetch the fixer tool wraps degrades every lookup failure to an
+ * unavailable note. Capped per package, and reuses already-fetched packuments
+ * when resolving source repositories.
  */
 export async function digestNotes(
   members: readonly Candidate[],

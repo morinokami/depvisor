@@ -333,13 +333,13 @@ export default defineWorkflow({
           harness,
           log,
         });
-        requiresReset = outcome.requiresResetNext;
 
         if (outcome.kind === "stop") {
           run.status = outcome.status;
           run.summary = outcome.summary;
           break;
         }
+        requiresReset = outcome.requiresResetNext;
         if (outcome.kind === "prepared") {
           // Compose/verification is complete, but payload ordering and the
           // incremental status record remain cross-group concerns. A newly

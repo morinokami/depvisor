@@ -81,7 +81,6 @@ export type GroupOutcome =
       kind: "stop";
       status: "baseline-red" | "reset-failed";
       summary: string;
-      requiresResetNext: boolean;
     }
   | {
       kind: "prepared";
@@ -215,7 +214,6 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     kind: "stop",
     status,
     summary,
-    requiresResetNext,
   });
 
   // Install lifecycle scripts and target verification run with `.git`
