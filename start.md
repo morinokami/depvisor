@@ -17,7 +17,8 @@ The finished setup is small: **one workflow file, one repository secret, and
 one repository setting**. Your job is to inspect the repository first, tailor
 the workflow to what you find, and hand the user only the steps you cannot
 perform. This file is self-contained — you do not need to fetch anything else.
-The README (https://github.com/morinokami/depvisor#readme) documents every
+The README (https://github.com/morinokami/depvisor#readme) and its reference
+pages (https://github.com/morinokami/depvisor/tree/main/docs) document every
 input, output, and status in depth if the user asks for more.
 
 ## Step 1: Inspect the repository
@@ -275,5 +276,5 @@ Common first-run failures and their fixes:
 | `bump-failed`             | A dependency conflict blocked the deterministic bump (e.g. npm `ERESOLVE`); the summary names the failing step. Resolve the conflict upstream, or `ignore` the package. |
 | `open-pr-failed`          | Enable "Allow GitHub Actions to create and approve pull requests", and check the `permissions` block.                                                                   |
 
-Every other status is documented in the README's status reference:
-https://github.com/morinokami/depvisor#status-reference
+Every other status is documented in the status reference:
+https://github.com/morinokami/depvisor/blob/main/docs/results.md#status-reference

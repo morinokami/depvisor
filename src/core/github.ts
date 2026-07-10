@@ -16,7 +16,8 @@ export interface OpenPrResult {
 /**
  * Reserved for the ONE expected policy stop: a human took over the PR branch
  * (the remote tip carries their commits), which open-pr records as the green
- * `open-pr-blocked` — exactly what the README documents that status to mean.
+ * `open-pr-blocked` — exactly what the status reference (docs/results.md)
+ * documents that status to mean.
  * Every other push-boundary refusal (non-depvisor branch or base, a foreign
  * committer in the local range, non-network remote) signals payload/config
  * tampering or misconfiguration and must go through failed(): a green
