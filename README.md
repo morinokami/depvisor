@@ -229,6 +229,15 @@ the LLM key. Because a checkout that persists credentials would defeat this
 separation from the outside, depvisor checks for persisted credentials first
 and refuses to start if it finds any.
 
+The agents also do not receive a host shell. Their built-in capabilities run in
+Flue's in-memory workspace, isolated from the host filesystem, and reach the
+target checkout only through bounded tools:
+the digest can list, search, and read repo-relative files; the failure-only
+fixer additionally gets repo-relative write/replace/remove operations. Paths are
+resolved below the real target root (including symlinks), `.git` is unavailable,
+and neither role can reach depvisor's own action checkout or rewrite the later
+token-holding entrypoint.
+
 Every PR updates exactly one package — majors, minors, and patches alike get
 their own PR, the model of Dependabot without `groups` (in a workspace monorepo,
 that one PR covers every workspace declaring the package). For each update,
@@ -237,8 +246,11 @@ installs it, and runs your configured checks. When they pass, no fixer agent run
 at all. When the update breaks them, an AI agent reads the release notes and your
 code and makes the minimal source fixes to get the checks passing again — it never
 touches manifests or lockfiles, which the deterministic bump already owns.
-Deterministic gates re-verify the final result before a PR is opened. Either way, a
-separate read-only agent writes the PR's explanation.
+Deterministic gates re-verify the final result before a PR is opened, reject any
+tracked or untracked repository change made by install/verification scripts
+outside their expected boundary, and repeat the fixer scope gate immediately
+before the fix commit. Either way, a separate read-only agent writes the PR's
+explanation.
 
 The update branch uses a stable name, so reruns update the same PR instead of
 creating duplicates. It contains up to two commits: `deps: bump …` for the manifest
@@ -571,7 +583,7 @@ Red — needs your attention (the annotation and run summary carry the specifics
 | `reinstall-unavailable`                                                                                                                | Multi-group runs need a reinstall between groups, but `install_command: skip` with no committed lockfile leaves no way to run one. Commit a lockfile or set `install_command`.                                                                                                                                                                                                                                                     |
 | `branch-collision`                                                                                                                     | Two group names slugify to the same branch (rare — e.g. `@babel/core` vs `babel-core`). `ignore` one of the two packages.                                                                                                                                                                                                                                                                                                          |
 | `no-structured-result`                                                                                                                 | The fixer returned no validated result (tokens may still have been spent). Usually transient; if it recurs, consider a stronger `llm_model`.                                                                                                                                                                                                                                                                                       |
-| `unexpected-commits` / `scope-violation`                                                                                               | The fixer stepped outside its box (ran git, or touched manifests/lockfiles/denied paths), or the deterministic bump left manifest changes beyond the update itself (typically a poisoned install lifecycle script); nothing was trusted or committed. Re-run; a recurrence is worth an issue.                                                                                                                                      |
+| `unexpected-commits` / `scope-violation`                                                                                               | Target install/verification code moved refs or authored files outside its boundary, the deterministic bump left changes beyond the mechanical update, or the fixer touched manifests/lockfiles/denied paths. State is restored or discarded and no unsafe commit is opened. Re-run; a recurrence is worth an issue.                                                                                                                |
 | `verification-failed`                                                                                                                  | The update broke your checks and the fixer could not fix them; no PR. The step summary shows which command failed.                                                                                                                                                                                                                                                                                                                 |
 | `no-changes`                                                                                                                           | The deterministic bump ran but changed nothing (the dependency was already at the target); no PR. Re-run; a recurrence is worth an issue.                                                                                                                                                                                                                                                                                          |
 | `open-pr-failed`                                                                                                                       | The push or PR creation failed — most often the "Allow GitHub Actions to create and approve pull requests" repository setting is off, or the workflow lacks `contents: write` / `pull-requests: write`.                                                                                                                                                                                                                            |

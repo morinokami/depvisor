@@ -168,12 +168,21 @@ function classifyPnpmSpecifier(spec: string): { catalog: string | null } | "plai
  * blocker, never as a silently smaller workspace set.
  */
 function patternSegments(pattern: string): string[] | null {
-  const segments = pattern.replace(/\/+$/, "").split("/").filter(Boolean);
+  // pnpm accepts the common `./packages/*` spelling as equivalent to
+  // `packages/*`. Normalize every leading `./` before matching repo-relative
+  // directory parts; treating `.` as a literal segment silently enumerates no
+  // workspaces and can misclassify a catalog declaration as plain.
+  let normalized = pattern;
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  normalized = normalized.replace(/\/+$/, "");
+  if (normalized === "" || normalized === ".") return [];
+  if (normalized.startsWith("/") || normalized.split("/").includes("..")) return null;
+  const segments = normalized.split("/").filter(Boolean);
   for (const s of segments) {
     if (s === "*" || s === "**") continue;
     if (/[*?[\]{}()]/.test(s)) return null;
   }
-  return segments.length > 0 ? segments : null;
+  return segments;
 }
 
 /** Whether a directory path (split into parts) matches a supported pattern. */

@@ -19,6 +19,8 @@ import {
   restoreRefs,
   revParse,
   snapshotRefs,
+  snapshotWorktree,
+  worktreeDrift,
 } from "../src/core/git.ts";
 
 function tempRepo(): string {
@@ -422,4 +424,21 @@ test("restoreRefs recreates a deleted checkout branch before checking it out", (
   restoreRefs(repo, snapshot, "depvisor/group");
   assert.deepEqual(refDrift(repo, snapshot), []);
   assert.equal(revParse(repo, "HEAD"), sealed);
+});
+
+test("snapshotWorktree/worktreeDrift detects verification side effects", () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
+  const beforeVerification = snapshotWorktree(repo);
+  assert.deepEqual(worktreeDrift(repo, beforeVerification), []);
+
+  // The fixer change already existed in the snapshot; changing it again and
+  // adding a denied file models side effects from the final verification.
+  writeFileSync(join(repo, "src.ts"), "export const verificationWroteThis = true;\n");
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/evil.yml"), "on: push\n");
+  assert.deepEqual(worktreeDrift(repo, beforeVerification), [
+    ".github/workflows/evil.yml",
+    "src.ts",
+  ]);
 });

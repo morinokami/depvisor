@@ -1,9 +1,8 @@
 import { defineAgent, defineAgentProfile } from "@flue/runtime";
-import { local } from "@flue/runtime/node";
 import digestInstructions from "./digest.md" with { type: "markdown" };
 import fixerInstructions from "./fixer.md" with { type: "markdown" };
-import { REPO } from "../shared/target.ts";
 import { releaseNotesTool } from "../tools/release-notes.ts";
+import { repoReadTools, repoWriteTools } from "../tools/repo-files.ts";
 
 export const description =
   "Prepares dependency-update PRs. The bump, install, and verification are deterministic; " +
@@ -31,7 +30,9 @@ function requireModel(): string {
  * lockfiles, or configuration — the scope gate (`checkFixScope`) enforces that.
  * It carries the bounded `fetch_release_notes` tool, the single narrow door for
  * the untrusted external text it may consult, and because the fixer runs only on
- * the failure path, that untrusted text reaches a shell-holding agent only there.
+ * the failure path, that untrusted text reaches a repository-writing agent only
+ * there. The fixer has no host shell: its only host bridge is the repo-jailed
+ * read/write tool set, and the deterministic gates remain authoritative.
  */
 const fixer = defineAgentProfile({
   name: "fixer",
@@ -39,16 +40,16 @@ const fixer = defineAgentProfile({
     "Fixes source (and tests) to make the verification checks pass after a dependency bump " +
     "has already been applied. Never edits manifests, lockfiles, or configuration.",
   instructions: fixerInstructions,
-  tools: [releaseNotesTool],
+  tools: [...repoReadTools, ...repoWriteTools, releaseNotesTool],
 });
 
 /**
  * The digest runs for EVERY prepared PR, strictly after both commits are sealed,
  * to write the reviewer-facing narrative. It reads the codebase to judge which
- * upstream changes matter but has no tools and makes no changes; the release
- * notes it is given are the untrusted text, and anything it writes to the tree is
- * discarded by the next group-boundary reset (sealed-commit ordering), so its
- * output cannot reach the PR except through the sanitized structured result.
+ * upstream changes matter through bounded read-only repo tools. Its built-in
+ * filesystem/shell live in Flue's in-memory virtual sandbox, never on the host;
+ * the release notes it is given are untrusted text, but it has no host write or
+ * exec capability, so its only output is the sanitized structured result.
  */
 const digest = defineAgentProfile({
   name: "digest",
@@ -56,22 +57,23 @@ const digest = defineAgentProfile({
     "Writes the reviewer-facing PR digest from the update's release notes and a read-only " +
     "look at the codebase. Read-only: never modifies files or runs state-changing commands.",
   instructions: digestInstructions,
+  tools: [...repoReadTools],
 });
 
 /**
  * The depvisor agent is the root harness the workflow drives; it is never
  * prompted directly. The workflow runs the deterministic bump/install/verify and
  * delegates only the two LLM roles above via `session.task(..., { agent })`. The
- * shared `local()` sandbox — which provides no host isolation; safety comes from
- * the disposable CI runner, egress restrictions, deterministic gates, and a
- * token-free agent step — and `cwd: REPO` are inherited by both subagents.
+ * default in-memory virtual sandbox is inherited by both subagents. The profile-
+ * owned custom tools above are the only host bridge, which is what makes digest
+ * read-only and keeps both roles away from depvisor's own checkout and the later
+ * token-holding entrypoint.
  *
  * Flue discovers it by filename, but no `route` is exported, so the only caller
  * is the workflow that runs it between deterministic gates.
  */
 export default defineAgent(() => ({
   model: requireModel(),
-  sandbox: local(),
-  cwd: REPO,
+  cwd: "/workspace",
   subagents: [fixer, digest],
 }));

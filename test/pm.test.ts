@@ -353,6 +353,24 @@ test("pnpm updatePlan classifies from ALL workspaces, not Candidate.locations (c
   assert.deepEqual(plan.commands, []);
 });
 
+test("pnpm updatePlan normalizes a leading ./ in workspace patterns", () => {
+  // pnpm treats `./packages/*` exactly like `packages/*`; retaining `.` as a
+  // literal matcher segment would omit this workspace and incorrectly route the
+  // catalog-pinned dependency through `pnpm -r update` (a de-catalog attempt).
+  const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - ./packages/*\n",
+    "packages/a/package.json": JSON.stringify({ dependencies: { semver: "catalog:" } }),
+  });
+  const plan = pnpmToolchain.updatePlan(
+    [cand({ name: "semver", latest: "7.7.3", locations: ["packages/a"] })],
+    repo,
+  );
+  assert.equal(plan.blockers, undefined);
+  assert.deepEqual(plan.catalogEdits, [{ name: "semver", target: "7.7.3", catalog: null }]);
+  assert.deepEqual(plan.commands, [["pnpm", "install", "--no-frozen-lockfile"]]);
+});
+
 test("pnpm updatePlan: an inexpandable workspace pattern blocks the whole plan", () => {
   const repo = repoWith({
     "package.json": "{}",

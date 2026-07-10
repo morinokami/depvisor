@@ -8,6 +8,11 @@ agent explains the change in the PR body. It is a Dependabot/Renovate-style upda
 that also does the code-fixing work. It is BYOK (the user pays for LLM calls with
 their own API key) and never merges anything itself.
 
+Both agent roles run in an in-memory workspace without a host shell. The digest
+gets bounded read/search access to the target repository; only the failure-path
+fixer gets bounded repo-relative edit tools. Neither can reach depvisor's action
+checkout or the later GitHub-token step.
+
 The finished setup is small: **one workflow file, one repository secret, and
 one repository setting**. Your job is to inspect the repository first, tailor
 the workflow to what you find, and hand the user only the steps you cannot
@@ -203,8 +208,9 @@ Tailor it per the Step 2 contract:
 
 - **Do not** remove `persist-credentials: false`, the `permissions` block, or
   the `concurrency` group. depvisor keeps GitHub tokens away from its AI agent
-  and from the target's install scripts; it fails at startup if the checkout
-  persists credentials.
+  and from the target's install scripts; the agents themselves have no host
+  shell and cannot reach the later token-holding entrypoint. depvisor fails at
+  startup if the checkout persists credentials.
 
 ## Step 4: Hand the human-only steps to the user
 

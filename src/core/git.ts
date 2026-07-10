@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 
 /** Committer identity; github.ts uses the committer email to detect human commits. */
 const AGENT_NAME = "depvisor";
@@ -20,9 +22,9 @@ class GitError extends Error {}
 /**
  * Prefix applied to every git invocation to disable local hooks.
  *
- * The scope gate only sees the working tree, not `.git/`, so an agent could
- * plant hooks there for later deterministic commits or pushes. Command-line
- * `-c` also overrides a planted `core.hooksPath`.
+ * The scope gate only sees the working tree, not `.git/`, so target lifecycle or
+ * verification commands could plant hooks there for later deterministic commits
+ * or pushes. Command-line `-c` also overrides a planted `core.hooksPath`.
  */
 export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
@@ -115,9 +117,9 @@ export function fileAtRef(repo: string, ref: string, path: string): string | nul
 }
 
 /**
- * Snapshot of every ref under refs/ (heads, tags, remotes) → object sha. Agent
- * sessions and the target's own scripts (install lifecycle, verification) all
- * run with the checkout's .git reachable, so any of them can move ANY ref —
+ * Snapshot of every ref under refs/ (heads, tags, remotes) → object sha. The
+ * target's own scripts (install lifecycle, verification) run with the checkout's
+ * .git reachable, so they can move ANY ref —
  * `git branch -f`, a tag, `update-ref` — not just HEAD. A moved ref is exactly
  * what the token-holding open-pr step would later push: it pushes every
  * payload's branch at the END of the run, so even an already-processed group's
@@ -154,9 +156,9 @@ export function refDrift(repo: string, expected: ReadonlyMap<string, string>): s
  * Force the repository back to `expected`: every ref to its snapshot sha, extra
  * refs deleted, `branch` checked out, tracked tree reset and untracked files
  * cleaned. The order matters: refs are restored first so the checkout target is
- * guaranteed to exist even if the session deleted it; the force-checkout then
+ * guaranteed to exist even if an untrusted command deleted it; force-checkout then
  * reattaches HEAD (a plain `reset --hard` would move whatever branch the
- * session left checked out — e.g. the base branch — instead of returning to
+ * that command left checked out — e.g. the base branch — instead of returning to
  * `branch`); extra refs are deleted only after HEAD is safely off them.
  */
 export function restoreRefs(
@@ -260,6 +262,63 @@ export function changedPaths(repo: string): string[] {
     if (/[RC]/.test(entry.slice(0, 2))) i += 1; // skip the rename/copy ORIG_PATH
   }
   return paths;
+}
+
+/** Content-and-mode snapshot of every currently changed working-tree path. */
+export type WorktreeSnapshot = Map<string, string>;
+
+function pathFingerprint(repo: string, path: string): string {
+  const full = join(repo, path);
+  let stat;
+  try {
+    stat = lstatSync(full);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw err;
+  }
+  if (stat.isSymbolicLink()) return `link:${stat.mode}:${readlinkSync(full)}`;
+  if (!stat.isFile()) return `other:${stat.mode}:${stat.size}`;
+
+  const hash = createHash("sha256");
+  const buf = Buffer.allocUnsafe(64 * 1024);
+  const fd = openSync(full, "r");
+  try {
+    for (;;) {
+      const n = readSync(fd, buf, 0, buf.length, null);
+      if (n === 0) break;
+      hash.update(buf.subarray(0, n));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return `file:${stat.mode}:${stat.size}:${hash.digest("hex")}`;
+}
+
+/**
+ * Snapshot the exact uncommitted state without staging anything. The fixer path
+ * captures this immediately before the authoritative verification; any drift
+ * afterward means the verification scripts authored extra changes and the
+ * workflow must not fold them into the fix commit.
+ */
+export function snapshotWorktree(repo: string): WorktreeSnapshot {
+  return new Map(
+    changedPaths(repo)
+      .sort()
+      .map((path) => [path, pathFingerprint(repo, path)]),
+  );
+}
+
+/** Paths added, removed, or content/mode-changed since `expected`. */
+export function worktreeDrift(repo: string, expected: ReadonlyMap<string, string>): string[] {
+  const current = snapshotWorktree(repo);
+  const drift = new Set<string>();
+  for (const [path, fingerprint] of expected) {
+    if (current.get(path) !== fingerprint) drift.add(path);
+  }
+  for (const path of current.keys()) {
+    if (!expected.has(path)) drift.add(path);
+  }
+  return [...drift].sort();
 }
 
 /** Per-file line-change counts for a committed diff. */
