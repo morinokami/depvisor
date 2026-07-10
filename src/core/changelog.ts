@@ -1,13 +1,14 @@
 /**
- * Deterministic, LLM-free release-notes fetcher exposed to the updater agent as
- * a bounded tool. The agent supplies only a package name and version window;
- * this code fixes the endpoints (npm registry, then GitHub Releases), so the
- * model never chooses a URL and untrusted text enters through one narrow path.
+ * Deterministic, LLM-free release-notes fetcher. The fixer agent reaches it
+ * through a bounded tool (supplying only a package name and version window), and
+ * the workflow calls it directly to feed the PR digest. Either way this code
+ * fixes the endpoints (npm registry, then GitHub Releases), so the model never
+ * chooses a URL and untrusted text enters through one narrow path.
  *
  * A tool's `run` executes in the trusted host process (not the sandbox or the
  * model), so this is ordinary deterministic core code: LLM-free and unit-tested.
  * Network/HTTP failures return a structured "unavailable" note instead of
- * throwing, so the agent can proceed without retrying blindly.
+ * throwing, so the caller can proceed without retrying blindly.
  */
 
 import { compareTriple, type Triple } from "./version-core.ts";
@@ -155,7 +156,8 @@ function requestInit(signal?: AbortSignal): RequestInit {
  * Resolve a package to its GitHub "owner/repo" slug via npm registry metadata,
  * or null. Never throws — an invalid name, a non-GitHub source, or a network
  * failure all degrade to null, because the release-notes lookup below (its one
- * remaining caller — the PR body's releases/compare links now read
+ * remaining caller — and only as the fallback when no `opts.slug` was supplied;
+ * the PR body's releases/compare links and the workflow's digest notes both read
  * `parseGithubSlug` off the packument the run already fetched) treats the slug
  * as strictly optional. The endpoint is fixed here; callers only supply the
  * package name.
@@ -181,11 +183,14 @@ export async function resolveSourceRepo(
  * Resolve a package to its GitHub source and return the release notes in the
  * (from, to] window. Endpoints are fixed here; the caller (a Flue tool) only
  * forwards the model's package + version window. `opts.fetch` is injectable for
- * tests; `opts.signal` cancels in-flight requests.
+ * tests; `opts.signal` cancels in-flight requests. A caller that already holds
+ * the package's packument passes the slug it parsed as `opts.slug` (null =
+ * resolved, no GitHub source) so the lookup does not re-download the full
+ * packument just to re-derive it.
  */
 export async function fetchReleaseNotes(
   input: ReleaseNotesInput,
-  opts: { fetch?: typeof fetch; signal?: AbortSignal } = {},
+  opts: { fetch?: typeof fetch; signal?: AbortSignal; slug?: string | null } = {},
 ): Promise<ReleaseNotesResult> {
   const doFetch = opts.fetch ?? fetch;
   const pkg = input.package;
@@ -200,8 +205,12 @@ export async function fetchReleaseNotes(
     ? AbortSignal.any([opts.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)])
     : AbortSignal.timeout(FETCH_TIMEOUT_MS);
 
-  // 1. Resolve the source repo from npm registry metadata.
-  const slug = await resolveSourceRepo(pkg, { fetch: doFetch, signal: budget });
+  // 1. Resolve the source repo — from the caller when it already holds the
+  //    packument, else from npm registry metadata.
+  const slug =
+    opts.slug !== undefined
+      ? opts.slug
+      : await resolveSourceRepo(pkg, { fetch: doFetch, signal: budget });
   if (!slug) {
     return unavailable(
       pkg,

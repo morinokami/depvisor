@@ -93,13 +93,13 @@ const GH_BIN = resolveBin("gh");
 const TOKEN_ENV_ALLOW = ["GH_TOKEN", "GITHUB_TOKEN"];
 
 /**
- * Environment for every git/gh call in this token-holding step. Flue's `local()`
- * has no host isolation, so the agent can taint inherited HOME, PATH, and git
- * loader/config env. Neither a clean clone nor hook disabling covers that, so
- * every subprocess gets an allowlisted environment:
+ * Environment for every git/gh call in this token-holding step. Earlier
+ * tokenless target commands can taint inherited HOME, PATH, and git loader/config
+ * env. Neither a clean clone nor hook disabling covers that, so every subprocess
+ * gets an allowlisted environment:
  *   - only GitHub token env vars are carried over for `gh` auth,
  *   - fresh HOME + XDG_CONFIG_HOME + GH_CONFIG_DIR under a throwaway dir, so no
- *     agent-planted global/user config is read — yet `gh auth setup-git` can
+ *     target-command-planted global/user config is read — yet `gh auth setup-git` can
  *     still write its credential helper into the fresh global config,
  *   - `GIT_CONFIG_NOSYSTEM=1` to ignore /etc/gitconfig,
  *   - PATH pinned to SAFE_PATH_DIRS (plus the resolved git/gh dirs).
@@ -161,9 +161,9 @@ interface PreparedPush {
 
 /**
  * Produce a clean checkout to push from, then re-verify the branch before this
- * token-holding step touches the remote. The agent can write `.git/config` in
- * the target checkout, and Git config has many command-execution hooks; pushing
- * from a fresh clone with a scrubbed env avoids repo-local, global, and
+ * token-holding step touches the remote. Target lifecycle/verification commands
+ * can write `.git/config`, and Git config has many command-execution hooks;
+ * pushing from a fresh clone with a scrubbed env avoids repo-local, global, and
  * env-based tampering. Push-boundary checks:
  *   1. the branch name must be one depvisor produces,
  *   2. the base must be a real, non-depvisor branch (the payload is written in
@@ -288,8 +288,8 @@ function applyLabels(
  *
  * This is the only code that touches a token, and it runs in a separate
  * workflow step from the agent. All git/gh work runs inside a fresh clone with
- * a scrubbed environment, so agent-touched `.git/`, global git config, and
- * inherited env cannot influence the token-holding step.
+ * a scrubbed environment, so target-command-touched `.git/`, global git config,
+ * and inherited env cannot influence the token-holding step.
  *
  * In CI, `remoteUrl` must come from a trusted source such as Actions context,
  * not from the target checkout. When omitted for trusted local dev, it falls

@@ -12,8 +12,15 @@ import {
   discardWorkPast,
   isRepoRoot,
   manifestBumpPaths,
+  manifestDiff,
+  refDrift,
   refExists,
   resetToBase,
+  restoreRefs,
+  revParse,
+  snapshotRefs,
+  snapshotWorktree,
+  worktreeDrift,
 } from "../src/core/git.ts";
 
 function tempRepo(): string {
@@ -307,6 +314,41 @@ test("diffNumstat surfaces a test moved out of the test dir via its old path", (
   assert.deepEqual(paths, ["src/x.ts", "test/x.test.ts"]);
 });
 
+test("manifestDiff returns hunks for manifests only, never lockfiles or source", () => {
+  const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo });
+  mkdirSync(join(repo, "packages/a"), { recursive: true });
+  writeFileSync(join(repo, "packages/a/package.json"), `{"name":"a"}\n`);
+  writeFileSync(join(repo, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm ws");
+
+  // A bump touches root + nested manifests, pnpm-workspace.yaml, the lockfile,
+  // and (say) source — only the first three should appear in the hunks.
+  writeFileSync(join(repo, "package.json"), `{"dependencies":{"x":"2.0.0"}}\n`);
+  writeFileSync(
+    join(repo, "packages/a/package.json"),
+    `{"name":"a","dependencies":{"y":"3.0.0"}}\n`,
+  );
+  writeFileSync(
+    join(repo, "pnpm-workspace.yaml"),
+    "packages:\n  - packages/*\ncatalog:\n  z: 1.0.0\n",
+  );
+  writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n# churn\n");
+  writeFileSync(join(repo, "src.ts"), "export const changed = true;\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm change");
+
+  const diff = manifestDiff(repo, "HEAD~1", "HEAD", ["pnpm-workspace.yaml"]);
+  assert.match(diff, /b\/package\.json/); // root manifest
+  assert.match(diff, /b\/packages\/a\/package\.json/); // nested manifest
+  assert.match(diff, /b\/pnpm-workspace\.yaml/);
+  assert.match(diff, /catalog:/);
+  // Lockfile diffs (thousands of lines) and source stay out — lockfiles reach
+  // the fixer as numstat lines only, never hunks.
+  assert.doesNotMatch(diff, /pnpm-lock\.yaml/);
+  assert.doesNotMatch(diff, /src\.ts/);
+});
+
 test("diffNumstat returns [] for an empty diff", () => {
   const repo = tempRepo();
   const head = execSync("git rev-parse HEAD", { cwd: repo, encoding: "utf8" }).trim();
@@ -325,4 +367,78 @@ test("commits ignore a planted .git/hooks/pre-commit (no local hooks run)", () =
   const sha = commitAll(repo, "fix: adapt");
   assert.ok(sha, "commit must succeed despite the hostile pre-commit hook");
   assert.throws(() => execSync(`test -e "${sentinel}"`), "the pre-commit hook must not have run");
+});
+
+test("snapshotRefs/refDrift detect moved, created, and deleted refs", () => {
+  const repo = tempRepo();
+  execSync("git branch stable", { cwd: repo });
+  const snapshot = snapshotRefs(repo);
+  assert.deepEqual(refDrift(repo, snapshot), []);
+
+  // Move an existing branch to a new commit, create a ref, delete nothing yet.
+  writeFileSync(join(repo, "src.ts"), "export const x = 1;\n");
+  execSync("git -c user.email=t@t -c user.name=t commit -qam evil", { cwd: repo });
+  execSync("git branch -f stable HEAD", { cwd: repo });
+  execSync("git tag sneaky", { cwd: repo });
+  const drift = refDrift(repo, snapshot).sort();
+  // The checked-out branch moved with the commit, stable was forced, sneaky created.
+  assert.ok(drift.includes("refs/heads/stable"));
+  assert.ok(drift.includes("refs/tags/sneaky"));
+});
+
+test("restoreRefs restores every ref, deletes extras, and reattaches the branch", () => {
+  const repo = tempRepo();
+  execSync("git branch -m main", { cwd: repo });
+  execSync("git branch previous-group", { cwd: repo });
+  execSync("git checkout -qb depvisor/group", { cwd: repo });
+  const snapshot = snapshotRefs(repo);
+  const sealed = revParse(repo, "HEAD");
+
+  // A hostile session: moves ANOTHER group's branch, creates a ref, checks out
+  // main (so a naive `reset --hard` would clobber main, not the group branch),
+  // and dirties the tree.
+  writeFileSync(join(repo, "src.ts"), "export const evil = true;\n");
+  execSync("git -c user.email=t@t -c user.name=t commit -qam evil", { cwd: repo });
+  execSync("git branch -f previous-group HEAD", { cwd: repo });
+  execSync("git checkout -q main", { cwd: repo });
+  writeFileSync(join(repo, "stray.txt"), "dirt\n");
+
+  restoreRefs(repo, snapshot, "depvisor/group");
+  assert.deepEqual(refDrift(repo, snapshot), []);
+  assert.equal(revParse(repo, "HEAD"), sealed);
+  assert.equal(
+    execSync("git rev-parse --abbrev-ref HEAD", { cwd: repo }).toString().trim(),
+    "depvisor/group",
+  );
+  assert.equal(existsSync(join(repo, "stray.txt")), false);
+});
+
+test("restoreRefs recreates a deleted checkout branch before checking it out", () => {
+  const repo = tempRepo();
+  execSync("git checkout -qb depvisor/group", { cwd: repo });
+  const snapshot = snapshotRefs(repo);
+  const sealed = revParse(repo, "HEAD");
+  // The session deletes the group branch out from under itself via a detour.
+  execSync("git checkout -q --detach", { cwd: repo });
+  execSync("git branch -D depvisor/group", { cwd: repo });
+  restoreRefs(repo, snapshot, "depvisor/group");
+  assert.deepEqual(refDrift(repo, snapshot), []);
+  assert.equal(revParse(repo, "HEAD"), sealed);
+});
+
+test("snapshotWorktree/worktreeDrift detects verification side effects", () => {
+  const repo = tempRepo();
+  writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
+  const beforeVerification = snapshotWorktree(repo);
+  assert.deepEqual(worktreeDrift(repo, beforeVerification), []);
+
+  // The fixer change already existed in the snapshot; changing it again and
+  // adding a denied file models side effects from the final verification.
+  writeFileSync(join(repo, "src.ts"), "export const verificationWroteThis = true;\n");
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/evil.yml"), "on: push\n");
+  assert.deepEqual(worktreeDrift(repo, beforeVerification), [
+    ".github/workflows/evil.yml",
+    "src.ts",
+  ]);
 });

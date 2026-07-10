@@ -1,5 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+import type { CatalogEdit, UpdatePlan } from "./bump.ts";
+import { asPlainMap, DEPENDENCY_FIELDS } from "./manifest.ts";
 import type { Candidate } from "./types.ts";
 
 /**
@@ -28,20 +31,29 @@ export interface PmToolchain {
   /** Shell command that runs a package.json script. */
   runScript(script: string): string;
   /**
-   * The concrete update command(s) the agent is instructed to run, scoped to
-   * the workspaces that already declare each dependency (via each candidate's
-   * `locations`). Built per group so a monorepo update touches only the right
-   * manifests instead of adding dependencies to the root — see updater.md.
+   * The deterministic, per-PM, per-workspace update as an `UpdatePlan` the
+   * executor (bump.ts) applies directly — so the installed version and the
+   * manifest/branch identity are fixed by LLM-free code before any agent runs.
+   * Scoped to the workspaces that already declare each dependency (via each
+   * candidate's `locations`), so a monorepo update touches only the right
+   * manifests instead of adding a dependency to the root. `repoPath` is consulted
+   * only by pnpm, which reads pnpm-workspace.yaml to tell catalog-pinned members
+   * (routed to `catalogEdits`, never the update command — the split `pnpm update`
+   * cannot make) from plain ones; npm/bun ignore it.
    *
    * `pinExact` makes the update resolve to exactly `candidate.latest`, at the
    * cost of an exact (range-less) manifest/catalog entry where a PM would
-   * otherwise write or resolve a range. bun's command changes because bun writes
-   * the given specifier verbatim AND resolves ranges at install time. pnpm's
-   * command is unchanged, but its catalog-edit guidance tightens to exact
-   * entries for the same reason: the follow-up install resolves catalog ranges.
-   * npm already installs the exact target, so it ignores the flag.
+   * otherwise write or resolve a range. It drops bun's caret (bun writes the
+   * given specifier verbatim AND resolves ranges at install time) and forces
+   * pnpm's catalog entries exact (a hand-written catalog range is resolved fresh
+   * by the follow-up install); npm always installs the exact target, so it
+   * ignores the flag.
    */
-  updateInstruction(candidates: readonly Candidate[], opts?: { pinExact?: boolean }): string;
+  updatePlan(
+    candidates: readonly Candidate[],
+    repoPath: string,
+    opts?: { pinExact?: boolean },
+  ): UpdatePlan;
   /**
    * This PM's lockfile names — for detection, error messages, and (with every
    * `package.json`) the mechanical bump commit of the two-commit split
@@ -53,8 +65,9 @@ export interface PmToolchain {
    * bump commit (exact root paths, not basenames). pnpm: pnpm-workspace.yaml —
    * a catalog-pinned bump moves its `catalog`/`catalogs` entry there, and
    * without this the version change would land in the "fix" commit of the
-   * two-commit split. The scope gate's catalog carve-out (scope.ts) is what
-   * makes such a change legal; this list only routes it to the right commit.
+   * two-commit split. The change is legal because the deterministic bump
+   * (bump.ts) owns and commits it before any agent runs — the fixer gate
+   * denies the file outright; this list only routes it to the right commit.
    */
   extraBumpFiles: readonly string[];
   /**
@@ -77,102 +90,319 @@ export interface PmToolchain {
 }
 
 /**
- * npm update commands, one line per candidate, scoped with `-w <workspace>` to
- * exactly the workspaces that declare it (root — location "" — takes no `-w`).
- * A dependency present in both the root and a workspace yields two lines. `-D`
- * is added for dev-only dependencies to match the manifest section. `npm
- * install` (not `update`) is used because it reliably jumps to a specific
- * version regardless of the existing range; npm keeps an existing dependency in
- * its current section.
+ * npm update commands as argv, one per candidate, scoped with `-w <workspace>`
+ * to exactly the workspaces that declare it (root — location "" — takes no
+ * `-w`); a dependency present in both the root and a workspace yields two
+ * commands. `-D` marks dev-only dependencies so they stay in devDependencies.
+ * `npm install` (not `update`) is used because it reliably jumps to a specific
+ * version regardless of the existing range, keeping the dependency in its
+ * current section. npm has no catalogs, so `catalogEdits` is empty; `repoPath`
+ * is unused and the plan only records `pinExact` (npm always installs the exact
+ * target).
  */
-function npmUpdateInstruction(candidates: readonly Candidate[]): string {
-  const lines: string[] = [];
+function npmUpdatePlan(
+  candidates: readonly Candidate[],
+  _repoPath: string,
+  opts?: { pinExact?: boolean },
+): UpdatePlan {
+  const commands: string[][] = [];
   for (const c of candidates) {
-    const flag = c.kind === "dev" ? "-D " : "";
+    const flag = c.kind === "dev" ? ["-D"] : [];
     const spec = `${c.name}@${c.latest}`;
     const workspaces = c.locations.filter((l) => l !== "");
     if (c.locations.includes("") || workspaces.length === 0) {
-      lines.push(`npm install ${flag}${spec}`);
+      commands.push(["npm", "install", ...flag, spec]);
     }
     if (workspaces.length > 0) {
-      lines.push(`npm install ${flag}${spec} ${workspaces.map((w) => `-w ${w}`).join(" ")}`);
+      commands.push(["npm", "install", ...flag, spec, ...workspaces.flatMap((w) => ["-w", w])]);
     }
   }
-  return instructionBlock(lines);
+  return { catalogEdits: [], commands, pinExact: opts?.pinExact ?? false };
 }
 
 /**
- * pnpm needs only one recursive command: `pnpm -r update` reaches every
- * workspace (and the root) that declares each package, leaves the rest
- * untouched, and preserves each dependency's section — so no `-D` and no
+ * Parse a declaring workspace's package.json (loc "" = repo root) as a plain
+ * map, or null when it is missing/unparseable — which the caller treats as a
+ * blocker (fail closed rather than guess how the dependency is pinned).
+ */
+function readWorkspaceManifest(repoPath: string, loc: string): Record<string, unknown> | null {
+  try {
+    return asPlainMap(JSON.parse(readFileSync(join(repoPath, loc, "package.json"), "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How a workspace references a dependency's version: a plain range, or a
+ * `catalog:`/`catalog:<name>` reference into pnpm-workspace.yaml. `catalog` is
+ * null for the DEFAULT catalog (a bare `catalog:`, pnpm's sugar for
+ * `catalog:default`) and the name for a named one.
+ */
+function classifyPnpmSpecifier(spec: string): { catalog: string | null } | "plain" {
+  if (spec === "catalog:") return { catalog: null };
+  if (spec.startsWith("catalog:")) return { catalog: spec.slice("catalog:".length) };
+  return "plain";
+}
+
+/**
+ * Split a pnpm-workspace.yaml `packages` pattern into path segments, or null
+ * when a segment uses glob syntax beyond what depvisor expands: only literals,
+ * `*` (exactly one level), and `**` (any depth) are supported — `?`, character
+ * classes, braces, and partial wildcards (`pkg-*`) are not. Enumeration feeds a
+ * fail-closed classification, so an inexpandable pattern must surface as a
+ * blocker, never as a silently smaller workspace set.
+ */
+function patternSegments(pattern: string): string[] | null {
+  // pnpm accepts the common `./packages/*` spelling as equivalent to
+  // `packages/*`. Normalize every leading `./` before matching repo-relative
+  // directory parts; treating `.` as a literal segment silently enumerates no
+  // workspaces and can misclassify a catalog declaration as plain.
+  let normalized = pattern;
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  normalized = normalized.replace(/\/+$/, "");
+  if (normalized === "" || normalized === ".") return [];
+  if (normalized.startsWith("/") || normalized.split("/").includes("..")) return null;
+  const segments = normalized.split("/").filter(Boolean);
+  for (const s of segments) {
+    if (s === "*" || s === "**") continue;
+    if (/[*?[\]{}()]/.test(s)) return null;
+  }
+  return segments;
+}
+
+/** Whether a directory path (split into parts) matches a supported pattern. */
+function dirMatches(parts: readonly string[], segments: readonly string[]): boolean {
+  const m = (pi: number, si: number): boolean => {
+    if (si === segments.length) return pi === parts.length;
+    const s = segments[si];
+    if (s === "**") {
+      for (let k = pi; k <= parts.length; k++) if (m(k, si + 1)) return true;
+      return false;
+    }
+    if (pi >= parts.length) return false;
+    if (s !== "*" && s !== parts[pi]) return false;
+    return m(pi + 1, si + 1);
+  };
+  return m(0, 0);
+}
+
+/** All directories under repoPath up to `depth` levels (null = unbounded),
+ * repo-relative, skipping node_modules and dot-directories. */
+function listDirs(repoPath: string, rel: string, depth: number | null, out: string[]): void {
+  let entries;
+  try {
+    entries = readdirSync(join(repoPath, rel), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name === "node_modules" || e.name.startsWith(".")) continue;
+    const child = rel === "" ? e.name : `${rel}/${e.name}`;
+    out.push(child);
+    if (depth === null || depth > 1) {
+      listDirs(repoPath, child, depth === null ? null : depth - 1, out);
+    }
+  }
+}
+
+/**
+ * Every workspace directory pnpm-workspace.yaml's `packages` patterns declare
+ * (repo-relative; the root is NOT included — callers add it), or null when the
+ * set cannot be enumerated faithfully (unparseable file, non-string patterns,
+ * unsupported glob syntax). The declaration classification below must see EVERY
+ * workspace manifest: `Candidate.locations` cannot be its source for pnpm,
+ * because `pnpm outdated` reports only the highest installed version and omits
+ * lower-versioned workspaces entirely (see collect.ts) — a plain declaration in
+ * an omitted workspace would silently produce a catalog-only plan that never
+ * updates it, while the PR claims it did. A missing pnpm-workspace.yaml is a
+ * single-package repo: no workspaces, not an error. Negations (`!pattern`)
+ * subtract from the matched set; only directories that actually contain a
+ * package.json count as workspaces.
+ */
+function pnpmWorkspaceDirs(repoPath: string): string[] | null {
+  let raw: unknown;
+  try {
+    raw = parseYaml(readFileSync(join(repoPath, "pnpm-workspace.yaml"), "utf8"));
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
+  }
+  const root = asPlainMap(raw);
+  if (raw !== null && raw !== undefined && !root) return null;
+  const patterns = root?.packages;
+  if (patterns === undefined || patterns === null) return [];
+  if (!Array.isArray(patterns) || !patterns.every((p): p is string => typeof p === "string")) {
+    return null;
+  }
+
+  const positives: string[][] = [];
+  const negatives: string[][] = [];
+  for (const pattern of patterns) {
+    const negated = pattern.startsWith("!");
+    const segments = patternSegments(negated ? pattern.slice(1) : pattern);
+    if (segments === null) return null;
+    (negated ? negatives : positives).push(segments);
+  }
+
+  const unbounded = positives.some((segs) => segs.includes("**"));
+  const depth = unbounded ? null : Math.max(0, ...positives.map((segs) => segs.length));
+  const dirs: string[] = [];
+  listDirs(repoPath, "", depth, dirs);
+  return dirs.filter((dir) => {
+    const parts = dir.split("/");
+    return (
+      positives.some((segs) => dirMatches(parts, segs)) &&
+      !negatives.some((segs) => dirMatches(parts, segs)) &&
+      existsSync(join(repoPath, dir, "package.json"))
+    );
+  });
+}
+
+/**
+ * pnpm needs only one recursive command for plain members: `pnpm -r update`
+ * reaches every workspace (and the root) that declares each package, leaves the
+ * rest untouched, and preserves each dependency's section — so no `-D` and no
  * per-workspace flags. `-r` also drives the single-package case correctly.
  *
- * Catalog-pinned dependencies are the exception, instructed as a hand edit of
- * pnpm-workspace.yaml: pnpm has no command that moves a catalog entry to a
- * SPECIFIC version — `pnpm update <name>@<ver>` DE-catalogs instead (it
- * rewrites each workspace's `catalog:` specifier to the plain version, leaving
- * the catalog entry stale), and `--latest` (which does edit the catalog since
- * pnpm 10.12.1) rejects version specs (ERR_PNPM_LATEST_WITH_SPEC) — verified
- * on pnpm 11.9. `--no-frozen-lockfile` matters because CI=true flips pnpm's
- * install default to frozen, which would fail on the just-edited catalog. The
- * scope gate's catalog carve-out (scope.ts) deterministically confines the
- * edit to exactly these packages at exactly these versions. `pinExact` mirrors
- * bun's: a hand-written range is resolved fresh at install time, so under the
- * minimum_release_age cooldown the entry must be exact or the install could
- * reach back into the cooldown window.
+ * Catalog-pinned members are the exception: they become `catalogEdits` and are
+ * excluded from the command, because pnpm has no command that moves a catalog
+ * entry to a SPECIFIC version — `pnpm update <name>@<ver>` DE-catalogs instead
+ * (rewriting each workspace's `catalog:` specifier to the plain version and
+ * leaving the catalog entry stale), and `--latest` (which does edit the catalog
+ * since pnpm 10.12.1) rejects version specs (ERR_PNPM_LATEST_WITH_SPEC) — both
+ * verified on pnpm 11.9. The executor (bump.ts) applies the catalog edits through
+ * the yaml Document API, then a `pnpm install --no-frozen-lockfile` refreshes the
+ * lockfile (CI=true flips pnpm's install default to frozen, which would reject
+ * the just-edited catalog).
+ *
+ * Which members are catalog-pinned is decided by reading how each workspace's
+ * package.json actually references the dependency — NOT a name-global scan of
+ * pnpm-workspace.yaml's catalog keys (which mis-handles a dead catalog entry,
+ * duplicate entries across named catalogs, and mixed references), and NOT from
+ * `Candidate.locations` (incomplete for pnpm — see pnpmWorkspaceDirs). Every
+ * workspace manifest, root included, is enumerated and inspected. Per candidate:
+ * only plain references (or none found) → the recursive update, no catalog edit;
+ * only catalog references → one `CatalogEdit` per DISTINCT catalog pointed at;
+ * a mix of catalog and plain references across workspaces, or an unreadable
+ * manifest, or an inexpandable workspace set → a `blocker` (fail-closed
+ * `bump-failed`, since neither update mechanism would move every declaration
+ * safely).
  */
-function pnpmUpdateInstruction(
+function pnpmUpdatePlan(
   candidates: readonly Candidate[],
+  repoPath: string,
   opts?: { pinExact?: boolean },
-): string {
-  const specs = candidates.map((c) => `${c.name}@${c.latest}`).join(" ");
-  const style = opts?.pinExact
-    ? "write the exact target version, no ^ or ~ (a range would let the install resolve past the vetted version)"
-    : "keeping the entry's existing range style (an entry `^1.0.0` becomes `^<target>`, an exact entry stays exact)";
-  return (
-    instructionBlock([`pnpm -r update ${specs}`]) +
-    "\n\nException — catalog-pinned packages: where one of these packages is declared " +
-    "with the `catalog:` protocol in a package.json, do NOT run the update command for " +
-    "it, and never replace a `catalog:` specifier in a package.json with a plain " +
-    "version. Instead edit that package's entry in the `catalog:`/`catalogs:` section " +
-    `of pnpm-workspace.yaml to its target version listed above — ${style} — and then ` +
-    "run `pnpm install --no-frozen-lockfile` once to refresh the lockfile. Change " +
-    "nothing else in pnpm-workspace.yaml."
+): UpdatePlan {
+  const catalogEdits: CatalogEdit[] = [];
+  const updateSpecs: string[] = [];
+  const blockers: string[] = [];
+  const pinExact = opts?.pinExact ?? false;
+
+  const workspaceDirs = pnpmWorkspaceDirs(repoPath);
+  if (workspaceDirs === null) {
+    return {
+      catalogEdits,
+      commands: [],
+      pinExact,
+      blockers: [
+        "cannot enumerate the pnpm workspaces from pnpm-workspace.yaml's `packages` " +
+          "patterns (unsupported glob syntax or an unparseable file) — refusing to " +
+          "classify catalog vs plain declarations from an incomplete workspace set",
+      ],
+    };
+  }
+  const manifestDirs = ["", ...workspaceDirs];
+  // One read per manifest, not one per candidate — the classification only
+  // reads, so a multi-member group must not re-parse every workspace manifest
+  // for each member.
+  const manifests = new Map(
+    manifestDirs.map((loc) => [loc, readWorkspaceManifest(repoPath, loc)] as const),
   );
+
+  for (const c of candidates) {
+    const referencedCatalogs = new Set<string | null>();
+    let hasPlain = false;
+    let unreadable = false;
+    for (const loc of manifestDirs) {
+      const pkg = manifests.get(loc) ?? null;
+      if (pkg === null) {
+        unreadable = true;
+        break;
+      }
+      for (const section of DEPENDENCY_FIELDS) {
+        const map = asPlainMap(pkg[section]);
+        const spec = map ? map[c.name] : undefined;
+        if (typeof spec !== "string") continue;
+        const classified = classifyPnpmSpecifier(spec);
+        if (classified === "plain") hasPlain = true;
+        else referencedCatalogs.add(classified.catalog);
+      }
+    }
+
+    if (unreadable) {
+      blockers.push(
+        `cannot read a workspace package.json while classifying ${c.name} — refusing to guess how it is pinned`,
+      );
+    } else if (referencedCatalogs.size === 0) {
+      // Only plain declarations (or none found): the ordinary recursive update,
+      // no catalog edit. A dead catalog entry with this name is left untouched.
+      updateSpecs.push(`${c.name}@${c.latest}`);
+    } else if (hasPlain) {
+      // Mixed: `pnpm -r update` would de-catalog the catalog references and a
+      // catalog-only edit would leave the plain declaration stale — neither is
+      // safe, so fail closed rather than update half of them.
+      blockers.push(
+        `${c.name} is declared both as a catalog reference and a plain version across ` +
+          "workspaces; depvisor cannot update it deterministically (unify the declarations)",
+      );
+    } else {
+      // Only catalog references: one edit per DISTINCT catalog they point at.
+      for (const catalog of referencedCatalogs) {
+        catalogEdits.push({ name: c.name, target: c.latest, catalog });
+      }
+    }
+  }
+
+  const commands: string[][] = [];
+  if (updateSpecs.length > 0) commands.push(["pnpm", "-r", "update", ...updateSpecs]);
+  if (catalogEdits.length > 0) commands.push(["pnpm", "install", "--no-frozen-lockfile"]);
+  return {
+    catalogEdits,
+    commands,
+    pinExact,
+    ...(blockers.length > 0 ? { blockers } : {}),
+  };
 }
 
 /**
  * bun scopes an add with `--cwd <workspace-path>` (it has no `-w`/`--filter` for
- * add), so this emits one line per declaring workspace (root — location "" —
- * takes no `--cwd`). The explicit `^` matters: bun writes the given specifier
- * verbatim, so a bare `name@1.2.3` would pin exactly where npm/pnpm write a
- * caret range (verified against bun 1.3.14). Under `pinExact` that pinning is
- * the point: bun resolves `@^<latest>` at install time, which would silently
- * pull a release the minimum_release_age cooldown just rounded away.
+ * add), so this emits one `bun add` argv per declaring workspace (root —
+ * location "" — takes no `--cwd`), with `-d` for dev deps. The explicit `^`
+ * matters: bun writes the given specifier verbatim, so a bare `name@1.2.3` would
+ * pin exactly where npm/pnpm write a caret range (verified against bun 1.3.14).
+ * Under `pinExact` the caret is dropped on purpose: bun resolves `@^<latest>` at
+ * install time, which would silently pull a release the minimum_release_age
+ * cooldown just rounded away — only the exact form is guaranteed to land on
+ * candidate.latest. bun keeps catalogs in package.json, which this plan does not
+ * edit (a bun-catalog bump is a recorded follow-up), so `catalogEdits` is empty
+ * and `repoPath` is unused.
  */
-function bunUpdateInstruction(
+function bunUpdatePlan(
   candidates: readonly Candidate[],
+  _repoPath: string,
   opts?: { pinExact?: boolean },
-): string {
-  const lines: string[] = [];
+): UpdatePlan {
+  const commands: string[][] = [];
   for (const c of candidates) {
-    const flag = c.kind === "dev" ? "-d " : "";
+    const flag = c.kind === "dev" ? ["-d"] : [];
     const spec = opts?.pinExact ? `${c.name}@${c.latest}` : `${c.name}@^${c.latest}`;
     for (const loc of c.locations) {
-      lines.push(loc === "" ? `bun add ${flag}${spec}` : `bun add --cwd ${loc} ${flag}${spec}`);
+      commands.push(
+        loc === "" ? ["bun", "add", ...flag, spec] : ["bun", "add", "--cwd", loc, ...flag, spec],
+      );
     }
   }
-  return instructionBlock(lines);
-}
-
-/** Frame concrete update commands as an instruction the agent runs verbatim. */
-function instructionBlock(commands: string[]): string {
-  return (
-    "Update the dependencies by running exactly these commands (they touch only " +
-    "the workspaces that already declare each package — never add a dependency to " +
-    "another workspace or to the root):\n" +
-    commands.map((c) => `    ${c}`).join("\n")
-  );
+  return { catalogEdits: [], commands, pinExact: opts?.pinExact ?? false };
 }
 
 const NPM_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json"] as const;
@@ -182,6 +412,17 @@ const PNPM_LOCKFILES = ["pnpm-lock.yaml"] as const;
 // detection, frozen installs, and the mechanical bump commit.
 const BUN_LOCKFILES = ["bun.lock", "bun.lockb"] as const;
 
+/**
+ * The union of every supported PM's lockfile names. scope.ts's fixer gate
+ * denies them all regardless of the detected PM, so a new PM's lockfiles added
+ * here extend that gate automatically.
+ */
+export const ALL_PM_LOCKFILES: readonly string[] = [
+  ...NPM_LOCKFILES,
+  ...PNPM_LOCKFILES,
+  ...BUN_LOCKFILES,
+];
+
 export const npmToolchain: PmToolchain = {
   name: "npm",
   // --long adds each entry's `type` (dependencies/devDependencies) and
@@ -189,7 +430,7 @@ export const npmToolchain: PmToolchain = {
   // target workspace dependencies. See collect.ts's parseOutdated.
   outdatedArgv: ["npm", "outdated", "--json", "--long"],
   runScript: (script) => `npm run ${script}`,
-  updateInstruction: npmUpdateInstruction,
+  updatePlan: npmUpdatePlan,
   lockfiles: NPM_LOCKFILES,
   extraBumpFiles: [],
   noLockfileInstall: "npm install --package-lock=false",
@@ -203,7 +444,7 @@ export const pnpmToolchain: PmToolchain = {
   // deps are visible); it also works for a single-package repo. See collect.ts.
   outdatedArgv: ["pnpm", "outdated", "-r", "--format", "json"],
   runScript: (script) => `pnpm run ${script}`,
-  updateInstruction: pnpmUpdateInstruction,
+  updatePlan: pnpmUpdatePlan,
   lockfiles: PNPM_LOCKFILES,
   // pnpm ≥ 10.12.1's `pnpm update` rewrites catalog entries here itself; the
   // composite action puts depvisor's own pinned pnpm on PATH, so CI always has
@@ -224,10 +465,10 @@ export const bunToolchain: PmToolchain = {
   // collect.ts's parseBunOutdated.
   outdatedArgv: ["bun", "outdated", "-r"],
   runScript: (script) => `bun run ${script}`,
-  updateInstruction: bunUpdateInstruction,
+  updatePlan: bunUpdatePlan,
   lockfiles: BUN_LOCKFILES,
-  // bun keeps catalogs in package.json (a guarded field, no carve-out yet), so
-  // there is no extra manifest to route into the bump commit.
+  // bun keeps catalogs in package.json (already a bump-commit path via the
+  // basename match), so there is no extra manifest to route into the bump commit.
   extraBumpFiles: [],
   // No escape hatch: `bun outdated` reads the committed lockfile, not the
   // installed tree, so `bun install --no-save` (which writes no lockfile)

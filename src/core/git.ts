@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 
 /** Committer identity; github.ts uses the committer email to detect human commits. */
 const AGENT_NAME = "depvisor";
@@ -20,9 +22,9 @@ class GitError extends Error {}
 /**
  * Prefix applied to every git invocation to disable local hooks.
  *
- * The scope gate only sees the working tree, not `.git/`, so an agent could
- * plant hooks there for later deterministic commits or pushes. Command-line
- * `-c` also overrides a planted `core.hooksPath`.
+ * The scope gate only sees the working tree, not `.git/`, so target lifecycle or
+ * verification commands could plant hooks there for later deterministic commits
+ * or pushes. Command-line `-c` also overrides a planted `core.hooksPath`.
  */
 export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
@@ -114,6 +116,66 @@ export function fileAtRef(repo: string, ref: string, path: string): string | nul
   return res.code === 0 ? res.out : null;
 }
 
+/**
+ * Snapshot of every ref under refs/ (heads, tags, remotes) → object sha. The
+ * target's own scripts (install lifecycle, verification) run with the checkout's
+ * .git reachable, so they can move ANY ref —
+ * `git branch -f`, a tag, `update-ref` — not just HEAD. A moved ref is exactly
+ * what the token-holding open-pr step would later push: it pushes every
+ * payload's branch at the END of the run, so even an already-processed group's
+ * branch is a live target. The workflow snapshots refs from trusted code
+ * before each group's first untrusted execution (the group-boundary reinstall,
+ * the baseline verification, and the bump's install all predate any agent),
+ * maintains the snapshot across its own deliberate ref writes, and
+ * verifies/restores against it at every boundary where untrusted code ran —
+ * failure paths included (refDrift / restoreRefs).
+ */
+export function snapshotRefs(repo: string): Map<string, string> {
+  const refs = new Map<string, string>();
+  for (const line of git(repo, ["for-each-ref", "--format=%(refname) %(objectname)"]).split("\n")) {
+    const sp = line.indexOf(" ");
+    if (sp > 0) refs.set(line.slice(0, sp), line.slice(sp + 1));
+  }
+  return refs;
+}
+
+/** Refs that differ from `expected` — moved, created, or deleted. */
+export function refDrift(repo: string, expected: ReadonlyMap<string, string>): string[] {
+  const current = snapshotRefs(repo);
+  const drift: string[] = [];
+  for (const [ref, sha] of expected) {
+    if (current.get(ref) !== sha) drift.push(ref);
+  }
+  for (const ref of current.keys()) {
+    if (!expected.has(ref)) drift.push(ref);
+  }
+  return drift;
+}
+
+/**
+ * Force the repository back to `expected`: every ref to its snapshot sha, extra
+ * refs deleted, `branch` checked out, tracked tree reset and untracked files
+ * cleaned. The order matters: refs are restored first so the checkout target is
+ * guaranteed to exist even if an untrusted command deleted it; force-checkout then
+ * reattaches HEAD (a plain `reset --hard` would move whatever branch the
+ * that command left checked out — e.g. the base branch — instead of returning to
+ * `branch`); extra refs are deleted only after HEAD is safely off them.
+ */
+export function restoreRefs(
+  repo: string,
+  expected: ReadonlyMap<string, string>,
+  branch: string,
+): void {
+  for (const [ref, sha] of expected) {
+    git(repo, ["update-ref", ref, sha]);
+  }
+  git(repo, ["checkout", "-f", branch]);
+  for (const ref of snapshotRefs(repo).keys()) {
+    if (!expected.has(ref)) git(repo, ["update-ref", "-d", ref]);
+  }
+  git(repo, ["clean", "-fd"]);
+}
+
 /** Return to base at the end of a clean run; dirty trees stay for inspection. */
 export function tryCheckout(repo: string, ref: string): boolean {
   return probe(repo, ["checkout", ref]).code === 0;
@@ -181,9 +243,9 @@ export function changedPaths(repo: string): string[] {
   // and dropped, keeping the destination as before.
   //
   // --untracked-files=all lists every file under a NEW directory individually;
-  // git's default collapses it to just `newdir/`. The scope gate keys its
-  // guarded-field check on the exact `package.json` filename, so a collapsed
-  // `packages/evil/` would let an agent smuggle a new package.json with a
+  // git's default collapses it to just `newdir/`. The fixer scope gate keys its
+  // manifest deny on the exact `package.json` filename, so a collapsed
+  // `packages/evil/` would let a fixer smuggle a new package.json with a
   // `postinstall`/`overrides` past the gate (the file is then committed by the
   // catch-all `commitAll`). `all` still omits gitignored paths (node_modules),
   // which are governed by --ignored, so this does not surface the install tree.
@@ -200,6 +262,63 @@ export function changedPaths(repo: string): string[] {
     if (/[RC]/.test(entry.slice(0, 2))) i += 1; // skip the rename/copy ORIG_PATH
   }
   return paths;
+}
+
+/** Content-and-mode snapshot of every currently changed working-tree path. */
+export type WorktreeSnapshot = Map<string, string>;
+
+function pathFingerprint(repo: string, path: string): string {
+  const full = join(repo, path);
+  let stat;
+  try {
+    stat = lstatSync(full);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw err;
+  }
+  if (stat.isSymbolicLink()) return `link:${stat.mode}:${readlinkSync(full)}`;
+  if (!stat.isFile()) return `other:${stat.mode}:${stat.size}`;
+
+  const hash = createHash("sha256");
+  const buf = Buffer.allocUnsafe(64 * 1024);
+  const fd = openSync(full, "r");
+  try {
+    for (;;) {
+      const n = readSync(fd, buf, 0, buf.length, null);
+      if (n === 0) break;
+      hash.update(buf.subarray(0, n));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return `file:${stat.mode}:${stat.size}:${hash.digest("hex")}`;
+}
+
+/**
+ * Snapshot the exact uncommitted state without staging anything. The fixer path
+ * captures this immediately before the authoritative verification; any drift
+ * afterward means the verification scripts authored extra changes and the
+ * workflow must not fold them into the fix commit.
+ */
+export function snapshotWorktree(repo: string): WorktreeSnapshot {
+  return new Map(
+    changedPaths(repo)
+      .sort()
+      .map((path) => [path, pathFingerprint(repo, path)]),
+  );
+}
+
+/** Paths added, removed, or content/mode-changed since `expected`. */
+export function worktreeDrift(repo: string, expected: ReadonlyMap<string, string>): string[] {
+  const current = snapshotWorktree(repo);
+  const drift = new Set<string>();
+  for (const [path, fingerprint] of expected) {
+    if (current.get(path) !== fingerprint) drift.add(path);
+  }
+  for (const path of current.keys()) {
+    if (!expected.has(path)) drift.add(path);
+  }
+  return [...drift].sort();
 }
 
 /** Per-file line-change counts for a committed diff. */
@@ -250,6 +369,31 @@ export function diffNumstat(repo: string, from: string, to: string): NumstatEntr
     });
   }
   return entries;
+}
+
+/**
+ * The textual diff (hunks) of `from..to` restricted to dependency MANIFESTS —
+ * every package.json (root or workspace) plus the PM's extra root manifests
+ * (`extraBumpFiles`, the same seam `manifestBumpPaths` uses: pnpm's
+ * pnpm-workspace.yaml) — and nothing else. The fixer is shown these hunks so it
+ * knows exactly what the deterministic bump changed, WITHOUT the lockfile hunks:
+ * a pnpm-lock.yaml diff runs to thousands of lines and would swamp the fixer's
+ * context (lockfiles reach it as numstat lines only, never hunks). The `:(glob)`
+ * pathspec matches nested and root manifests alike. Goes through `run()` (not
+ * `git()`, which trims) so hunk whitespace survives, and throws on a non-zero
+ * exit so a failed diff cannot masquerade as an empty one.
+ */
+export function manifestDiff(
+  repo: string,
+  from: string,
+  to: string,
+  extraBumpFiles: readonly string[] = [],
+): string {
+  const res = run(repo, ["diff", from, to, "--", ":(glob)**/package.json", ...extraBumpFiles]);
+  if (res.code !== 0) {
+    throw new GitError(`git diff ${from} ${to} (manifests) failed (exit ${res.code}): ${res.err}`);
+  }
+  return res.out;
 }
 
 function hasStaged(repo: string): boolean {

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PmToolchain } from "./pm.ts";
+import { tail } from "./text.ts";
 
 export interface VerifyStep {
   name: string;
@@ -13,10 +14,21 @@ export interface VerifyResult {
   name: string;
   ok: boolean;
   code: number | null;
+  /**
+   * Bounded tail of the step's combined stdout+stderr, for INTERNAL use only:
+   * the failure diagnostics the fixer prompt shows. Never written to the status
+   * file or the PR payload — `stripVerifyTails` drops it at the record/payload
+   * boundary so those shapes stay `{ name, ok, code }`.
+   */
+  tail?: string;
 }
 
 // Timeout keeps a hung test suite from eating the whole CI job.
 const STEP_TIMEOUT_MS = 10 * 60 * 1000;
+// Generous capture ceiling: spawnSync's 1 MB default would kill a chatty but
+// passing step, so raise it far past any realistic verify output. Output beyond
+// this is truncated, not fatal.
+const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 /**
  * Parse explicitly configured verification commands: one shell command per
@@ -54,7 +66,10 @@ export function verifyStepsFor(repoPath: string, pm: PmToolchain): VerifyStep[] 
 
 /**
  * Run the verification gate. Steps run in order; the first failure stops the
- * gate. Output is inherited so failures can be diagnosed from the run log.
+ * gate. Output is captured (not inherited) so a failing step's tail can be
+ * handed to the fixer, then echoed to the run log so failures stay diagnosable
+ * there. Each result carries that bounded `tail`; callers strip it with
+ * `stripVerifyTails` before it crosses the record/payload boundary.
  */
 export function runVerification(repoPath: string, steps: VerifyStep[]): VerifyResult[] {
   const results: VerifyResult[] = [];
@@ -62,12 +77,30 @@ export function runVerification(repoPath: string, steps: VerifyStep[]): VerifyRe
     const res = spawnSync(step.run, {
       cwd: repoPath,
       shell: true,
-      stdio: "inherit",
+      encoding: "utf8",
       timeout: STEP_TIMEOUT_MS,
+      maxBuffer: MAX_OUTPUT_BYTES,
     });
+    if (res.stdout) process.stdout.write(res.stdout);
+    if (res.stderr) process.stderr.write(res.stderr);
     const ok = res.status === 0 && !res.error;
-    results.push({ name: step.name, ok, code: res.status });
+    results.push({
+      name: step.name,
+      ok,
+      code: res.status,
+      tail: tail(`${res.stdout ?? ""}${res.stderr ?? ""}`),
+    });
     if (!ok) break;
   }
   return results;
+}
+
+/**
+ * Drop the internal `tail` from each result. Verification results are persisted
+ * in the status file and rendered in the PR body as `{ name, ok, code }` only;
+ * the tail exists solely to feed the fixer prompt, so it is stripped before a
+ * result is recorded or handed to the PR payload.
+ */
+export function stripVerifyTails(results: readonly VerifyResult[]): VerifyResult[] {
+  return results.map(({ name, ok, code }) => ({ name, ok, code }));
 }

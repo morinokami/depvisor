@@ -7,9 +7,12 @@ import {
   branchNameForGroup,
   buildPrPayload,
   clearPrPreview,
+  composeNarrative,
   deriveLabels,
+  type DigestReport,
   emitPrPayload,
   extractVersionsMarker,
+  type FixerReport,
   parsePrPayload,
   PR_PAYLOADS_DIR,
   sanitizeLabels,
@@ -481,7 +484,7 @@ test("buildPrPayload omits the test-changes warning when no tests changed", () =
   assert.ok(!withEmpty.body.includes("Tests were modified"));
 });
 
-test("buildPrPayload warns when the agent changed test files", () => {
+test("buildPrPayload warns when this update changed test files", () => {
   const candidates = [cand("lru-cache", "6.0.0", "11.0.0")];
   const p = buildPrPayload({
     branch: "depvisor/prod-lru-cache",
@@ -494,7 +497,7 @@ test("buildPrPayload warns when the agent changed test files", () => {
     narrative: narrative("Bump lru-cache."),
     verification: [{ name: "test", ok: true, code: 0 }],
   });
-  assert.ok(p.body.includes("## ⚠️ Tests were modified by the agent"));
+  assert.ok(p.body.includes("## ⚠️ Tests were modified in this update"));
   assert.ok(p.body.includes("changed 2 file(s) that look like tests"));
   assert.ok(p.body.includes("| `test/cache.test.ts` | +3 / -12 |"));
   assert.ok(p.body.includes("| `src/__snapshots__/x.bin` | binary |"));
@@ -829,4 +832,99 @@ test("sanitizeLabels drops anything outside the allowlist (injection-safe)", () 
   // A tampered payload with a non-array labels field yields no labels.
   assert.deepEqual(sanitizeLabels("depvisor"), []);
   assert.deepEqual(sanitizeLabels(undefined), []);
+});
+
+// composeNarrative maps the split agent-as-fixer reports onto the existing
+// UpdateNarrative shape buildPrPayload consumes, so the generated PR is
+// unchanged. All four digest × fixer null/non-null combinations are covered.
+
+const digestReport = (patch: Partial<DigestReport> = {}): DigestReport => ({
+  summary: "Digest summary.",
+  upstreamChanges: [{ package: "lru-cache", note: "new option" }],
+  reviewNotes: ["double-check the cache TTL default"],
+  ...patch,
+});
+
+const fixerReport = (patch: Partial<FixerReport> = {}): FixerReport => ({
+  summary: "Adapted the removed default export.",
+  fixesApplied: ["migrated to named import"],
+  residualRisks: ["eviction timing may differ"],
+  ...patch,
+});
+
+test("composeNarrative fast path: digest only, no fixer", () => {
+  const members = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const n = composeNarrative(digestReport(), null, members);
+  assert.equal(n.summary, "Digest summary.");
+  assert.deepEqual(n.notableChanges, [{ package: "lru-cache", note: "new option" }]);
+  // Nothing was addressed on the fast path — the section is omitted downstream.
+  assert.deepEqual(n.breakingChangesAddressed, []);
+  // Residual risks are the digest's review notes only.
+  assert.deepEqual(n.residualRisks, ["double-check the cache TTL default"]);
+});
+
+test("composeNarrative fixer path: digest and fixer combine", () => {
+  const members = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const n = composeNarrative(digestReport(), fixerReport(), members);
+  // The fixer's summary is appended as its own paragraph after the digest's.
+  assert.equal(n.summary, "Digest summary.\n\nAdapted the removed default export.");
+  assert.deepEqual(n.notableChanges, [{ package: "lru-cache", note: "new option" }]);
+  assert.deepEqual(n.breakingChangesAddressed, ["migrated to named import"]);
+  // Fixer risks first, then the digest's review notes.
+  assert.deepEqual(n.residualRisks, [
+    "eviction timing may differ",
+    "double-check the cache TTL default",
+  ]);
+});
+
+test("composeNarrative fail-soft: no digest but a fixer ran (deterministic summary)", () => {
+  const members = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const n = composeNarrative(null, fixerReport(), members);
+  // Digest-owned fields fall back: a member summary + empty notable/reviewNotes.
+  assert.equal(
+    n.summary,
+    "Updates lru-cache from 6.0.0 to 11.0.0.\n\nAdapted the removed default export.",
+  );
+  assert.deepEqual(n.notableChanges, []);
+  assert.deepEqual(n.breakingChangesAddressed, ["migrated to named import"]);
+  assert.deepEqual(n.residualRisks, ["eviction timing may differ"]);
+});
+
+test("composeNarrative fail-soft: neither digest nor fixer (pure deterministic)", () => {
+  const members = [cand("lru-cache", "6.0.0", "11.0.0"), cand("semver", "7.0.0", "7.7.3")];
+  const n = composeNarrative(null, null, members);
+  assert.equal(
+    n.summary,
+    "Updates lru-cache from 6.0.0 to 11.0.0. Updates semver from 7.0.0 to 7.7.3.",
+  );
+  assert.deepEqual(n.notableChanges, []);
+  assert.deepEqual(n.breakingChangesAddressed, []);
+  assert.deepEqual(n.residualRisks, []);
+});
+
+test("composeNarrative output feeds buildPrPayload into today's sections (byte-compatible shape)", () => {
+  const members = [cand("lru-cache", "6.0.0", "11.0.0")];
+  const fast = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates: members,
+    narrative: composeNarrative(digestReport(), null, members),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(fast.body.includes("## What changed"));
+  assert.ok(fast.body.includes("Digest summary."));
+  assert.ok(fast.body.includes("## Notable changes"));
+  // Fast path addressed nothing, so that section is absent — today's behaviour.
+  assert.ok(!fast.body.includes("## Breaking changes addressed"));
+  assert.ok(fast.body.includes("## Residual risks"));
+
+  const fixed = buildPrPayload({
+    branch: "depvisor/prod-lru-cache",
+    base: "main",
+    candidates: members,
+    narrative: composeNarrative(digestReport(), fixerReport(), members),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(fixed.body.includes("## Breaking changes addressed"));
+  assert.ok(fixed.body.includes("- migrated to named import"));
 });

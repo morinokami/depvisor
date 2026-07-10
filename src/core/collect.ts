@@ -309,6 +309,18 @@ export function parseBunOutdated(raw: string, workspaces: Map<string, string>): 
 }
 
 /**
+ * Spawn env for PM commands whose output is captured and parsed or tailed
+ * (here and in bump.ts): FORCE_COLOR switches bun to box-drawing + ANSI output
+ * even without a TTY, and it beats NO_COLOR (verified against bun 1.3.14) —
+ * strip it and force NO_COLOR so captured output stays plain text.
+ */
+export function colorFreeSpawnEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+  delete env.FORCE_COLOR;
+  return env;
+}
+
+/**
  * Collect outdated packages for a repo using the detected package manager's
  * outdated command. This is the deterministic, mechanical half of depvisor —
  * no LLM involved. `pm` must come from the preflight detection (see pm.ts).
@@ -318,12 +330,7 @@ export function parseBunOutdated(raw: string, workspaces: Map<string, string>): 
  */
 export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[] {
   const [cmd, ...args] = pm.outdatedArgv;
-  // FORCE_COLOR switches bun to box-drawing + ANSI output even without a TTY,
-  // and it beats NO_COLOR (verified against bun 1.3.14) — strip it so the
-  // table parser only ever sees the plain `|`-bordered form.
-  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
-  delete env.FORCE_COLOR;
-  const res = spawnSync(cmd, args, { cwd: repoPath, encoding: "utf8", env });
+  const res = spawnSync(cmd, args, { cwd: repoPath, encoding: "utf8", env: colorFreeSpawnEnv() });
   if (res.error) throw new Error(`${pm.name} outdated failed to run: ${res.error.message}`);
 
   // bun exits 0 whether or not updates exist (oven-sh/bun#15648), so — unlike

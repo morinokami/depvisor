@@ -169,6 +169,35 @@ test("fetchReleaseNotes resolves via the fixed endpoints and windows releases", 
   assert.ok(calls.some((u) => u.startsWith("https://api.github.com/repos/")));
 });
 
+test("fetchReleaseNotes skips the registry lookup when the caller supplies the slug", async () => {
+  const calls: string[] = [];
+  const fetchImpl = stubFetch(
+    {
+      "https://api.github.com/repos/isaacs/node-lru-cache/releases": () =>
+        jsonResponse([{ tag_name: "v11.0.0", body: "notes" }]),
+    },
+    calls,
+  );
+  const r = await fetchReleaseNotes(
+    { package: "lru-cache", from: "6.0.0", to: "11.0.0" },
+    { fetch: fetchImpl, slug: "isaacs/node-lru-cache" },
+  );
+  assert.equal(r.source, "isaacs/node-lru-cache");
+  assert.equal(r.releases.length, 1);
+  assert.ok(calls.every((u) => !u.startsWith("https://registry.npmjs.org/")));
+
+  // A caller-resolved "no GitHub source" (slug: null) is honored without a
+  // pointless re-fetch of the same packument.
+  const calls2: string[] = [];
+  const r2 = await fetchReleaseNotes(
+    { package: "foo", from: "1.0.0", to: "2.0.0" },
+    { fetch: stubFetch({}, calls2), slug: null },
+  );
+  assert.equal(r2.source, null);
+  assert.match(r2.note, /Could not resolve a GitHub source/);
+  assert.equal(calls2.length, 0);
+});
+
 test("fetchReleaseNotes returns an unavailable note for a non-GitHub source", async () => {
   const r = await fetchReleaseNotes(
     { package: "foo", from: "1.0.0", to: "2.0.0" },

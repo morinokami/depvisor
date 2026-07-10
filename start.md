@@ -1,11 +1,17 @@
 # Set Up depvisor in a Repository
 
 You are helping the user add depvisor to their repository. depvisor is a GitHub
-Action whose AI agent investigates dependency updates, applies them, fixes any
-breakage they cause, verifies with the repository's own checks, and opens an
-explained PR — a Dependabot/Renovate-style updater that also does the
-code-fixing work. It is BYOK (the user pays for LLM calls with their own API
-key) and never merges anything itself.
+Action that updates a repository's dependencies and verifies each update with the
+repository's own checks deterministically; when an update breaks those checks, an
+AI agent makes the code fixes needed to get them passing again, and a read-only
+agent explains the change in the PR body. It is a Dependabot/Renovate-style updater
+that also does the code-fixing work. It is BYOK (the user pays for LLM calls with
+their own API key) and never merges anything itself.
+
+Both agent roles run in an in-memory workspace without a host shell. The digest
+gets bounded read/search access to the target repository; only the failure-path
+fixer gets bounded repo-relative edit tools. Neither can reach depvisor's action
+checkout or the later GitHub-token step.
 
 The finished setup is small: **one workflow file, one repository secret, and
 one repository setting**. Your job is to inspect the repository first, tailor
@@ -202,8 +208,9 @@ Tailor it per the Step 2 contract:
 
 - **Do not** remove `persist-credentials: false`, the `permissions` block, or
   the `concurrency` group. depvisor keeps GitHub tokens away from its AI agent
-  and from the target's install scripts; it fails at startup if the checkout
-  persists credentials.
+  and from the target's install scripts; the agents themselves have no host
+  shell and cannot reach the later token-holding entrypoint. depvisor fails at
+  startup if the checkout persists credentials.
 
 ## Step 4: Hand the human-only steps to the user
 
@@ -258,14 +265,15 @@ into the chat** — `gh secret set` prompts for the value directly:
 
 Common first-run failures and their fixes:
 
-| Status                    | Fix                                                                                                             |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `persisted-credentials`   | Set `persist-credentials: false` on `actions/checkout`.                                                         |
-| `no-verify-scripts`       | package.json defines none of `build`/`lint`/`test` — set `verify_commands`.                                     |
-| `baseline-red`            | The checks already fail on the base branch; fix the base first.                                                 |
-| `dirty-tree`              | An install/build wrote files git does not ignore — extend `.gitignore` or fix `install_command`.                |
-| `release-age-unavailable` | A private-registry package the public npm registry cannot vouch for — list it in `minimum_release_age_exclude`. |
-| `open-pr-failed`          | Enable "Allow GitHub Actions to create and approve pull requests", and check the `permissions` block.           |
+| Status                    | Fix                                                                                                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `persisted-credentials`   | Set `persist-credentials: false` on `actions/checkout`.                                                                                                                 |
+| `no-verify-scripts`       | package.json defines none of `build`/`lint`/`test` — set `verify_commands`.                                                                                             |
+| `baseline-red`            | The checks already fail on the base branch; fix the base first.                                                                                                         |
+| `dirty-tree`              | An install/build wrote files git does not ignore — extend `.gitignore` or fix `install_command`.                                                                        |
+| `release-age-unavailable` | A private-registry package the public npm registry cannot vouch for — list it in `minimum_release_age_exclude`.                                                         |
+| `bump-failed`             | A dependency conflict blocked the deterministic bump (e.g. npm `ERESOLVE`); the summary names the failing step. Resolve the conflict upstream, or `ignore` the package. |
+| `open-pr-failed`          | Enable "Allow GitHub Actions to create and approve pull requests", and check the `permissions` block.                                                                   |
 
 Every other status is documented in the README's status reference:
 https://github.com/morinokami/depvisor#status-reference
