@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
 import type { CatalogEdit, UpdatePlan } from "./bump.ts";
 import type { Candidate } from "./types.ts";
 
@@ -119,42 +118,44 @@ function npmUpdatePlan(
   return { catalogEdits: [], commands, pinExact: opts?.pinExact ?? false };
 }
 
-/** A parsed YAML value that is a plain string→value map, else null. */
+/** A parsed JSON value that is a plain string→value map, else null. */
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
 }
 
+/** The package.json sections a dependency can be declared in. */
+const PNPM_DEP_SECTIONS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+] as const;
+
 /**
- * The catalog-pinned package names in a repo's pnpm-workspace.yaml: every key of
- * the top-level `catalog` map and of every named `catalogs.<group>` map. Read
- * with the plain `yaml` parser (the comment-preserving Document round-trip
- * belongs to the executor, bump.ts); a missing or unparseable file yields no
- * names, so those members fall to the ordinary update command — the executor's
- * catalog edit is where a genuinely catalog-pinned member with no entry fails
- * closed. "has an entry" is exactly the membership test the agent prompt uses.
+ * Parse a declaring workspace's package.json (loc "" = repo root) as a plain
+ * map, or null when it is missing/unparseable — which the caller treats as a
+ * blocker (fail closed rather than guess how the dependency is pinned).
  */
-function pnpmCatalogNames(repoPath: string): Set<string> {
-  const names = new Set<string>();
-  let root: unknown;
+function readWorkspaceManifest(repoPath: string, loc: string): Record<string, unknown> | null {
   try {
-    root = parseYaml(readFileSync(join(repoPath, "pnpm-workspace.yaml"), "utf8"));
+    return asRecord(JSON.parse(readFileSync(join(repoPath, loc, "package.json"), "utf8")));
   } catch {
-    return names;
+    return null;
   }
-  const map = asRecord(root);
-  if (!map) return names;
-  const catalog = asRecord(map.catalog);
-  if (catalog) for (const name of Object.keys(catalog)) names.add(name);
-  const catalogs = asRecord(map.catalogs);
-  if (catalogs) {
-    for (const group of Object.values(catalogs)) {
-      const groupMap = asRecord(group);
-      if (groupMap) for (const name of Object.keys(groupMap)) names.add(name);
-    }
-  }
-  return names;
+}
+
+/**
+ * How a workspace references a dependency's version: a plain range, or a
+ * `catalog:`/`catalog:<name>` reference into pnpm-workspace.yaml. `catalog` is
+ * null for the DEFAULT catalog (a bare `catalog:`, pnpm's sugar for
+ * `catalog:default`) and the name for a named one.
+ */
+function classifyPnpmSpecifier(spec: string): { catalog: string | null } | "plain" {
+  if (spec === "catalog:") return { catalog: null };
+  if (spec.startsWith("catalog:")) return { catalog: spec.slice("catalog:".length) };
+  return "plain";
 }
 
 /**
@@ -163,33 +164,89 @@ function pnpmCatalogNames(repoPath: string): Set<string> {
  * rest untouched, and preserves each dependency's section — so no `-D` and no
  * per-workspace flags. `-r` also drives the single-package case correctly.
  *
- * Catalog-pinned members (those with a pnpm-workspace.yaml catalog entry) are
- * the exception: they become `catalogEdits` and are excluded from the command,
- * because pnpm has no command that moves a catalog entry to a SPECIFIC version —
- * `pnpm update <name>@<ver>` DE-catalogs instead (rewriting each workspace's
- * `catalog:` specifier to the plain version and leaving the catalog entry stale),
- * and `--latest` (which does edit the catalog since pnpm 10.12.1) rejects version
- * specs (ERR_PNPM_LATEST_WITH_SPEC) — both verified on pnpm 11.9. The executor
- * (bump.ts) applies the catalog edits through the yaml Document API, then a
- * `pnpm install --no-frozen-lockfile` refreshes the lockfile (CI=true flips
- * pnpm's install default to frozen, which would reject the just-edited catalog).
+ * Catalog-pinned members are the exception: they become `catalogEdits` and are
+ * excluded from the command, because pnpm has no command that moves a catalog
+ * entry to a SPECIFIC version — `pnpm update <name>@<ver>` DE-catalogs instead
+ * (rewriting each workspace's `catalog:` specifier to the plain version and
+ * leaving the catalog entry stale), and `--latest` (which does edit the catalog
+ * since pnpm 10.12.1) rejects version specs (ERR_PNPM_LATEST_WITH_SPEC) — both
+ * verified on pnpm 11.9. The executor (bump.ts) applies the catalog edits through
+ * the yaml Document API, then a `pnpm install --no-frozen-lockfile` refreshes the
+ * lockfile (CI=true flips pnpm's install default to frozen, which would reject
+ * the just-edited catalog).
+ *
+ * Which members are catalog-pinned is decided by reading how each DECLARING
+ * workspace's package.json actually references the dependency — NOT a name-global
+ * scan of pnpm-workspace.yaml's catalog keys. A name-global scan mis-handles a
+ * dead catalog entry (edits it while a real plain declaration elsewhere never
+ * moves), duplicate entries across named catalogs, and mixed references. So per
+ * candidate: only plain references (or none found) → the recursive update, no
+ * catalog edit; only catalog references → one `CatalogEdit` per DISTINCT catalog
+ * pointed at; a mix of catalog and plain references across workspaces, or an
+ * unreadable declaring manifest → a `blocker` (fail-closed `bump-failed`, since
+ * neither update mechanism would move every declaration safely).
  */
 function pnpmUpdatePlan(
   candidates: readonly Candidate[],
   repoPath: string,
   opts?: { pinExact?: boolean },
 ): UpdatePlan {
-  const catalogNames = pnpmCatalogNames(repoPath);
   const catalogEdits: CatalogEdit[] = [];
   const updateSpecs: string[] = [];
+  const blockers: string[] = [];
   for (const c of candidates) {
-    if (catalogNames.has(c.name)) catalogEdits.push({ name: c.name, target: c.latest });
-    else updateSpecs.push(`${c.name}@${c.latest}`);
+    const referencedCatalogs = new Set<string | null>();
+    let hasPlain = false;
+    let unreadable = false;
+    for (const loc of c.locations) {
+      const pkg = readWorkspaceManifest(repoPath, loc);
+      if (pkg === null) {
+        unreadable = true;
+        break;
+      }
+      for (const section of PNPM_DEP_SECTIONS) {
+        const map = asRecord(pkg[section]);
+        const spec = map ? map[c.name] : undefined;
+        if (typeof spec !== "string") continue;
+        const classified = classifyPnpmSpecifier(spec);
+        if (classified === "plain") hasPlain = true;
+        else referencedCatalogs.add(classified.catalog);
+      }
+    }
+
+    if (unreadable) {
+      blockers.push(
+        `cannot read a declaring package.json for ${c.name} — refusing to guess how it is pinned`,
+      );
+    } else if (referencedCatalogs.size === 0) {
+      // Only plain declarations (or none found): the ordinary recursive update,
+      // no catalog edit. A dead catalog entry with this name is left untouched.
+      updateSpecs.push(`${c.name}@${c.latest}`);
+    } else if (hasPlain) {
+      // Mixed: `pnpm -r update` would de-catalog the catalog references and a
+      // catalog-only edit would leave the plain declaration stale — neither is
+      // safe, so fail closed rather than update half of them.
+      blockers.push(
+        `${c.name} is declared both as a catalog reference and a plain version across ` +
+          "workspaces; depvisor cannot update it deterministically (unify the declarations)",
+      );
+    } else {
+      // Only catalog references: one edit per DISTINCT catalog they point at.
+      for (const catalog of referencedCatalogs) {
+        catalogEdits.push({ name: c.name, target: c.latest, catalog });
+      }
+    }
   }
+
   const commands: string[][] = [];
   if (updateSpecs.length > 0) commands.push(["pnpm", "-r", "update", ...updateSpecs]);
   if (catalogEdits.length > 0) commands.push(["pnpm", "install", "--no-frozen-lockfile"]);
-  return { catalogEdits, commands, pinExact: opts?.pinExact ?? false };
+  return {
+    catalogEdits,
+    commands,
+    pinExact: opts?.pinExact ?? false,
+    ...(blockers.length > 0 ? { blockers } : {}),
+  };
 }
 
 /**

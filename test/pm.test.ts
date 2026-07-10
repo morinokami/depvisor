@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { bunToolchain, detectPackageManager, npmToolchain, pnpmToolchain } from "../src/core/pm.ts";
 import type { Candidate } from "../src/core/types.ts";
 
@@ -20,7 +20,9 @@ function cand(partial: Partial<Candidate> & { name: string }): Candidate {
 function repoWith(files: Record<string, string>): string {
   const repo = mkdtempSync(join(tmpdir(), "depvisor-pm-"));
   for (const [name, content] of Object.entries(files)) {
-    writeFileSync(join(repo, name), content);
+    const path = join(repo, name);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
   }
   return repo;
 }
@@ -184,8 +186,17 @@ test("npm updatePlan records pinExact but leaves the argv unchanged", () => {
   assert.deepEqual(pinned.commands, npmToolchain.updatePlan(candidates, repo).commands);
 });
 
-test("pnpm updatePlan uses a single recursive command when no member is catalog-pinned", () => {
-  const repo = repoWith({}); // no pnpm-workspace.yaml → no catalog names
+// pnpm classification is DECLARATION-aware: it reads how each declaring
+// workspace's package.json references the dependency, not a name-global scan of
+// pnpm-workspace.yaml's catalog keys.
+
+test("pnpm updatePlan uses a single recursive command when every member is a plain declaration", () => {
+  const repo = repoWith({
+    "packages/a/package.json": JSON.stringify({
+      dependencies: { "left-pad": "^1.0.0" },
+      devDependencies: { isarray: "^2.0.0" },
+    }),
+  });
   const plan = pnpmToolchain.updatePlan(
     [
       cand({ name: "left-pad", latest: "1.3.0", locations: ["packages/a"] }),
@@ -195,39 +206,118 @@ test("pnpm updatePlan uses a single recursive command when no member is catalog-
   );
   assert.deepEqual(plan.catalogEdits, []);
   assert.deepEqual(plan.commands, [["pnpm", "-r", "update", "left-pad@1.3.0", "isarray@2.0.5"]]);
+  assert.equal(plan.blockers, undefined);
 });
 
-test("pnpm updatePlan routes catalog-pinned members to catalogEdits, not the command", () => {
+test("pnpm updatePlan: an unused catalog entry does not divert a plain declaration (reviewer repro)", () => {
+  // pnpm-workspace.yaml carries a DEAD catalog.react entry, but the workspace
+  // declares react as a plain version — the update must go through `pnpm -r
+  // update`, never edit the dead entry while the real declaration stays stale.
   const repo = repoWith({
-    "pnpm-workspace.yaml":
-      "packages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0\ncatalogs:\n  react:\n    react: ^18.0.0\n",
+    "pnpm-workspace.yaml": "catalog:\n  react: ^18.0.0\n",
+    "package.json": JSON.stringify({ dependencies: { react: "^18.2.0" } }),
+  });
+  const plan = pnpmToolchain.updatePlan([cand({ name: "react", latest: "19.0.0" })], repo);
+  assert.deepEqual(plan.catalogEdits, []);
+  assert.deepEqual(plan.commands, [["pnpm", "-r", "update", "react@19.0.0"]]);
+  assert.equal(plan.blockers, undefined);
+});
+
+test("pnpm updatePlan routes catalog-declared members to catalogEdits with the right catalog name", () => {
+  const repo = repoWith({
+    "package.json": JSON.stringify({
+      dependencies: {
+        semver: "catalog:", // default catalog → catalog: null
+        react: "catalog:react", // named catalog "react"
+        "left-pad": "^1.0.0", // plain
+      },
+    }),
   });
   const plan = pnpmToolchain.updatePlan(
     [
-      cand({ name: "semver", latest: "7.7.3" }), // top-level catalog
-      cand({ name: "react", latest: "19.0.0" }), // a named catalog
-      cand({ name: "left-pad", latest: "1.3.0" }), // plain
+      cand({ name: "semver", latest: "7.7.3" }),
+      cand({ name: "react", latest: "19.0.0" }),
+      cand({ name: "left-pad", latest: "1.3.0" }),
     ],
     repo,
   );
-  // Catalog members become edits (target = latest; range style is decided later,
-  // in the executor); only the plain member stays in the recursive command, and
-  // the refresh install is appended because catalog edits exist.
   assert.deepEqual(plan.catalogEdits, [
-    { name: "semver", target: "7.7.3" },
-    { name: "react", target: "19.0.0" },
+    { name: "semver", target: "7.7.3", catalog: null },
+    { name: "react", target: "19.0.0", catalog: "react" },
   ]);
   assert.deepEqual(plan.commands, [
     ["pnpm", "-r", "update", "left-pad@1.3.0"],
     ["pnpm", "install", "--no-frozen-lockfile"],
   ]);
+  assert.equal(plan.blockers, undefined);
 });
 
-test("pnpm updatePlan emits only the refresh install when every member is catalog-pinned", () => {
-  const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  semver: ^7.3.0\n" });
-  const plan = pnpmToolchain.updatePlan([cand({ name: "semver", latest: "7.7.3" })], repo);
-  assert.deepEqual(plan.catalogEdits, [{ name: "semver", target: "7.7.3" }]);
+test("pnpm updatePlan: a catalog:<name> reference yields an edit for that named catalog", () => {
+  const repo = repoWith({
+    "packages/a/package.json": JSON.stringify({ dependencies: { react: "catalog:react18" } }),
+  });
+  const plan = pnpmToolchain.updatePlan(
+    [cand({ name: "react", latest: "19.0.0", locations: ["packages/a"] })],
+    repo,
+  );
+  assert.deepEqual(plan.catalogEdits, [{ name: "react", target: "19.0.0", catalog: "react18" }]);
   assert.deepEqual(plan.commands, [["pnpm", "install", "--no-frozen-lockfile"]]);
+});
+
+test("pnpm updatePlan: two workspaces referencing two different named catalogs yield one edit each", () => {
+  const repo = repoWith({
+    "packages/a/package.json": JSON.stringify({ dependencies: { semver: "catalog:tools" } }),
+    "packages/b/package.json": JSON.stringify({ dependencies: { semver: "catalog:build" } }),
+  });
+  const plan = pnpmToolchain.updatePlan(
+    [cand({ name: "semver", latest: "7.7.3", locations: ["packages/a", "packages/b"] })],
+    repo,
+  );
+  // One CatalogEdit per DISTINCT referenced catalog (insertion order = locations).
+  assert.deepEqual(plan.catalogEdits, [
+    { name: "semver", target: "7.7.3", catalog: "tools" },
+    { name: "semver", target: "7.7.3", catalog: "build" },
+  ]);
+  assert.deepEqual(plan.commands, [["pnpm", "install", "--no-frozen-lockfile"]]);
+});
+
+test("pnpm updatePlan emits only the refresh install when every member is catalog-declared", () => {
+  const repo = repoWith({
+    "package.json": JSON.stringify({ dependencies: { semver: "catalog:" } }),
+  });
+  const plan = pnpmToolchain.updatePlan([cand({ name: "semver", latest: "7.7.3" })], repo);
+  assert.deepEqual(plan.catalogEdits, [{ name: "semver", target: "7.7.3", catalog: null }]);
+  assert.deepEqual(plan.commands, [["pnpm", "install", "--no-frozen-lockfile"]]);
+});
+
+test("pnpm updatePlan: a member declared both as a catalog reference and plain is blocked (fail-closed)", () => {
+  const repo = repoWith({
+    "packages/a/package.json": JSON.stringify({ dependencies: { semver: "catalog:" } }),
+    "packages/b/package.json": JSON.stringify({ dependencies: { semver: "^7.3.0" } }),
+  });
+  const plan = pnpmToolchain.updatePlan(
+    [cand({ name: "semver", latest: "7.7.3", locations: ["packages/a", "packages/b"] })],
+    repo,
+  );
+  const { blockers } = plan;
+  assert.ok(blockers);
+  assert.match(blockers[0] ?? "", /both as a catalog reference and a plain version/);
+  // A blocked member appears in neither the update command nor catalog edits.
+  assert.deepEqual(plan.catalogEdits, []);
+  assert.deepEqual(plan.commands, []);
+});
+
+test("pnpm updatePlan: an unreadable declaring package.json is blocked, not guessed", () => {
+  const repo = repoWith({}); // no package.json at the declaring location
+  const plan = pnpmToolchain.updatePlan(
+    [cand({ name: "semver", latest: "7.7.3", locations: ["packages/missing"] })],
+    repo,
+  );
+  const { blockers } = plan;
+  assert.ok(blockers);
+  assert.match(blockers[0] ?? "", /cannot read a declaring package\.json for semver/);
+  assert.deepEqual(plan.catalogEdits, []);
+  assert.deepEqual(plan.commands, []);
 });
 
 test("bun updatePlan mirrors the instruction argv (caret, --cwd, -d, no catalogs)", () => {

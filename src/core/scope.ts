@@ -1,14 +1,25 @@
-import { changedPaths, diffNumstat, refExists } from "./git.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+import { changedPaths, diffNumstat, fileAtRef, refExists } from "./git.ts";
 
 /**
- * Fixer-path scope gate. The deterministic bump owns all dependency state
- * (manifests, lockfiles, pnpm-workspace.yaml catalogs), applied and committed
- * before the fixer runs; the fixer is source-fix-only. Its job is to edit source
- * — and, where a changed API demands it, tests — until verification passes, so
- * ANY change to dependency state can only be scope creep and is denied. The
- * agent is instructed to stay in bounds, but a poisoned changelog can override
- * instructions, so the boundary is enforced deterministically here before
- * anything the fixer wrote is committed.
+ * Two scope gates bound the update, both allow-list/deny gates over a git diff:
+ *
+ * - `checkBumpScope` runs on the working-tree diff against `base` BEFORE the
+ *   mechanical bump is committed, and allows only the changes a genuine
+ *   dependency bump makes to the files that enter that commit — member version
+ *   moves in dependency sections, matching pnpm-workspace.yaml catalog moves,
+ *   and (uninspected) lockfiles. It exists to catch a poisoned install lifecycle
+ *   script that rewrites `scripts`/`overrides`/`trustedDependencies`/etc. during
+ *   the bump and would otherwise ride along in the "mechanical" bump commit,
+ *   invisible to the fixer gate (which diffs FROM the bump commit).
+ * - `checkFixScope` runs on everything the fixer changed relative to the bump
+ *   commit, and denies ANY dependency state (the deterministic bump already
+ *   owns it); the fixer may touch only source and tests.
+ *
+ * Both are enforced deterministically because a poisoned changelog can override
+ * the agent's instructions.
  */
 
 /**
@@ -81,6 +92,252 @@ export function checkFixScope(
     if (DENY.some((re) => re.test(p))) violations.push(p);
     else if (isPackageJson(p)) violations.push(p);
     else if (FIXER_DENIED_FILES.has(base)) violations.push(p);
+  }
+  return { ok: violations.length === 0, violations };
+}
+
+/** The root pnpm-workspace.yaml path the bump-scope catalog checks apply to. */
+const PNPM_WORKSPACE_FILE = "pnpm-workspace.yaml";
+
+/** The package.json sections a dependency bump legitimately edits. */
+const DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+] as const;
+
+/** Key-order-insensitive stringification, so equal objects compare equal. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/** A parsed value that is a plain string→value map, else null. */
+function asPlainMap(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function parseJsonMap(source: string | null): Record<string, unknown> | null {
+  if (source === null) return null;
+  try {
+    return asPlainMap(JSON.parse(source));
+  } catch {
+    return null;
+  }
+}
+
+function hasOwn(map: Record<string, unknown>, key: string): boolean {
+  return Object.hasOwn(map, key);
+}
+
+/**
+ * Whether a NEW manifest/catalog value is a legal bump for `name`: `name` is a
+ * group member (`allowed` maps member → vetted `latest`) and the new value
+ * carries that latest as a substring — covering `1.2.3`, `^1.2.3`, `~1.2.3`,
+ * `>=1.2.3 <2`, every range shape the three PMs write. Substring, not a range
+ * parse (depvisor carries no semver library); the version the deterministic bump
+ * chose is authoritative, so requiring it to appear verbatim is enough.
+ */
+function carriesMemberLatest(
+  value: unknown,
+  name: string,
+  allowed: ReadonlyMap<string, string>,
+): boolean {
+  const latest = allowed.get(name);
+  return latest !== undefined && typeof value === "string" && value.includes(latest);
+}
+
+/**
+ * Violations in one package.json that WOULD enter the mechanical bump commit,
+ * diffed base→worktree. Allow-list, all JSON-structural:
+ *   - every key outside the dependency sections must be deep-equal;
+ *   - inside them no key may be added or removed, and a changed value is legal
+ *     only for a member whose OLD value was not a `catalog:` reference (a changed
+ *     `catalog:` specifier is a de-catalog) and whose NEW value carries `latest`.
+ * A package.json new/deleted/unparseable on either side is a violation
+ * (fail-closed) — an install script cannot be allowed to introduce or corrupt one.
+ */
+function packageJsonBumpViolations(
+  path: string,
+  before: string | null,
+  after: string | null,
+  allowed: ReadonlyMap<string, string>,
+): string[] {
+  if (before === null) return [`${path} (new)`];
+  if (after === null) return [`${path} (deleted)`];
+  const beforePkg = parseJsonMap(before);
+  const afterPkg = parseJsonMap(after);
+  if (!beforePkg || !afterPkg) return [`${path} (unparseable)`];
+
+  const violations: string[] = [];
+  const depFields = new Set<string>(DEPENDENCY_FIELDS);
+  for (const key of new Set([...Object.keys(beforePkg), ...Object.keys(afterPkg)])) {
+    if (depFields.has(key)) continue;
+    if (canonical(beforePkg[key]) !== canonical(afterPkg[key])) violations.push(`${path}#${key}`);
+  }
+  for (const section of DEPENDENCY_FIELDS) {
+    if (canonical(beforePkg[section]) === canonical(afterPkg[section])) continue;
+    const beforeMap = asPlainMap(beforePkg[section]);
+    const afterMap = asPlainMap(afterPkg[section]);
+    // A present-but-non-map section is illegible → the whole section is denied.
+    if (
+      (beforePkg[section] !== undefined && !beforeMap) ||
+      (afterPkg[section] !== undefined && !afterMap)
+    ) {
+      violations.push(`${path}#${section}`);
+      continue;
+    }
+    const b = beforeMap ?? {};
+    const a = afterMap ?? {};
+    for (const dep of new Set([...Object.keys(b), ...Object.keys(a)])) {
+      if (hasOwn(b, dep) !== hasOwn(a, dep)) {
+        violations.push(`${path}#${section}.${dep}`); // key added or removed
+        continue;
+      }
+      if (canonical(b[dep]) === canonical(a[dep])) continue; // unchanged
+      const oldIsCatalog = typeof b[dep] === "string" && (b[dep] as string).startsWith("catalog:");
+      if (oldIsCatalog || !carriesMemberLatest(a[dep], dep, allowed)) {
+        violations.push(`${path}#${section}.${dep}`);
+      }
+    }
+  }
+  return violations;
+}
+
+/**
+ * Violations in one catalog map (`catalog`, or one named `catalogs.<group>`),
+ * either side possibly absent. No entry may be added/removed, and a changed
+ * value is legal only for a member whose new value carries `latest`. A
+ * present-but-non-map side is illegible → the whole map is denied.
+ */
+function catalogMapBumpViolations(
+  label: string,
+  before: unknown,
+  after: unknown,
+  allowed: ReadonlyMap<string, string>,
+): string[] {
+  const beforeMap = before === undefined ? {} : asPlainMap(before);
+  const afterMap = after === undefined ? {} : asPlainMap(after);
+  if (!beforeMap || !afterMap) return [`${PNPM_WORKSPACE_FILE}#${label} (not a map)`];
+  const violations: string[] = [];
+  for (const key of new Set([...Object.keys(beforeMap), ...Object.keys(afterMap)])) {
+    if (hasOwn(beforeMap, key) !== hasOwn(afterMap, key)) {
+      violations.push(`${PNPM_WORKSPACE_FILE}#${label}.${key}`); // entry added or removed
+      continue;
+    }
+    if (canonical(beforeMap[key]) === canonical(afterMap[key])) continue; // unchanged
+    if (!carriesMemberLatest(afterMap[key], key, allowed)) {
+      violations.push(`${PNPM_WORKSPACE_FILE}#${label}.${key}`);
+    }
+  }
+  return violations;
+}
+
+/**
+ * Violations in pnpm-workspace.yaml that WOULD enter the bump commit. Legal
+ * differences are ONLY catalog / named-catalog entry values of the group's own
+ * packages moving to carry `latest`; everything else — any other top-level key
+ * (`packages`, `overrides`, `onlyBuiltDependencies`, …), added/removed catalog
+ * entries or named catalogs, non-member entries, an unparseable/non-map side,
+ * creation or deletion — is a violation (fail-closed).
+ */
+function pnpmWorkspaceBumpViolations(
+  before: string | null,
+  after: string | null,
+  allowed: ReadonlyMap<string, string>,
+): string[] {
+  if (before === null) return [`${PNPM_WORKSPACE_FILE} (created)`];
+  if (after === null) return [`${PNPM_WORKSPACE_FILE} (deleted)`];
+  let beforeRoot: Record<string, unknown> | null;
+  let afterRoot: Record<string, unknown> | null;
+  try {
+    beforeRoot = asPlainMap(parseYaml(before));
+    afterRoot = asPlainMap(parseYaml(after));
+  } catch {
+    return [`${PNPM_WORKSPACE_FILE} (unparseable)`];
+  }
+  if (!beforeRoot || !afterRoot) return [`${PNPM_WORKSPACE_FILE} (unparseable)`];
+
+  const violations: string[] = [];
+  for (const key of new Set([...Object.keys(beforeRoot), ...Object.keys(afterRoot)])) {
+    if (key === "catalog" || key === "catalogs") continue;
+    if (canonical(beforeRoot[key]) !== canonical(afterRoot[key])) {
+      violations.push(`${PNPM_WORKSPACE_FILE}#${key}`);
+    }
+  }
+  violations.push(
+    ...catalogMapBumpViolations("catalog", beforeRoot.catalog, afterRoot.catalog, allowed),
+  );
+  const beforeCatalogs = beforeRoot.catalogs === undefined ? {} : asPlainMap(beforeRoot.catalogs);
+  const afterCatalogs = afterRoot.catalogs === undefined ? {} : asPlainMap(afterRoot.catalogs);
+  if (!beforeCatalogs || !afterCatalogs) {
+    violations.push(`${PNPM_WORKSPACE_FILE}#catalogs (not a map)`);
+  } else {
+    for (const name of new Set([...Object.keys(beforeCatalogs), ...Object.keys(afterCatalogs)])) {
+      if (hasOwn(beforeCatalogs, name) !== hasOwn(afterCatalogs, name)) {
+        violations.push(`${PNPM_WORKSPACE_FILE}#catalogs.${name}`); // named catalog added/removed
+        continue;
+      }
+      violations.push(
+        ...catalogMapBumpViolations(
+          `catalogs.${name}`,
+          beforeCatalogs[name],
+          afterCatalogs[name],
+          allowed,
+        ),
+      );
+    }
+  }
+  return violations;
+}
+
+/**
+ * The bump-path scope gate: everything the deterministic bump changed that WOULD
+ * enter the mechanical bump commit (`git.ts:manifestBumpPaths`) — every changed
+ * `package.json` (by basename, including nested workspace manifests) and the root
+ * `pnpm-workspace.yaml` — must match a genuine version bump of the group's own
+ * `members` (name → `latest`), diffed against `base`. PM lockfiles are allowed
+ * without content inspection (they are generated, not executable config); any
+ * other path never enters the bump commit and is left to the later
+ * `checkFixScope`. Fail-closed: it exists to catch a poisoned install lifecycle
+ * script that rewrote a manifest during the bump, which would otherwise be
+ * committed as the "mechanical" bump and slip past every later gate.
+ */
+export function checkBumpScope(
+  repo: string,
+  base: string,
+  members: readonly { name: string; latest: string }[],
+): { ok: boolean; violations: string[] } {
+  const allowed = new Map(members.map((m) => [m.name, m.latest] as const));
+  const workingTreeFile = (p: string): string | null => {
+    try {
+      return readFileSync(join(repo, p), "utf8");
+    } catch {
+      return null; // deleted in the working tree
+    }
+  };
+  const violations: string[] = [];
+  for (const p of changedPaths(repo)) {
+    if (isPackageJson(p)) {
+      violations.push(
+        ...packageJsonBumpViolations(p, fileAtRef(repo, base, p), workingTreeFile(p), allowed),
+      );
+    } else if (p === PNPM_WORKSPACE_FILE) {
+      violations.push(
+        ...pnpmWorkspaceBumpViolations(fileAtRef(repo, base, p), workingTreeFile(p), allowed),
+      );
+    }
+    // Lockfiles are allowed without inspection; any other path is not committed
+    // to the bump commit, so it is not this gate's concern.
   }
   return { ok: violations.length === 0, violations };
 }

@@ -108,6 +108,12 @@ export function revParse(repo: string, ref: string): string {
   return git(repo, ["rev-parse", ref]);
 }
 
+/** Contents of `path` at `ref`, or null when absent. Output stays untrimmed. */
+export function fileAtRef(repo: string, ref: string, path: string): string | null {
+  const res = probe(repo, ["show", `${ref}:${path}`]);
+  return res.code === 0 ? res.out : null;
+}
+
 /** Return to base at the end of a clean run; dirty trees stay for inspection. */
 export function tryCheckout(repo: string, ref: string): boolean {
   return probe(repo, ["checkout", ref]).code === 0;

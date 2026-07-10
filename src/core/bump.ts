@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Document, isMap, isScalar, parseDocument } from "yaml";
+import { type Document, isScalar, parseDocument } from "yaml";
 
 /**
  * Deterministic executor for the update plan `pm.updatePlan` builds. The
@@ -24,10 +24,18 @@ import { type Document, isMap, isScalar, parseDocument } from "yaml";
  * bounded output tail; this never throws for them.
  */
 
-/** One pnpm-workspace.yaml catalog entry to move to `target` (pnpm only). */
+/**
+ * One pnpm-workspace.yaml catalog entry to move to `target` (pnpm only).
+ * `catalog` names WHICH catalog the referencing workspace pointed at: `null` is
+ * the default catalog (a `catalog:` specifier — pnpm's sugar for
+ * `catalog:default`), and a string is a named catalog (`catalog:<name>`). The
+ * executor resolves a default edit to `catalog.<name>` or, failing that,
+ * `catalogs.default.<name>`; a named edit only to `catalogs.<catalog>.<name>`.
+ */
 export interface CatalogEdit {
   name: string;
   target: string;
+  catalog: string | null;
 }
 
 /**
@@ -38,11 +46,20 @@ export interface CatalogEdit {
  * catalog entry is always exact, never a preserved `^`/`~` range, so a follow-up
  * install cannot resolve past the vetted version (the same reasoning that drops
  * bun's caret under the minimum_release_age cooldown — see pm.ts).
+ *
+ * `blockers` (pnpm only, normally absent) are human-readable reasons the plan
+ * cannot be applied safely — a member declared both as a `catalog:` reference
+ * and a plain version across workspaces (mixed: `pnpm -r update` would
+ * de-catalog the reference AND a catalog-only edit would leave the plain
+ * declaration stale — neither is safe), or an unreadable declaring package.json.
+ * `applyUpdatePlan` fails closed (`bump-failed`) before touching anything when
+ * they are present.
  */
 export interface UpdatePlan {
   catalogEdits: CatalogEdit[];
   commands: string[][];
   pinExact: boolean;
+  blockers?: string[];
 }
 
 /**
@@ -69,21 +86,22 @@ function messageOf(err: unknown): string {
 }
 
 /**
- * The Document path of `name`'s catalog entry: `catalog.<name>`, else the first
- * `catalogs.<group>.<name>` that exists. null when no catalog carries it (the
- * fail-closed "missing entry" case).
+ * The Document path of an edit's catalog entry, resolved from the catalog the
+ * referencing workspace named (`edit.catalog`). A default reference (`null`)
+ * resolves to `catalog.<name>` or, failing that, `catalogs.default.<name>`
+ * (pnpm treats a bare `catalog:` as sugar for `catalog:default`, and the default
+ * catalog can be declared either way). A named reference resolves ONLY to
+ * `catalogs.<catalog>.<name>`. null when the entry is absent (the fail-closed
+ * "missing entry" case).
  */
-function catalogPathFor(doc: Document, name: string): (string | number)[] | null {
-  if (doc.hasIn(["catalog", name])) return ["catalog", name];
-  const catalogs = doc.get("catalogs");
-  if (isMap(catalogs)) {
-    for (const pair of catalogs.items) {
-      if (isScalar(pair.key) && typeof pair.key.value === "string") {
-        const group = pair.key.value;
-        if (doc.hasIn(["catalogs", group, name])) return ["catalogs", group, name];
-      }
-    }
+function catalogPathFor(doc: Document, edit: CatalogEdit): (string | number)[] | null {
+  const { name, catalog } = edit;
+  if (catalog === null) {
+    if (doc.hasIn(["catalog", name])) return ["catalog", name];
+    if (doc.hasIn(["catalogs", "default", name])) return ["catalogs", "default", name];
+    return null;
   }
+  if (doc.hasIn(["catalogs", catalog, name])) return ["catalogs", catalog, name];
   return null;
 }
 
@@ -123,7 +141,7 @@ function applyCatalogEdits(
     };
   }
   for (const edit of edits) {
-    const path = catalogPathFor(doc, edit.name);
+    const path = catalogPathFor(doc, edit);
     if (!path) {
       return {
         ok: false,
@@ -150,6 +168,12 @@ function applyCatalogEdits(
  * `ok:true` when everything succeeded.
  */
 export function applyUpdatePlan(repoPath: string, plan: UpdatePlan): ApplyPlanResult {
+  // Fail closed before touching anything if the plan builder flagged a shape it
+  // cannot apply safely (a mixed catalog/plain declaration, an unreadable
+  // manifest). Surfaces as `bump-failed`, whose summary prints step + tail.
+  if (plan.blockers && plan.blockers.length > 0) {
+    return { ok: false, step: "plan", code: null, outputTail: tail(plan.blockers.join("; ")) };
+  }
   if (plan.catalogEdits.length > 0) {
     const res = applyCatalogEdits(repoPath, plan.catalogEdits, plan.pinExact);
     if (!res.ok)

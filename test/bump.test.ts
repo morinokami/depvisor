@@ -29,7 +29,10 @@ test("applyUpdatePlan rewrites a catalog entry, preserving comments and range st
     "pnpm-workspace.yaml":
       "# managed catalog\npackages:\n  - packages/*\ncatalog:\n  semver: ^7.3.0 # pinned\n  chalk: ~4.1.2\n",
   });
-  const res = applyUpdatePlan(repo, catalogPlan([{ name: "semver", target: "7.7.3" }]));
+  const res = applyUpdatePlan(
+    repo,
+    catalogPlan([{ name: "semver", target: "7.7.3", catalog: null }]),
+  );
   assert.deepEqual(res, { ok: true });
   const out = workspaceYaml(repo);
   assert.match(out, /semver: \^7\.7\.3 # pinned/); // caret prefix + inline comment kept
@@ -39,14 +42,20 @@ test("applyUpdatePlan rewrites a catalog entry, preserving comments and range st
 
 test("applyUpdatePlan writes an exact target when the entry has no range prefix", () => {
   const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  semver: 7.3.0\n" });
-  const res = applyUpdatePlan(repo, catalogPlan([{ name: "semver", target: "7.7.3" }]));
+  const res = applyUpdatePlan(
+    repo,
+    catalogPlan([{ name: "semver", target: "7.7.3", catalog: null }]),
+  );
   assert.deepEqual(res, { ok: true });
   assert.match(workspaceYaml(repo), /semver: 7\.7\.3/);
 });
 
 test("applyUpdatePlan forces an exact entry under pinExact even when a range existed", () => {
   const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  semver: ^7.3.0\n" });
-  const res = applyUpdatePlan(repo, catalogPlan([{ name: "semver", target: "7.7.3" }], true));
+  const res = applyUpdatePlan(
+    repo,
+    catalogPlan([{ name: "semver", target: "7.7.3", catalog: null }], true),
+  );
   assert.deepEqual(res, { ok: true });
   const out = workspaceYaml(repo);
   assert.match(out, /semver: 7\.7\.3/);
@@ -55,14 +64,67 @@ test("applyUpdatePlan forces an exact entry under pinExact even when a range exi
 
 test("applyUpdatePlan edits an entry inside a named catalogs group", () => {
   const repo = repoWith({ "pnpm-workspace.yaml": "catalogs:\n  react:\n    react: ^18.0.0\n" });
-  const res = applyUpdatePlan(repo, catalogPlan([{ name: "react", target: "19.0.0" }]));
+  const res = applyUpdatePlan(
+    repo,
+    catalogPlan([{ name: "react", target: "19.0.0", catalog: "react" }]),
+  );
   assert.deepEqual(res, { ok: true });
   assert.match(workspaceYaml(repo), /react: \^19\.0\.0/);
 });
 
+test("applyUpdatePlan resolves a default-catalog edit via catalogs.default when there is no top-level catalog", () => {
+  // `catalog:` is pnpm's sugar for `catalog:default`; the default catalog may be
+  // declared as `catalog:` OR `catalogs.default:`, so a null-catalog edit falls
+  // back to catalogs.default.<name>.
+  const repo = repoWith({ "pnpm-workspace.yaml": "catalogs:\n  default:\n    semver: ^7.3.0\n" });
+  const res = applyUpdatePlan(
+    repo,
+    catalogPlan([{ name: "semver", target: "7.7.3", catalog: null }]),
+  );
+  assert.deepEqual(res, { ok: true });
+  assert.match(workspaceYaml(repo), /semver: \^7\.7\.3/);
+});
+
+test("applyUpdatePlan does not fall back for a named-catalog edit (named resolves only in its own catalog)", () => {
+  // A named reference must not be satisfied by the default/top-level catalog: the
+  // workspace pointed at catalog:react18, so only catalogs.react18 counts.
+  const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  semver: ^7.3.0\n" });
+  const res = applyUpdatePlan(
+    repo,
+    catalogPlan([{ name: "semver", target: "7.7.3", catalog: "react18" }]),
+  );
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.match(res.outputTail, /no catalog entry for "semver"/);
+});
+
+test("applyUpdatePlan short-circuits to ok:false step 'plan' when the plan carries blockers", () => {
+  const repo = repoWith({});
+  const res = applyUpdatePlan(repo, {
+    catalogEdits: [],
+    commands: [["node", "-e", 'require("fs").writeFileSync("ran.txt","x")']],
+    pinExact: false,
+    blockers: ["semver declared both ways", "cannot read a declaring package.json for chalk"],
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.step, "plan");
+    assert.equal(res.code, null);
+    assert.match(res.outputTail, /semver declared both ways/);
+    assert.match(res.outputTail, /cannot read a declaring/);
+  }
+  assert.equal(
+    existsSync(join(repo, "ran.txt")),
+    false,
+    "blockers short-circuit before any command or catalog edit runs",
+  );
+});
+
 test("applyUpdatePlan fails closed on a missing catalog entry", () => {
   const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  chalk: ^4.1.2\n" });
-  const res = applyUpdatePlan(repo, catalogPlan([{ name: "semver", target: "7.7.3" }]));
+  const res = applyUpdatePlan(
+    repo,
+    catalogPlan([{ name: "semver", target: "7.7.3", catalog: null }]),
+  );
   assert.equal(res.ok, false);
   if (!res.ok) {
     assert.match(res.step, /catalog edit/);
@@ -74,7 +136,7 @@ test("applyUpdatePlan fails closed on a missing catalog entry", () => {
 test("applyUpdatePlan does not run commands when a catalog edit fails", () => {
   const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  chalk: ^4.1.2\n" });
   const res = applyUpdatePlan(repo, {
-    catalogEdits: [{ name: "semver", target: "7.7.3" }],
+    catalogEdits: [{ name: "semver", target: "7.7.3", catalog: null }],
     commands: [["node", "-e", 'require("fs").writeFileSync("ran.txt","x")']],
     pinExact: false,
   });
@@ -88,7 +150,10 @@ test("applyUpdatePlan does not run commands when a catalog edit fails", () => {
 
 test("applyUpdatePlan fails closed on a non-string catalog value", () => {
   const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  semver:\n    nested: true\n" });
-  const res = applyUpdatePlan(repo, catalogPlan([{ name: "semver", target: "7.7.3" }]));
+  const res = applyUpdatePlan(
+    repo,
+    catalogPlan([{ name: "semver", target: "7.7.3", catalog: null }]),
+  );
   assert.equal(res.ok, false);
   if (!res.ok) assert.match(res.outputTail, /not a string/);
 });
@@ -96,14 +161,14 @@ test("applyUpdatePlan fails closed on a non-string catalog value", () => {
 test("applyUpdatePlan fails closed on an unparseable pnpm-workspace.yaml", () => {
   // Duplicate keys are a hard yaml error under the default schema.
   const repo = repoWith({ "pnpm-workspace.yaml": "catalog:\n  a: 1\n  a: 2\n" });
-  const res = applyUpdatePlan(repo, catalogPlan([{ name: "a", target: "3" }]));
+  const res = applyUpdatePlan(repo, catalogPlan([{ name: "a", target: "3", catalog: null }]));
   assert.equal(res.ok, false);
   if (!res.ok) assert.match(res.outputTail, /unparseable/);
 });
 
 test("applyUpdatePlan fails closed when pnpm-workspace.yaml is absent", () => {
   const repo = repoWith({});
-  const res = applyUpdatePlan(repo, catalogPlan([{ name: "a", target: "3" }]));
+  const res = applyUpdatePlan(repo, catalogPlan([{ name: "a", target: "3", catalog: null }]));
   assert.equal(res.ok, false);
   if (!res.ok) assert.match(res.outputTail, /cannot read/);
 });

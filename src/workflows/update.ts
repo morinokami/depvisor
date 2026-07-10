@@ -57,7 +57,7 @@ import {
   parseMinimumReleaseAgeExclude,
   type Packument,
 } from "../core/release-age.ts";
-import { checkFixScope } from "../core/scope.ts";
+import { checkBumpScope, checkFixScope } from "../core/scope.ts";
 import { parseSuggestFeatures } from "../core/suggest-features.ts";
 import {
   emitRunStatus,
@@ -862,15 +862,45 @@ export default defineWorkflow({
           continue;
         }
 
+        // Bump-scope gate — BEFORE the mechanical commit. The bump dirtied the
+        // tree, but an install lifecycle script could have rewritten a manifest
+        // beyond the update itself (scripts/overrides/trustedDependencies, a
+        // non-catalog pnpm-workspace.yaml key, …). Such a change would ride along
+        // in the "mechanical" bump commit — which the docs tell reviewers the AI
+        // wrote none of — and is invisible to checkFixScope, which diffs FROM the
+        // bump commit. Allow only genuine member version moves in the files that
+        // enter that commit; anything else is fail-closed scope creep.
+        const bumpScope = checkBumpScope(REPO, base, members);
+        if (!bumpScope.ok) {
+          record(
+            "scope-violation",
+            `The bump left manifest changes beyond the update itself: ${bumpScope.violations.join(", ")}. ` +
+              "This is most likely an install lifecycle script that rewrote a manifest. " +
+              "Nothing was committed.",
+          );
+          continue;
+        }
+
         // Two commits: the mechanical manifest bump FIRST, made by deterministic
         // code before any agent runs (so a reviewer sees the AI wrote none of
         // it), then — only if a fixer adapts source — the fix commit below.
-        commitPaths(
+        const bumpSha = commitPaths(
           REPO,
           manifestBumpPaths(REPO, pm.lockfiles, pm.extraBumpFiles),
           `deps: bump ${pkgList}`,
         );
-        const bumpSha = revParse(REPO, "HEAD");
+        if (bumpSha === null) {
+          // hasChanges was true, yet nothing manifest-shaped changed — the bump
+          // touched only non-manifest files (a lifecycle-script side effect?).
+          // There is no mechanical bump to review, so nothing to vouch for.
+          record(
+            "bump-failed",
+            `The bump of ${pkgList} changed files but none of them were manifests or ` +
+              "lockfiles, so no mechanical bump commit could be made. Fail-closed; the " +
+              "changed files were discarded.",
+          );
+          continue;
+        }
         log.info(`committed deterministic bump for ${pkgList} (${bumpSha.slice(0, 8)})`);
 
         // Full verification against the committed bump.
@@ -1037,6 +1067,9 @@ export default defineWorkflow({
         // deterministic data (composeNarrative(null, ...)).
         const wantSuggestions = wantsSuggestions(suggestFeatures, members);
         const notesText = await digestNotes(members);
+        // The seal the post-digest check below restores: the branch tip after
+        // both commits, content-addressed, so resetting to it is exact.
+        const sealedSha = revParse(REPO, "HEAD");
         let digestReport: DigestReport | null = null;
         let newFeatures: RelevantNewFeature[] = [];
         try {
@@ -1067,11 +1100,17 @@ export default defineWorkflow({
         } catch (err) {
           // Broader than the fixer's catch on purpose: the digest is
           // display-only and NEVER a gate, so ANY Flue-layer failure — a
-          // missing structured result, a rejected re-parse, or the model call
-          // itself failing (provider outage, billing) — degrades to the
-          // deterministic fallback narrative instead of losing a verified
-          // update. Non-Flue errors are bugs and still crash loudly.
-          if (err instanceof FlueError || err instanceof v.ValiError) {
+          // missing structured result (ResultUnavailableError, which extends
+          // plain Error, NOT FlueError — it must be named explicitly), a
+          // rejected re-parse, or the model call itself failing (provider
+          // outage, billing) — degrades to the deterministic fallback
+          // narrative instead of losing a verified update. Non-Flue errors
+          // are bugs and still crash loudly.
+          if (
+            err instanceof FlueError ||
+            err instanceof ResultUnavailableError ||
+            err instanceof v.ValiError
+          ) {
             const detail = err instanceof Error ? err.message : String(err);
             log.warn(
               "The digest agent failed; preparing the PR with a deterministic " +
@@ -1080,6 +1119,24 @@ export default defineWorkflow({
           } else {
             throw err;
           }
+        }
+
+        // Seal check: the digest shares the local() sandbox, so untrusted
+        // release notes could prompt-inject it into moving the branch ref
+        // (commit/amend/reset) or dirtying the tree AFTER the gates ran — and
+        // the token-holding open-pr step would push whatever the ref points
+        // at. Restore the sealed tip unconditionally (content-addressed, so
+        // exact) and drop the report of a digest that tampered: its narrative
+        // is not worth trusting either. Restore-and-continue, not fail: the
+        // update itself is verified and the digest is display-only.
+        if (revParse(REPO, "HEAD") !== sealedSha || hasChanges(REPO)) {
+          discardWorkPast(REPO, sealedSha);
+          digestReport = null;
+          newFeatures = [];
+          log.warn(
+            "The digest session left ref or tree changes; restored the sealed commits and " +
+              "discarded its report (the digest is display-only and may not modify the branch).",
+          );
         }
 
         // Compose the PR narrative from the split reports (§5.2) and emit the
