@@ -9,9 +9,11 @@ import { ALL_PM_LOCKFILES } from "./pm.ts";
 /**
  * Two scope gates bound the update, both allow-list/deny gates over a git diff:
  *
- * - `checkBumpScope` runs on the working-tree diff against `base` BEFORE the
- *   mechanical bump is committed, and allows only the changes a genuine
- *   dependency bump makes to the files that enter that commit — member version
+ * - `checkBumpScope` runs on the working-tree diff against the IMMUTABLE
+ *   pre-bump sha (never a movable ref name — the lifecycle scripts it defends
+ *   against can move refs, which would let them pick the "before" content)
+ *   BEFORE the mechanical bump is committed, and allows only the changes a
+ *   genuine dependency bump makes to the files that enter that commit — member version
  *   moves in dependency sections, matching pnpm-workspace.yaml catalog moves,
  *   and (uninspected) lockfiles. It exists to catch a poisoned install lifecycle
  *   script that rewrites `scripts`/`overrides`/`trustedDependencies`/etc. during

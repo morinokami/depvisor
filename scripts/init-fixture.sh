@@ -45,6 +45,9 @@ if [ "$ws" = "1" ]; then
   # Monorepo variants exist per PM, each with its own template — the root
   # scripts differ, and the pnpm one catalog-pins the shared dependency. yarn
   # is unsupported.
+  # In the bun/pnpm templates each package declares its own @types/semver:
+  # their isolated linkers (unlike npm's hoisting) won't surface a sibling
+  # workspace's copy, so a shared declaration would fail the type check.
   case "$pm" in
     npm)
       template="$root/fixtures/sample-app-workspaces.template"
