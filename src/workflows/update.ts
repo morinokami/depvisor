@@ -10,11 +10,11 @@ import {
   prioritizeGroups,
   type AdvisoryResult,
 } from "../core/advisories.ts";
-import { classifyGroup, countOpenDepvisorPrs, parseOpenPullRequestsLimit } from "../core/budget.ts";
+import { classifyGroup, countOpenDepvisorPrs } from "../core/budget.ts";
 import { applyUpdatePlan } from "../core/bump.ts";
 import { fetchReleaseNotes, parseGithubSlug } from "../core/changelog.ts";
 import { collectCandidates } from "../core/collect.ts";
-import { detectPersistedCredentials, persistedCredentialsSummary } from "../core/credentials.ts";
+import { parseRunConfig } from "../core/config.ts";
 import {
   changedPaths,
   commitAll,
@@ -25,11 +25,9 @@ import {
   ensureBranch,
   hasChanges,
   isClean,
-  isRepoRoot,
   manifestBumpPaths,
   manifestDiff,
   refDrift,
-  refExists,
   resetToBase,
   restoreRefs,
   revParse,
@@ -39,10 +37,10 @@ import {
   worktreeDrift,
 } from "../core/git.ts";
 import { groupCandidates } from "../core/grouping.ts";
-import { applyIgnore, describeIgnore, parseIgnore } from "../core/ignore.ts";
+import { applyIgnore, describeIgnore } from "../core/ignore.ts";
 import { runInstall } from "../core/install.ts";
 import { classifyLicenseChanges, describeLicenseChanges } from "../core/license.ts";
-import { detectPackageManager, type PmToolchain } from "../core/pm.ts";
+import { preflight, resolveResetCommand } from "../core/preflight.ts";
 import {
   branchNameForGroup,
   buildPrPayload,
@@ -59,12 +57,9 @@ import {
   applyReleaseAge,
   describeReleaseAge,
   fetchPackument,
-  parseMinimumReleaseAge,
-  parseMinimumReleaseAgeExclude,
   type Packument,
 } from "../core/release-age.ts";
 import { checkBumpScope, checkFixScope } from "../core/scope.ts";
-import { parseSuggestFeatures } from "../core/suggest-features.ts";
 import {
   emitRunStatus,
   groupLogLine,
@@ -82,58 +77,14 @@ import { classifyTestChanges } from "../core/test-changes.ts";
 import { logSafeText } from "../core/text.ts";
 import type { Candidate, RelevantNewFeature } from "../core/types.ts";
 import {
-  parseVerifyCommands,
   runVerification,
   stripVerifyTails,
-  verifyStepsFor,
   type VerifyResult,
   type VerifyStep,
 } from "../core/verify.ts";
 import { REPO } from "../shared/target.ts";
 
 const PR_OUT_DIR = fileURLToPath(new URL("../../pr-preview", import.meta.url));
-
-// CI passes the default branch explicitly; local runs fall back to the current
-// branch after preflight rejects HEAD or depvisor/*.
-const BASE_OVERRIDE = process.env.DEPVISOR_BASE_BRANCH || undefined;
-// JSON snapshot of open PRs ({headRefName, body}[]), written by a separate
-// token-holding workflow step. Data flows in; credentials never do. The open_pull_requests_limit
-// ceiling counts open depvisor PRs from this snapshot, so its accuracy matters:
-// in CI the snapshot step fails the job if `gh pr list` fails, but a truncated
-// snapshot (more open PRs than its --limit) or an absent one (local runs) fails
-// open — the ceiling can be exceeded, never the reverse.
-const OPEN_PRS_FILE = process.env.DEPVISOR_OPEN_PRS_FILE;
-// Newline-separated shell commands that replace auto-detected verification.
-// This comes from workflow config, never from the agent-writable target tree.
-const VERIFY_COMMANDS = process.env.DEPVISOR_VERIFY_COMMANDS || "";
-// Ceiling on the number of open depvisor PRs (Dependabot's open-pull-requests-limit
-// model). Empty = unset = 5. Refreshing an existing PR never consumes a slot.
-const OPEN_PULL_REQUESTS_LIMIT_RAW = process.env.DEPVISOR_OPEN_PULL_REQUESTS_LIMIT || "";
-// Minimum age (days) a version must have been public on the npm registry
-// before depvisor updates to it — the supply-chain cooldown (core/release-age.ts).
-// Empty = unset = 1; "0" disables it.
-const MINIMUM_RELEASE_AGE_RAW = process.env.DEPVISOR_MINIMUM_RELEASE_AGE || "";
-// Newline-separated package names exempted from the cooldown's age check —
-// the per-package escape hatch for packages the public npm registry cannot
-// vouch for (private-registry packages), which would otherwise go red as
-// release-age-unavailable every run. From workflow config, never the
-// agent-writable target tree (like verify_commands and ignore).
-const MINIMUM_RELEASE_AGE_EXCLUDE_RAW = process.env.DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE || "";
-// Newline-separated ignore rules (`name` or `name@<major>`) that drop candidates
-// before grouping — the human-decided permanent counterpart to defer. From
-// workflow config, never the agent-writable target tree (like verify_commands).
-const IGNORE_RAW = process.env.DEPVISOR_IGNORE || "";
-// Opt-in flag (empty/"false" = off, "true" = on, else bad-suggest-features): when
-// on, the digest prompt asks the agent to surface newly added capabilities
-// relevant to the codebase, rendered display-only in the PR body
-// (core/suggest-features.ts). Off by default because it costs extra tokens and
-// widens the agent's engagement with untrusted release notes.
-const SUGGEST_FEATURES_RAW = process.env.DEPVISOR_SUGGEST_FEATURES || "";
-// The install_command input, forwarded for the group-boundary reset: a custom
-// command is reused verbatim; `auto`/`skip`/unset fall back to the PM's
-// lockfile-faithful install (`skip` skips only the pre-agent install step, not
-// this reset). Trusted (workflow file / env), never the agent-writable tree.
-const INSTALL_COMMAND = process.env.DEPVISOR_INSTALL_COMMAND || "";
 
 // The fixer's structured account of the source fix it made after a failed
 // verification: a verdict the workflow branches on, plus typed fields the PR
@@ -188,111 +139,24 @@ function dirtyPaths(): string {
 }
 
 /**
- * The command that restores the tree to the base lockfile state between groups.
- * A custom `install_command` is trusted (workflow file/env) and reused verbatim.
- * `auto`/`skip`/unset use the PM's frozen install, which is null only when the
- * repo tracks no lockfile (reachable only under `install_command: skip`).
- */
-function resolveResetCommand(pm: PmToolchain, repo: string, installInput: string): string | null {
-  const input = installInput.trim();
-  if (input && input !== "auto" && input !== "skip") return input;
-  return pm.installCommand(repo);
-}
-
-/**
  * Open-PR snapshot, or [] when absent. Skip-if-up-to-date degrades gracefully
- * without it (a missed skip just re-runs the agent), but the open_pull_requests_limit ceiling
- * counts from it, so an absent/unreadable snapshot fails open toward opening
- * more PRs — see the OPEN_PRS_FILE comment above.
+ * without it (a missed skip just re-runs the agent), but the
+ * open_pull_requests_limit ceiling counts from it, so its accuracy matters: in
+ * CI the snapshot step fails the job if `gh pr list` fails, but a truncated
+ * snapshot (more open PRs than its --limit) or an absent/unreadable one (local
+ * runs) fails open toward opening more PRs — the ceiling can be exceeded, never
+ * the reverse.
  */
-function readOpenPrs(): { headRefName?: string; body?: string }[] {
-  if (!OPEN_PRS_FILE) return [];
+function readOpenPrs(file: string | undefined): { headRefName?: string; body?: string }[] {
+  if (!file) return [];
   try {
-    return JSON.parse(readFileSync(OPEN_PRS_FILE, "utf8")) as {
+    return JSON.parse(readFileSync(file, "utf8")) as {
       headRefName?: string;
       body?: string;
     }[];
   } catch {
     return [];
   }
-}
-
-/** Preflight: never start agent work from a broken starting point. */
-function preflight():
-  | { ok: false; status: string; summary: string }
-  | { ok: true; base: string; verifySteps: VerifyStep[]; pm: PmToolchain } {
-  if (!isRepoRoot(REPO)) {
-    return {
-      ok: false,
-      status: "not-a-repo-root",
-      summary:
-        `${REPO} is not the root of its own git repository. For the local fixture, ` +
-        "run `pnpm run fixture:init` first.",
-    };
-  }
-  // Second layer of the credentials gate (the action runs check-credentials.ts
-  // before even installing the target): also covers local runs and workflows
-  // that bypass the composite action.
-  const credentialFindings = detectPersistedCredentials(REPO);
-  if (credentialFindings.length > 0) {
-    return {
-      ok: false,
-      status: "persisted-credentials",
-      summary: persistedCredentialsSummary(credentialFindings),
-    };
-  }
-  if (hasChanges(REPO)) {
-    return {
-      ok: false,
-      status: "dirty-tree",
-      summary:
-        `${REPO} has uncommitted changes (likely a previous failed run). ` +
-        "Refusing to build a branch on top of them; reset the tree and re-run.",
-    };
-  }
-  // Detect the package manager pre-agent, against the trusted base tree, and
-  // pin the result for the whole run.
-  const detected = detectPackageManager(REPO);
-  if (!detected.ok) {
-    return { ok: false, status: detected.status, summary: detected.summary };
-  }
-  const pm = detected.pm;
-  const base = BASE_OVERRIDE ?? currentBranch(REPO);
-  if (base === "HEAD" || base.startsWith("depvisor/")) {
-    return {
-      ok: false,
-      status: "bad-base-branch",
-      summary:
-        `Refusing to use '${base}' as the base branch. Check out the intended base ` +
-        "or set the base_branch action input (DEPVISOR_BASE_BRANCH locally).",
-    };
-  }
-  if (!refExists(REPO, base)) {
-    return {
-      ok: false,
-      status: "missing-base-branch",
-      summary:
-        `Base branch '${base}' does not exist in the checkout. If this run was ` +
-        "dispatched from a non-default branch, run it from the default branch or set " +
-        "the base_branch input to a branch that was fetched.",
-    };
-  }
-  // Explicit verify_commands replace auto-detection entirely; auto-detection
-  // is only the fallback for the unconfigured case.
-  const custom = parseVerifyCommands(VERIFY_COMMANDS);
-  const verifySteps = custom.length > 0 ? custom : verifyStepsFor(REPO, pm);
-  if (verifySteps.length === 0) {
-    return {
-      ok: false,
-      status: "no-verify-scripts",
-      summary:
-        "The target package.json defines none of build/lint/test, so the " +
-        "verification gate cannot vouch for any change. No PR will be made. " +
-        "If your checks go by other names, set the verify_commands action input " +
-        "(DEPVISOR_VERIFY_COMMANDS locally).",
-    };
-  }
-  return { ok: true, base, verifySteps, pm };
 }
 
 function describeVerifySteps(steps: VerifyStep[]): string {
@@ -528,75 +392,31 @@ export default defineWorkflow({
       return toRunOutput(run);
     };
 
-    // 0. Preflight.
-    const pre = preflight();
+    // 0. Config, then preflight. Config is parsed first so a mistyped knob is
+    //    reported without touching the target repository at all; its `bad-*`
+    //    statuses therefore carry no base branch (nothing has been detected yet).
+    const parsedConfig = parseRunConfig(process.env);
+    if (!parsedConfig.ok) {
+      return finish({
+        status: parsedConfig.status,
+        base: null,
+        summary: parsedConfig.summary,
+        groups: [],
+      });
+    }
+    const config = parsedConfig.config;
+    const { minimumReleaseAge, openPullRequestsLimit, suggestFeatures } = config;
+
+    const pre = preflight(REPO, {
+      baseBranch: config.baseBranch,
+      verifyCommands: config.verifyCommands,
+    });
     if (!pre.ok) {
       return finish({ status: pre.status, base: null, summary: pre.summary, groups: [] });
     }
     const { base, verifySteps, pm } = pre;
 
-    const openPullRequestsLimit = parseOpenPullRequestsLimit(OPEN_PULL_REQUESTS_LIMIT_RAW);
-    if (openPullRequestsLimit === null) {
-      return finish({
-        status: "bad-open-pull-requests-limit",
-        base,
-        summary: `The open_pull_requests_limit input must be a positive integer; got '${OPEN_PULL_REQUESTS_LIMIT_RAW.trim()}'.`,
-        groups: [],
-      });
-    }
-    const minimumReleaseAge = parseMinimumReleaseAge(MINIMUM_RELEASE_AGE_RAW);
-    if (minimumReleaseAge === null) {
-      return finish({
-        status: "bad-minimum-release-age",
-        base,
-        summary:
-          `The minimum_release_age input must be a non-negative integer (days); ` +
-          `got '${MINIMUM_RELEASE_AGE_RAW.trim()}'.`,
-        groups: [],
-      });
-    }
-    // Parsed and validated even when the cooldown is disabled: a typo'd
-    // exclusion should fail loudly now, not the day the cooldown is re-enabled.
-    const releaseAgeExclude = parseMinimumReleaseAgeExclude(MINIMUM_RELEASE_AGE_EXCLUDE_RAW);
-    if (!releaseAgeExclude.ok) {
-      return finish({
-        status: "bad-minimum-release-age-exclude",
-        base,
-        summary:
-          `The minimum_release_age_exclude input has ${releaseAgeExclude.invalid.length} unrecognized ` +
-          `${releaseAgeExclude.invalid.length === 1 ? "entry" : "entries"}: ` +
-          `${releaseAgeExclude.invalid.join(", ")}. Each line must be a package name ` +
-          "(or a full-line '#' comment); majors, version ranges, and patterns are not " +
-          "supported.",
-        groups: [],
-      });
-    }
-    const ignore = parseIgnore(IGNORE_RAW);
-    if (!ignore.ok) {
-      return finish({
-        status: "bad-ignore",
-        base,
-        summary:
-          `The ignore input has ${ignore.invalid.length} unrecognized ` +
-          `${ignore.invalid.length === 1 ? "entry" : "entries"}: ${ignore.invalid.join(", ")}. ` +
-          "Each line must be 'name' (never update it), 'name@<major>' (skip updates to " +
-          "that major), or a full-line '#' comment; full version ranges and update-type " +
-          "rules are not supported yet.",
-        groups: [],
-      });
-    }
-    const suggestFeatures = parseSuggestFeatures(SUGGEST_FEATURES_RAW);
-    if (suggestFeatures === null) {
-      return finish({
-        status: "bad-suggest-features",
-        base,
-        summary:
-          `The suggest_features input must be 'true' or 'false' (empty means false); ` +
-          `got '${SUGGEST_FEATURES_RAW.trim()}'.`,
-        groups: [],
-      });
-    }
-    const resetCommand = resolveResetCommand(pm, REPO, INSTALL_COMMAND);
+    const resetCommand = resolveResetCommand(pm, REPO, config.installCommand);
     log.info(
       `preflight ok: pm=${pm.name}, base=${base}, open_pull_requests_limit=${openPullRequestsLimit}, ` +
         `minimum_release_age=${minimumReleaseAge}, suggest_features=${suggestFeatures}, ` +
@@ -613,7 +433,7 @@ export default defineWorkflow({
     // human-excluded package never costs a packument fetch, an agent run, or a
     // spurious red release-age-unavailable entry. A `name@<major>` rule matches
     // the raw registry latest here (see core/ignore.ts).
-    const { kept: notIgnored, ignored } = applyIgnore(collected, ignore.rules);
+    const { kept: notIgnored, ignored } = applyIgnore(collected, config.ignoreRules);
     const ignoreNote = describeIgnore(ignored);
     if (ignoreNote) log.info(ignoreNote);
 
@@ -624,7 +444,7 @@ export default defineWorkflow({
     if (minimumReleaseAge > 0 && notIgnored.length > 0) {
       const aged = await applyReleaseAge(notIgnored, minimumReleaseAge, {
         packuments,
-        exclude: releaseAgeExclude.exclude,
+        exclude: config.releaseAgeExclude,
       });
       candidates = aged.kept;
       releaseAgeUnavailable = aged.unavailable;
@@ -673,7 +493,7 @@ export default defineWorkflow({
     // skip-if-up-to-date. Only a newly opened PR consumes a slot; refreshing an
     // existing PR does not.
     const bodyByBranch = new Map<string, string>();
-    for (const p of readOpenPrs()) {
+    for (const p of readOpenPrs(config.openPrsFile)) {
       if (typeof p.headRefName === "string" && p.headRefName) {
         bodyByBranch.set(p.headRefName, p.body ?? "");
       }
