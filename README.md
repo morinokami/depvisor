@@ -1,14 +1,14 @@
 # depvisor
 
-A GitHub Action that updates your dependencies, **fixes any breakage the update causes
-with an AI agent**, verifies the result with your build/test suite, and opens a
+A GitHub Action that updates your dependencies, fixes any breakage the update causes
+with an AI agent, verifies the result with your build/test suite, and opens a
 Dependabot/Renovate-style PR.
 
 Unlike rule-based updaters, depvisor does not stop at bumping a version: it applies the
 update and runs your build/test suite deterministically, and when the update breaks
 them, an AI agent reads the codebase and the release notes and makes the code fixes
 needed to get your checks passing again. A read-only agent then explains the change (and
-any risks) in the PR body. It is **LLM-provider-agnostic** (bring your own API key:
+any risks) in the PR body. It is LLM-provider-agnostic (bring your own API key:
 OpenAI, Anthropic, …) and ships as a GitHub Action. The final merge decision stays with
 you.
 
@@ -17,9 +17,8 @@ you.
 
 ## Use it in your repository
 
-Using an AI coding agent (Claude Code, Cursor, Codex, …)? Paste this prompt and
-the agent will inspect your repository, tailor the workflow to it, and walk you
-through the rest:
+Paste this prompt into your coding agent and it will inspect your repository,
+tailor the workflow to it, and walk you through the rest:
 
 > Read https://raw.githubusercontent.com/morinokami/depvisor/main/start.md and
 > set up depvisor in this repository.
