@@ -68,8 +68,8 @@ outputs:
   status:
     description: >-
       Run-level status (completed, no-updates, or a red status like
-      baseline-red — see the README's status reference). Empty when the run
-      crashed before writing a status file.
+      baseline-red — see the status reference in docs/results.md). Empty when
+      the run crashed before writing a status file.
     value: ${{ steps.report.outputs.status }}
   failed:
     description: >-

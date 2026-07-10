@@ -52,7 +52,7 @@ jobs:
             pnpm run knip
             pnpm run test
 
-      # Consume the action outputs the way the README documents (env-mediated,
+      # Consume the action outputs the way docs/results.md documents (env-mediated,
       # if: always()) — doubles as an end-to-end check that outputs survive a
       # red run.
       - name: Show depvisor outputs

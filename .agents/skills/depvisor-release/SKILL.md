@@ -16,7 +16,7 @@ Two documented GitHub-runner quirks — **read the comments in `action.yml` befo
 
 The second quirk is **load-bearing on purpose**: `pnpm/action-setup` reads `packageManager` from `package_json_file` (default = the _target_ checkout's `package.json`) and refuses when it differs from the pinned `version` (#35). So `package_json_file` is pointed at depvisor's own manifest — the absolute path mangles to a nonexistent file, the target's `packageManager` is never read, and the pinned `version` stands.
 
-One platform caveat worth remembering: nesting the action inside another composite loses step outputs (actions/runner#2009, documented in the README).
+One platform caveat worth remembering: nesting the action inside another composite loses step outputs (actions/runner#2009, documented in docs/results.md).
 
 ## The development workflow (`.github/workflows/depvisor.yml`)
 

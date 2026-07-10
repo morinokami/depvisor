@@ -42,4 +42,4 @@ The invariants this flow must preserve are in the repo-root `CLAUDE.md`. Read th
 
 ## Adding a status
 
-A new status must be classified in `status.ts:runFailsJob` (green vs red) and, if it is a config-parse stop, follow the `bad-*` convention. Statuses also appear in the composite action's `outputs:` via `toActionOutputs`, which drops anything off the kebab-case vocabulary. Mirror any new status name into `README.md` and `start.md`, which duplicate the list on purpose.
+A new status must be classified in `status.ts:runFailsJob` (green vs red) and, if it is a config-parse stop, follow the `bad-*` convention. Statuses also appear in the composite action's `outputs:` via `toActionOutputs`, which drops anything off the kebab-case vocabulary. Mirror any new status name into `docs/results.md` (the status reference) and `start.md`, which duplicate the list on purpose.
