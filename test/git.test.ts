@@ -338,7 +338,7 @@ test("manifestDiff returns hunks for manifests only, never lockfiles or source",
   writeFileSync(join(repo, "src.ts"), "export const changed = true;\n");
   sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm change");
 
-  const diff = manifestDiff(repo, "HEAD~1", "HEAD");
+  const diff = manifestDiff(repo, "HEAD~1", "HEAD", ["pnpm-workspace.yaml"]);
   assert.match(diff, /b\/package\.json/); // root manifest
   assert.match(diff, /b\/packages\/a\/package\.json/); // nested manifest
   assert.match(diff, /b\/pnpm-workspace\.yaml/);

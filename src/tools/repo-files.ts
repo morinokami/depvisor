@@ -176,8 +176,9 @@ export function searchRepo(
   const files = collectRepoFiles(resolved.abs, resolved.rel, SEARCH_FILES_MAX + 1);
   const matches: string[] = [];
   let truncated = files.length > SEARCH_FILES_MAX;
+  const root = realpathSync(repo);
   for (const file of files.slice(0, SEARCH_FILES_MAX)) {
-    const full = resolve(realpathSync(repo), file);
+    const full = resolve(root, file);
     const stat = lstatSync(full);
     if (stat.size > SEARCH_FILE_BYTES_MAX) continue;
     let content: string;
@@ -261,13 +262,9 @@ const readRepoFileTool = defineTool({
     end_line: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   }),
   output: v.object({ path: v.string(), content: v.string(), truncated: v.boolean() }),
-  run: ({ input }) =>
-    readRepoFile(
-      REPO,
-      input.path,
-      input.start_line,
-      input.end_line ?? input.start_line + READ_LINES_MAX - 1,
-    ),
+  // An absent end_line stays undefined so readRepoFile's own default window
+  // applies — the formula lives in one place.
+  run: ({ input }) => readRepoFile(REPO, input.path, input.start_line, input.end_line),
 });
 
 const searchRepoTool = defineTool({

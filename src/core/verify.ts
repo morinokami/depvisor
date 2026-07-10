@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PmToolchain } from "./pm.ts";
+import { tail } from "./text.ts";
 
 export interface VerifyStep {
   name: string;
@@ -28,12 +29,6 @@ const STEP_TIMEOUT_MS = 10 * 60 * 1000;
 // passing step, so raise it far past any realistic verify output. Output beyond
 // this is truncated, not fatal.
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
-// The fixer only needs the end of a failing step's log to diagnose it.
-const OUTPUT_TAIL_MAX = 4000;
-
-function tail(s: string): string {
-  return s.length <= OUTPUT_TAIL_MAX ? s : s.slice(-OUTPUT_TAIL_MAX);
-}
 
 /**
  * Parse explicitly configured verification commands: one shell command per

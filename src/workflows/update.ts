@@ -16,6 +16,7 @@ import { fetchReleaseNotes, parseGithubSlug } from "../core/changelog.ts";
 import { collectCandidates } from "../core/collect.ts";
 import { detectPersistedCredentials, persistedCredentialsSummary } from "../core/credentials.ts";
 import {
+  changedPaths,
   commitAll,
   commitPaths,
   currentBranch,
@@ -78,6 +79,7 @@ import {
   type RunStatus,
 } from "../core/status.ts";
 import { classifyTestChanges } from "../core/test-changes.ts";
+import { logSafeText } from "../core/text.ts";
 import type { Candidate, RelevantNewFeature } from "../core/types.ts";
 import {
   parseVerifyCommands,
@@ -170,14 +172,19 @@ const DigestResult = v.object({
 // a wide (from, to] window can still be large, so cap the per-package block too.
 const DIGEST_NOTES_CHARS_PER_PACKAGE = 8_000;
 
-// A bump failure's captured output tail is registry/tool text: collapse control
-// runs to a single space (so an embedded newline cannot forge an Actions
-// `::command` in the log or the status summary) and cap it, mirroring
-// describeLicenseChanges's log-boundary treatment of untrusted text.
+// A bump failure's captured output tail is registry/tool text — untrusted at
+// the log/status boundary, so it goes through text.ts's logSafeText with this
+// cap (well below the 4000-char internal tail the fixer prompt may see).
 const BUMP_TAIL_MAX = 400;
-function sanitizeBumpTail(s: string): string {
-  const clean = s.replace(/\p{Cc}+/gu, " ").trim();
-  return clean.length <= BUMP_TAIL_MAX ? clean : `${clean.slice(0, BUMP_TAIL_MAX)}…`;
+
+/**
+ * Names of the currently changed working-tree paths, for error messages. A
+ * plain path listing — deliberately NOT `snapshotWorktree`, whose keys are the
+ * same sorted list but whose values content-hash every changed file for the
+ * drift checks that actually need fingerprints.
+ */
+function dirtyPaths(): string {
+  return changedPaths(REPO).sort().join(", ");
 }
 
 /**
@@ -359,10 +366,20 @@ function fixerPrompt(
  * same core fetch the fixer's fetch_release_notes tool wraps; the digest has no
  * tools, so the notes are injected into its prompt). Capped per package.
  */
-async function digestNotes(members: readonly Candidate[]): Promise<string> {
+async function digestNotes(
+  members: readonly Candidate[],
+  packuments: ReadonlyMap<string, Packument | null>,
+): Promise<string> {
   const blocks = await Promise.all(
     members.map(async (m) => {
-      const notes = await fetchReleaseNotes({ package: m.name, from: m.current, to: m.latest });
+      // Reuse the packument the run already fetched for the source-repo slug the
+      // lookup needs first (full packuments can run to megabytes — no re-download
+      // per member); a failed fetch (null) falls back to the lookup's own resolve.
+      const packument = packuments.get(m.name);
+      const notes = await fetchReleaseNotes(
+        { package: m.name, from: m.current, to: m.latest },
+        packument ? { slug: parseGithubSlug(packument.repository) } : {},
+      );
       const body =
         notes.releases.length > 0
           ? notes.releases.map((r) => `#### ${r.version}\n${r.notes}`).join("\n\n")
@@ -804,10 +821,19 @@ export default defineWorkflow({
         // HEAD anchor is always an IMMUTABLE sha captured by trusted code,
         // never a movable ref name.
         const refSnapshot = snapshotRefs(REPO);
-        const refsIntactAt = (who: string, head: string, checkoutRef: string): boolean => {
+        // The one spelling of "intact": no ref drift AND HEAD still at the
+        // trusted anchor. Null when intact; otherwise the drifted ref names
+        // (possibly empty — a moved HEAD only) after restoring everything
+        // from the snapshot.
+        const restoredRefDrift = (head: string, checkoutRef: string): string[] | null => {
           const drift = refDrift(REPO, refSnapshot);
-          if (drift.length === 0 && revParse(REPO, "HEAD") === head) return true;
+          if (drift.length === 0 && revParse(REPO, "HEAD") === head) return null;
           restoreRefs(REPO, refSnapshot, checkoutRef);
+          return drift;
+        };
+        const refsIntactAt = (who: string, head: string, checkoutRef: string): boolean => {
+          const drift = restoredRefDrift(head, checkoutRef);
+          if (drift === null) return true;
           record(
             "unexpected-commits",
             `${who} moved git refs or HEAD (${drift.join(", ") || "HEAD"}), but refs are ` +
@@ -855,7 +881,7 @@ export default defineWorkflow({
             run.status = "reset-failed";
             run.summary =
               `Reinstall between groups modified tracked or untracked repository files before ${branch}: ` +
-              `${[...snapshotWorktree(REPO).keys()].join(", ")}. Stopping before verification.`;
+              `${dirtyPaths()}. Stopping before verification.`;
             break;
           }
         }
@@ -877,7 +903,7 @@ export default defineWorkflow({
         // before trusting (or reporting) their results.
         if (!refsIntactAt("The baseline verification scripts", preBumpSha, branch)) continue;
         if (hasChanges(REPO)) {
-          const paths = [...snapshotWorktree(REPO).keys()].join(", ");
+          const paths = dirtyPaths();
           if (firstProcessed) {
             run.status = "baseline-red";
             run.summary = `Verification on '${base}' modified repository files before any update: ${paths}. Fix the baseline scripts first; no PR.`;
@@ -921,7 +947,7 @@ export default defineWorkflow({
           // fail closed for this group (red). The next group's reset cleans the
           // dirtied tree, same as a verification failure.
           const code = applied.code === null ? "no exit code" : `exit ${applied.code}`;
-          const bumpTail = sanitizeBumpTail(applied.outputTail);
+          const bumpTail = logSafeText(applied.outputTail, BUMP_TAIL_MAX);
           record(
             "bump-failed",
             `The deterministic bump of ${pkgList} failed at step '${applied.step}' (${code}).` +
@@ -993,9 +1019,8 @@ export default defineWorkflow({
         if (hasChanges(REPO)) {
           record(
             "scope-violation",
-            `The bump's install scripts left non-manifest changes after the mechanical commit: ${[
-              ...snapshotWorktree(REPO).keys(),
-            ].join(", ")}. Nothing was committed beyond the bump.`,
+            `The bump's install scripts left non-manifest changes after the mechanical ` +
+              `commit: ${dirtyPaths()}. Nothing was committed beyond the bump.`,
           );
           continue;
         }
@@ -1007,9 +1032,8 @@ export default defineWorkflow({
         if (hasChanges(REPO)) {
           record(
             "scope-violation",
-            `The post-bump verification scripts modified tracked or untracked repository files: ${[
-              ...snapshotWorktree(REPO).keys(),
-            ].join(", ")}. Verification is a gate, not a source author; no PR.`,
+            `The post-bump verification scripts modified tracked or untracked repository ` +
+              `files: ${dirtyPaths()}. Verification is a gate, not a source author; no PR.`,
           );
           continue;
         }
@@ -1031,7 +1055,12 @@ export default defineWorkflow({
           try {
             log.info(`fixer session starting for ${describeMembers(members)}`);
             const response = await session.task(
-              fixerPrompt(members, verifySteps, postBump, manifestDiff(REPO, base, "HEAD")),
+              fixerPrompt(
+                members,
+                verifySteps,
+                postBump,
+                manifestDiff(REPO, base, "HEAD", pm.extraBumpFiles),
+              ),
               { agent: "fixer", result: FixerResult },
             );
             // Projected the moment the task returns — before both the defensive
@@ -1053,9 +1082,7 @@ export default defineWorkflow({
             if (err instanceof ResultUnavailableError || err instanceof v.ValiError) {
               // Quietly undo any ref/HEAD movement first: the group fails
               // either way, but a moved previous-group branch must not survive.
-              if (refDrift(REPO, refSnapshot).length > 0 || revParse(REPO, "HEAD") !== bumpSha) {
-                restoreRefs(REPO, refSnapshot, branch);
-              }
+              restoredRefDrift(bumpSha, branch);
               record(
                 "no-structured-result",
                 "The fixer did not return a structured result; no PR was created. This is " +
@@ -1181,10 +1208,14 @@ export default defineWorkflow({
         // a digest that cannot return a structured result still yields a PR,
         // described from deterministic data (composeNarrative(null, ...)).
         const wantSuggestions = wantsSuggestions(suggestFeatures, members);
-        const notesText = await digestNotes(members);
+        const notesText = await digestNotes(members, packuments);
         // The seal the post-digest check below restores: the branch tip after
         // both commits, content-addressed, so resetting to it is exact.
+        // Maintain the snapshot across the third deliberate ref write (the fix
+        // commit, when one was made), like the ensureBranch and bump writes
+        // above — a no-op on the fast path, where the tip is still bumpSha.
         const sealedSha = revParse(REPO, "HEAD");
+        refSnapshot.set(`refs/heads/${branch}`, sealedSha);
         let digestReport: DigestReport | null = null;
         let newFeatures: RelevantNewFeature[] = [];
         try {
@@ -1241,14 +1272,12 @@ export default defineWorkflow({
         // dirty the host tree. A delayed child of an earlier target install or
         // verification process still could, however, and the token-holding
         // open-pr step pushes every payload branch only after this workflow.
-        // Expected state = the maintained ref snapshot with this group's branch
-        // at the sealed bump/fix tip. Restore exact content-addressed state and
+        // Expected state = the maintained ref snapshot (this group's branch at
+        // the sealed bump/fix tip). Restore exact content-addressed state and
         // discard the display-only report on any impossible drift.
-        const expectedRefs = new Map(refSnapshot);
-        expectedRefs.set(`refs/heads/${branch}`, sealedSha);
-        const sealDrift = refDrift(REPO, expectedRefs);
+        const sealDrift = refDrift(REPO, refSnapshot);
         if (sealDrift.length > 0 || currentBranch(REPO) !== branch || hasChanges(REPO)) {
-          restoreRefs(REPO, expectedRefs, branch);
+          restoreRefs(REPO, refSnapshot, branch);
           digestReport = null;
           newFeatures = [];
           log.warn(

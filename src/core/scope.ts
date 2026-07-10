@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { CatalogEdit } from "./bump.ts";
 import { changedPaths, diffNumstat, fileAtRef, refExists } from "./git.ts";
+import { asPlainMap, DEPENDENCY_FIELDS } from "./manifest.ts";
+import { ALL_PM_LOCKFILES } from "./pm.ts";
 
 /**
  * Two scope gates bound the update, both allow-list/deny gates over a git diff:
@@ -45,22 +47,18 @@ function isPackageJson(p: string): boolean {
   return p === "package.json" || p.endsWith("/package.json");
 }
 
+/** The root pnpm-workspace.yaml path the bump-scope catalog checks apply to. */
+const PNPM_WORKSPACE_FILE = "pnpm-workspace.yaml";
+
 /**
- * Every package-manager lockfile depvisor knows (the union across pm.ts's per-PM
- * lockfile sets) plus pnpm's workspace/catalog file. The fixer gate denies them
- * all regardless of the detected PM — the deterministic bump owns dependency
- * state, so a lockfile the fixer touched can only be scope creep. pnpm-workspace
- * .yaml is also in DENY (root-anchored); listing it here by basename additionally
- * catches a nested one. Keep in sync with pm.ts's lockfile sets.
+ * Every package-manager lockfile depvisor knows (pm.ts's `ALL_PM_LOCKFILES` —
+ * derived, so a new PM's lockfiles extend this gate automatically) plus pnpm's
+ * workspace/catalog file. The fixer gate denies them all regardless of the
+ * detected PM — the deterministic bump owns dependency state, so a lockfile the
+ * fixer touched can only be scope creep. pnpm-workspace.yaml is also in DENY
+ * (root-anchored); listing it here by basename additionally catches a nested one.
  */
-const FIXER_DENIED_FILES = new Set([
-  "package-lock.json",
-  "npm-shrinkwrap.json",
-  "pnpm-lock.yaml",
-  "bun.lock",
-  "bun.lockb",
-  "pnpm-workspace.yaml",
-]);
+const FIXER_DENIED_FILES = new Set([...ALL_PM_LOCKFILES, PNPM_WORKSPACE_FILE]);
 
 /**
  * The scope gate for the fixer's changes: everything the fixer altered relative
@@ -97,17 +95,6 @@ export function checkFixScope(
   return { ok: violations.length === 0, violations };
 }
 
-/** The root pnpm-workspace.yaml path the bump-scope catalog checks apply to. */
-const PNPM_WORKSPACE_FILE = "pnpm-workspace.yaml";
-
-/** The package.json sections a dependency bump legitimately edits. */
-const DEPENDENCY_FIELDS = [
-  "dependencies",
-  "devDependencies",
-  "optionalDependencies",
-  "peerDependencies",
-] as const;
-
 /** Key-order-insensitive stringification, so equal objects compare equal. */
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -118,13 +105,6 @@ function canonical(value: unknown): string {
     return `{${entries.join(",")}}`;
   }
   return JSON.stringify(value) ?? "undefined";
-}
-
-/** A parsed value that is a plain string→value map, else null. */
-function asPlainMap(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
 }
 
 function parseJsonMap(source: string | null): Record<string, unknown> | null {
@@ -162,6 +142,30 @@ function legalMemberBump(
 ): boolean {
   const latest = allowed.get(name);
   return latest !== undefined && isLegalBumpValue(value, latest);
+}
+
+/**
+ * The shared structural rule for one guarded string→value map (a package.json
+ * dependency section, or one pnpm-workspace.yaml catalog): no key may be added
+ * or removed, and a changed value must pass `legalChange`. Violations are
+ * labeled `<prefix>.<key>`.
+ */
+function mapEntryViolations(
+  prefix: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  legalChange: (key: string, oldValue: unknown, newValue: unknown) => boolean,
+): string[] {
+  const violations: string[] = [];
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (hasOwn(before, key) !== hasOwn(after, key)) {
+      violations.push(`${prefix}.${key}`); // key added or removed
+      continue;
+    }
+    if (canonical(before[key]) === canonical(after[key])) continue; // unchanged
+    if (!legalChange(key, before[key], after[key])) violations.push(`${prefix}.${key}`);
+  }
+  return violations;
 }
 
 /**
@@ -204,19 +208,13 @@ function packageJsonBumpViolations(
       violations.push(`${path}#${section}`);
       continue;
     }
-    const b = beforeMap ?? {};
-    const a = afterMap ?? {};
-    for (const dep of new Set([...Object.keys(b), ...Object.keys(a)])) {
-      if (hasOwn(b, dep) !== hasOwn(a, dep)) {
-        violations.push(`${path}#${section}.${dep}`); // key added or removed
-        continue;
-      }
-      if (canonical(b[dep]) === canonical(a[dep])) continue; // unchanged
-      const oldIsCatalog = typeof b[dep] === "string" && (b[dep] as string).startsWith("catalog:");
-      if (oldIsCatalog || !legalMemberBump(a[dep], dep, allowed)) {
-        violations.push(`${path}#${section}.${dep}`);
-      }
-    }
+    violations.push(
+      ...mapEntryViolations(`${path}#${section}`, beforeMap ?? {}, afterMap ?? {}, (dep, o, n) => {
+        // A changed `catalog:` specifier is a de-catalog, never a legal bump.
+        const oldIsCatalog = typeof o === "string" && o.startsWith("catalog:");
+        return !oldIsCatalog && legalMemberBump(n, dep, allowed);
+      }),
+    );
   }
   return violations;
 }
@@ -242,18 +240,9 @@ function catalogMapBumpViolations(
   const beforeMap = before === undefined ? {} : asPlainMap(before);
   const afterMap = after === undefined ? {} : asPlainMap(after);
   if (!beforeMap || !afterMap) return [`${PNPM_WORKSPACE_FILE}#${label} (not a map)`];
-  const violations: string[] = [];
-  for (const key of new Set([...Object.keys(beforeMap), ...Object.keys(afterMap)])) {
-    if (hasOwn(beforeMap, key) !== hasOwn(afterMap, key)) {
-      violations.push(`${PNPM_WORKSPACE_FILE}#${label}.${key}`); // entry added or removed
-      continue;
-    }
-    if (canonical(beforeMap[key]) === canonical(afterMap[key])) continue; // unchanged
-    if (!legalMemberBump(afterMap[key], key, allowedHere)) {
-      violations.push(`${PNPM_WORKSPACE_FILE}#${label}.${key}`);
-    }
-  }
-  return violations;
+  return mapEntryViolations(`${PNPM_WORKSPACE_FILE}#${label}`, beforeMap, afterMap, (key, _o, n) =>
+    legalMemberBump(n, key, allowedHere),
+  );
 }
 
 /**

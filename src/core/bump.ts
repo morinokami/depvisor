@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Document, isScalar, parseDocument } from "yaml";
+import { colorFreeSpawnEnv } from "./collect.ts";
+import { tail } from "./text.ts";
 
 /**
  * Deterministic executor for the update plan `pm.updatePlan` builds. The
@@ -73,13 +75,8 @@ export type ApplyPlanResult =
   | { ok: false; step: string; code: number | null; outputTail: string };
 
 const COMMAND_TIMEOUT_MS = 15 * 60 * 1000;
-const OUTPUT_TAIL_MAX = 4000;
 const PNPM_WORKSPACE_FILE = "pnpm-workspace.yaml";
 const CATALOG_STEP = `catalog edit (${PNPM_WORKSPACE_FILE})`;
-
-function tail(s: string): string {
-  return s.length <= OUTPUT_TAIL_MAX ? s : s.slice(-OUTPUT_TAIL_MAX);
-}
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -180,12 +177,7 @@ export function applyUpdatePlan(repoPath: string, plan: UpdatePlan): ApplyPlanRe
       return { ok: false, step: CATALOG_STEP, code: null, outputTail: tail(res.outputTail) };
   }
 
-  // Mirror collect.ts: FORCE_COLOR flips some PMs (notably bun) to ANSI/box
-  // output even when piped and beats NO_COLOR, so strip it and force NO_COLOR so
-  // the captured tail stays plain text.
-  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
-  delete env.FORCE_COLOR;
-
+  const env = colorFreeSpawnEnv();
   for (const argv of plan.commands) {
     const [cmd, ...args] = argv;
     if (cmd === undefined) continue; // defensive: an empty argv is a no-op

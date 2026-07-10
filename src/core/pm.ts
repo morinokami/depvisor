@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { CatalogEdit, UpdatePlan } from "./bump.ts";
+import { asPlainMap, DEPENDENCY_FIELDS } from "./manifest.ts";
 import type { Candidate } from "./types.ts";
 
 /**
@@ -119,21 +120,6 @@ function npmUpdatePlan(
   return { catalogEdits: [], commands, pinExact: opts?.pinExact ?? false };
 }
 
-/** A parsed JSON value that is a plain string→value map, else null. */
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-/** The package.json sections a dependency can be declared in. */
-const PNPM_DEP_SECTIONS = [
-  "dependencies",
-  "devDependencies",
-  "optionalDependencies",
-  "peerDependencies",
-] as const;
-
 /**
  * Parse a declaring workspace's package.json (loc "" = repo root) as a plain
  * map, or null when it is missing/unparseable — which the caller treats as a
@@ -141,7 +127,7 @@ const PNPM_DEP_SECTIONS = [
  */
 function readWorkspaceManifest(repoPath: string, loc: string): Record<string, unknown> | null {
   try {
-    return asRecord(JSON.parse(readFileSync(join(repoPath, loc, "package.json"), "utf8")));
+    return asPlainMap(JSON.parse(readFileSync(join(repoPath, loc, "package.json"), "utf8")));
   } catch {
     return null;
   }
@@ -241,7 +227,7 @@ function pnpmWorkspaceDirs(repoPath: string): string[] | null {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
   }
-  const root = asRecord(raw);
+  const root = asPlainMap(raw);
   if (raw !== null && raw !== undefined && !root) return null;
   const patterns = root?.packages;
   if (patterns === undefined || patterns === null) return [];
@@ -326,19 +312,25 @@ function pnpmUpdatePlan(
     };
   }
   const manifestDirs = ["", ...workspaceDirs];
+  // One read per manifest, not one per candidate — the classification only
+  // reads, so a multi-member group must not re-parse every workspace manifest
+  // for each member.
+  const manifests = new Map(
+    manifestDirs.map((loc) => [loc, readWorkspaceManifest(repoPath, loc)] as const),
+  );
 
   for (const c of candidates) {
     const referencedCatalogs = new Set<string | null>();
     let hasPlain = false;
     let unreadable = false;
     for (const loc of manifestDirs) {
-      const pkg = readWorkspaceManifest(repoPath, loc);
+      const pkg = manifests.get(loc) ?? null;
       if (pkg === null) {
         unreadable = true;
         break;
       }
-      for (const section of PNPM_DEP_SECTIONS) {
-        const map = asRecord(pkg[section]);
+      for (const section of DEPENDENCY_FIELDS) {
+        const map = asPlainMap(pkg[section]);
         const spec = map ? map[c.name] : undefined;
         if (typeof spec !== "string") continue;
         const classified = classifyPnpmSpecifier(spec);
@@ -419,6 +411,17 @@ const PNPM_LOCKFILES = ["pnpm-lock.yaml"] as const;
 // is still read (and both may coexist — bun.lock wins), so both count for
 // detection, frozen installs, and the mechanical bump commit.
 const BUN_LOCKFILES = ["bun.lock", "bun.lockb"] as const;
+
+/**
+ * The union of every supported PM's lockfile names. scope.ts's fixer gate
+ * denies them all regardless of the detected PM, so a new PM's lockfiles added
+ * here extend that gate automatically.
+ */
+export const ALL_PM_LOCKFILES: readonly string[] = [
+  ...NPM_LOCKFILES,
+  ...PNPM_LOCKFILES,
+  ...BUN_LOCKFILES,
+];
 
 export const npmToolchain: PmToolchain = {
   name: "npm",

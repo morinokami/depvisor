@@ -1,4 +1,5 @@
 import type { Packument } from "./release-age.ts";
+import { logSafeText } from "./text.ts";
 import type { Candidate } from "./types.ts";
 
 /**
@@ -97,19 +98,12 @@ export function classifyLicenseChanges(
 }
 
 /**
- * Collapse a registry-derived license string to a single-line, length-capped
- * form safe for the CI log. Unlike the PR body (charset-gated in pr.ts), the log
- * is a raw stdout stream: an embedded newline could split the line so a
- * `::`-prefixed fragment is read as a GitHub Actions workflow command (a fake
- * annotation), and an unbounded string could flood the log. Control characters
- * (\p{Cc}, incl. CR/LF and the C1 block) become spaces, runs collapse, capped.
+ * A registry-derived license string collapsed for the CI log (text.ts's
+ * `logSafeText` — untrusted registry data must not forge an Actions
+ * `::command` or flood the log).
  */
 function logSafeLicense(license: string): string {
-  const collapsed = license
-    .replace(/\p{Cc}+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return collapsed.length > 60 ? `${collapsed.slice(0, 60)}…` : collapsed;
+  return logSafeText(license, 60);
 }
 
 /**

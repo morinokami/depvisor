@@ -206,28 +206,8 @@ export function sumGroupUsage(groups: GroupResult[]): RunUsage | null {
   const groupsWithUsage = groups.filter((g) => (g.usage?.length ?? 0) > 0);
   const all = groupsWithUsage.flatMap((g) => g.usage ?? []);
   if (all.length === 0) return null;
-  const models = new Set<string>();
-  const total: RunUsage = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    costUsd: 0,
-    models: [],
-    groupCount: groupsWithUsage.length,
-  };
-  for (const u of all) {
-    total.input += u.input;
-    total.output += u.output;
-    total.cacheRead += u.cacheRead;
-    total.cacheWrite += u.cacheWrite;
-    total.totalTokens += u.totalTokens;
-    total.costUsd += u.costUsd;
-    if (u.model) models.add(u.model);
-  }
-  total.models = [...models];
-  return total;
+  const models = new Set(all.map((u) => u.model).filter((m): m is string => Boolean(m)));
+  return { ...sumUsageEntries(all), models: [...models], groupCount: groupsWithUsage.length };
 }
 
 export function statusPath(outDir: string): string {

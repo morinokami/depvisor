@@ -373,17 +373,23 @@ export function diffNumstat(repo: string, from: string, to: string): NumstatEntr
 
 /**
  * The textual diff (hunks) of `from..to` restricted to dependency MANIFESTS —
- * every package.json (root or workspace) and pnpm-workspace.yaml — and nothing
- * else. The fixer is shown these hunks so it knows exactly what the deterministic
- * bump changed, WITHOUT the lockfile hunks: a pnpm-lock.yaml diff runs to
- * thousands of lines and would swamp the fixer's context (lockfiles reach it as
- * numstat lines only, never hunks). The `:(glob)` pathspec matches nested and
- * root manifests alike. Goes through `run()` (not `git()`, which trims) so hunk
- * whitespace survives, and throws on a non-zero exit so a failed diff cannot
- * masquerade as an empty one.
+ * every package.json (root or workspace) plus the PM's extra root manifests
+ * (`extraBumpFiles`, the same seam `manifestBumpPaths` uses: pnpm's
+ * pnpm-workspace.yaml) — and nothing else. The fixer is shown these hunks so it
+ * knows exactly what the deterministic bump changed, WITHOUT the lockfile hunks:
+ * a pnpm-lock.yaml diff runs to thousands of lines and would swamp the fixer's
+ * context (lockfiles reach it as numstat lines only, never hunks). The `:(glob)`
+ * pathspec matches nested and root manifests alike. Goes through `run()` (not
+ * `git()`, which trims) so hunk whitespace survives, and throws on a non-zero
+ * exit so a failed diff cannot masquerade as an empty one.
  */
-export function manifestDiff(repo: string, from: string, to: string): string {
-  const res = run(repo, ["diff", from, to, "--", ":(glob)**/package.json", "pnpm-workspace.yaml"]);
+export function manifestDiff(
+  repo: string,
+  from: string,
+  to: string,
+  extraBumpFiles: readonly string[] = [],
+): string {
+  const res = run(repo, ["diff", from, to, "--", ":(glob)**/package.json", ...extraBumpFiles]);
   if (res.code !== 0) {
     throw new GitError(`git diff ${from} ${to} (manifests) failed (exit ${res.code}): ${res.err}`);
   }
