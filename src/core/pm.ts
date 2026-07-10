@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { CatalogEdit, UpdatePlan } from "./bump.ts";
 import type { Candidate } from "./types.ts";
 
@@ -159,6 +160,110 @@ function classifyPnpmSpecifier(spec: string): { catalog: string | null } | "plai
 }
 
 /**
+ * Split a pnpm-workspace.yaml `packages` pattern into path segments, or null
+ * when a segment uses glob syntax beyond what depvisor expands: only literals,
+ * `*` (exactly one level), and `**` (any depth) are supported — `?`, character
+ * classes, braces, and partial wildcards (`pkg-*`) are not. Enumeration feeds a
+ * fail-closed classification, so an inexpandable pattern must surface as a
+ * blocker, never as a silently smaller workspace set.
+ */
+function patternSegments(pattern: string): string[] | null {
+  const segments = pattern.replace(/\/+$/, "").split("/").filter(Boolean);
+  for (const s of segments) {
+    if (s === "*" || s === "**") continue;
+    if (/[*?[\]{}()]/.test(s)) return null;
+  }
+  return segments.length > 0 ? segments : null;
+}
+
+/** Whether a directory path (split into parts) matches a supported pattern. */
+function dirMatches(parts: readonly string[], segments: readonly string[]): boolean {
+  const m = (pi: number, si: number): boolean => {
+    if (si === segments.length) return pi === parts.length;
+    const s = segments[si];
+    if (s === "**") {
+      for (let k = pi; k <= parts.length; k++) if (m(k, si + 1)) return true;
+      return false;
+    }
+    if (pi >= parts.length) return false;
+    if (s !== "*" && s !== parts[pi]) return false;
+    return m(pi + 1, si + 1);
+  };
+  return m(0, 0);
+}
+
+/** All directories under repoPath up to `depth` levels (null = unbounded),
+ * repo-relative, skipping node_modules and dot-directories. */
+function listDirs(repoPath: string, rel: string, depth: number | null, out: string[]): void {
+  let entries;
+  try {
+    entries = readdirSync(join(repoPath, rel), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name === "node_modules" || e.name.startsWith(".")) continue;
+    const child = rel === "" ? e.name : `${rel}/${e.name}`;
+    out.push(child);
+    if (depth === null || depth > 1) {
+      listDirs(repoPath, child, depth === null ? null : depth - 1, out);
+    }
+  }
+}
+
+/**
+ * Every workspace directory pnpm-workspace.yaml's `packages` patterns declare
+ * (repo-relative; the root is NOT included — callers add it), or null when the
+ * set cannot be enumerated faithfully (unparseable file, non-string patterns,
+ * unsupported glob syntax). The declaration classification below must see EVERY
+ * workspace manifest: `Candidate.locations` cannot be its source for pnpm,
+ * because `pnpm outdated` reports only the highest installed version and omits
+ * lower-versioned workspaces entirely (see collect.ts) — a plain declaration in
+ * an omitted workspace would silently produce a catalog-only plan that never
+ * updates it, while the PR claims it did. A missing pnpm-workspace.yaml is a
+ * single-package repo: no workspaces, not an error. Negations (`!pattern`)
+ * subtract from the matched set; only directories that actually contain a
+ * package.json count as workspaces.
+ */
+function pnpmWorkspaceDirs(repoPath: string): string[] | null {
+  let raw: unknown;
+  try {
+    raw = parseYaml(readFileSync(join(repoPath, "pnpm-workspace.yaml"), "utf8"));
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
+  }
+  const root = asRecord(raw);
+  if (raw !== null && raw !== undefined && !root) return null;
+  const patterns = root?.packages;
+  if (patterns === undefined || patterns === null) return [];
+  if (!Array.isArray(patterns) || !patterns.every((p): p is string => typeof p === "string")) {
+    return null;
+  }
+
+  const positives: string[][] = [];
+  const negatives: string[][] = [];
+  for (const pattern of patterns) {
+    const negated = pattern.startsWith("!");
+    const segments = patternSegments(negated ? pattern.slice(1) : pattern);
+    if (segments === null) return null;
+    (negated ? negatives : positives).push(segments);
+  }
+
+  const unbounded = positives.some((segs) => segs.includes("**"));
+  const depth = unbounded ? null : Math.max(0, ...positives.map((segs) => segs.length));
+  const dirs: string[] = [];
+  listDirs(repoPath, "", depth, dirs);
+  return dirs.filter((dir) => {
+    const parts = dir.split("/");
+    return (
+      positives.some((segs) => dirMatches(parts, segs)) &&
+      !negatives.some((segs) => dirMatches(parts, segs)) &&
+      existsSync(join(repoPath, dir, "package.json"))
+    );
+  });
+}
+
+/**
  * pnpm needs only one recursive command for plain members: `pnpm -r update`
  * reaches every workspace (and the root) that declares each package, leaves the
  * rest untouched, and preserves each dependency's section — so no `-D` and no
@@ -175,16 +280,18 @@ function classifyPnpmSpecifier(spec: string): { catalog: string | null } | "plai
  * lockfile (CI=true flips pnpm's install default to frozen, which would reject
  * the just-edited catalog).
  *
- * Which members are catalog-pinned is decided by reading how each DECLARING
- * workspace's package.json actually references the dependency — NOT a name-global
- * scan of pnpm-workspace.yaml's catalog keys. A name-global scan mis-handles a
- * dead catalog entry (edits it while a real plain declaration elsewhere never
- * moves), duplicate entries across named catalogs, and mixed references. So per
- * candidate: only plain references (or none found) → the recursive update, no
- * catalog edit; only catalog references → one `CatalogEdit` per DISTINCT catalog
- * pointed at; a mix of catalog and plain references across workspaces, or an
- * unreadable declaring manifest → a `blocker` (fail-closed `bump-failed`, since
- * neither update mechanism would move every declaration safely).
+ * Which members are catalog-pinned is decided by reading how each workspace's
+ * package.json actually references the dependency — NOT a name-global scan of
+ * pnpm-workspace.yaml's catalog keys (which mis-handles a dead catalog entry,
+ * duplicate entries across named catalogs, and mixed references), and NOT from
+ * `Candidate.locations` (incomplete for pnpm — see pnpmWorkspaceDirs). Every
+ * workspace manifest, root included, is enumerated and inspected. Per candidate:
+ * only plain references (or none found) → the recursive update, no catalog edit;
+ * only catalog references → one `CatalogEdit` per DISTINCT catalog pointed at;
+ * a mix of catalog and plain references across workspaces, or an unreadable
+ * manifest, or an inexpandable workspace set → a `blocker` (fail-closed
+ * `bump-failed`, since neither update mechanism would move every declaration
+ * safely).
  */
 function pnpmUpdatePlan(
   candidates: readonly Candidate[],
@@ -194,11 +301,28 @@ function pnpmUpdatePlan(
   const catalogEdits: CatalogEdit[] = [];
   const updateSpecs: string[] = [];
   const blockers: string[] = [];
+  const pinExact = opts?.pinExact ?? false;
+
+  const workspaceDirs = pnpmWorkspaceDirs(repoPath);
+  if (workspaceDirs === null) {
+    return {
+      catalogEdits,
+      commands: [],
+      pinExact,
+      blockers: [
+        "cannot enumerate the pnpm workspaces from pnpm-workspace.yaml's `packages` " +
+          "patterns (unsupported glob syntax or an unparseable file) — refusing to " +
+          "classify catalog vs plain declarations from an incomplete workspace set",
+      ],
+    };
+  }
+  const manifestDirs = ["", ...workspaceDirs];
+
   for (const c of candidates) {
     const referencedCatalogs = new Set<string | null>();
     let hasPlain = false;
     let unreadable = false;
-    for (const loc of c.locations) {
+    for (const loc of manifestDirs) {
       const pkg = readWorkspaceManifest(repoPath, loc);
       if (pkg === null) {
         unreadable = true;
@@ -216,7 +340,7 @@ function pnpmUpdatePlan(
 
     if (unreadable) {
       blockers.push(
-        `cannot read a declaring package.json for ${c.name} — refusing to guess how it is pinned`,
+        `cannot read a workspace package.json while classifying ${c.name} — refusing to guess how it is pinned`,
       );
     } else if (referencedCatalogs.size === 0) {
       // Only plain declarations (or none found): the ordinary recursive update,
@@ -244,7 +368,7 @@ function pnpmUpdatePlan(
   return {
     catalogEdits,
     commands,
-    pinExact: opts?.pinExact ?? false,
+    pinExact,
     ...(blockers.length > 0 ? { blockers } : {}),
   };
 }

@@ -27,9 +27,12 @@ import {
   isRepoRoot,
   manifestBumpPaths,
   manifestDiff,
+  refDrift,
   refExists,
   resetToBase,
+  restoreRefs,
   revParse,
+  snapshotRefs,
   tryCheckout,
 } from "../core/git.ts";
 import { groupCandidates } from "../core/grouping.ts";
@@ -835,11 +838,13 @@ export default defineWorkflow({
         firstProcessed = false;
 
         // Deterministic bump — the update, install, and manifest edits are done
-        // by LLM-free code (core/bump.ts) before any agent runs.
-        const applied = applyUpdatePlan(
-          REPO,
-          pm.updatePlan(members, REPO, { pinExact: minimumReleaseAge > 0 }),
-        );
+        // by LLM-free code (core/bump.ts) before any agent runs. The pre-bump
+        // sha is snapshotted first: the bump runs the target's install
+        // lifecycle scripts with .git reachable, so everything after it is
+        // compared against this IMMUTABLE sha, never a movable ref name.
+        const preBumpSha = revParse(REPO, "HEAD");
+        const plan = pm.updatePlan(members, REPO, { pinExact: minimumReleaseAge > 0 });
+        const applied = applyUpdatePlan(REPO, plan);
         if (!applied.ok) {
           // The bump or its install failed (an ERESOLVE, a bad catalog edit, a
           // hung command). The fixer cannot touch manifests, so it cannot help —
@@ -851,6 +856,20 @@ export default defineWorkflow({
             "bump-failed",
             `The deterministic bump of ${pkgList} failed at step '${applied.step}' (${code}).` +
               (bumpTail ? ` Output tail: ${bumpTail}` : " No output was captured."),
+          );
+          continue;
+        }
+        // A lifecycle script could also `git commit` its edits during the bump
+        // and leave only the lockfile dirty — the working-tree gates below
+        // would then vouch for a tree whose commits they never inspected.
+        // Nothing may move HEAD but depvisor's own commit calls: fail closed
+        // and restore.
+        if (revParse(REPO, "HEAD") !== preBumpSha) {
+          discardWorkPast(REPO, preBumpSha);
+          record(
+            "unexpected-commits",
+            `The bump's install scripts moved HEAD while updating ${pkgList}, but commits ` +
+              "are made deterministically outside the install. The branch was restored; no PR.",
           );
           continue;
         }
@@ -868,9 +887,9 @@ export default defineWorkflow({
         // non-catalog pnpm-workspace.yaml key, …). Such a change would ride along
         // in the "mechanical" bump commit — which the docs tell reviewers the AI
         // wrote none of — and is invisible to checkFixScope, which diffs FROM the
-        // bump commit. Allow only genuine member version moves in the files that
-        // enter that commit; anything else is fail-closed scope creep.
-        const bumpScope = checkBumpScope(REPO, base, members);
+        // bump commit. Allow only the plan's own writes in the files that enter
+        // that commit; anything else is fail-closed scope creep.
+        const bumpScope = checkBumpScope(REPO, preBumpSha, members, plan.catalogEdits);
         if (!bumpScope.ok) {
           record(
             "scope-violation",
@@ -903,9 +922,32 @@ export default defineWorkflow({
         }
         log.info(`committed deterministic bump for ${pkgList} (${bumpSha.slice(0, 8)})`);
 
+        // Ref integrity: agent sessions AND the target's own verification
+        // scripts (which execute the just-updated dependency's code) run with
+        // the checkout's .git reachable, so any of them could move refs —
+        // `git branch -f`, a tag — including a PREVIOUS group's payload
+        // branch, which the token-holding open-pr step pushes at the END of
+        // the run. Snapshot every ref right after the bump commit; any later
+        // drift, or a moved HEAD, is tampering: restore everything from the
+        // snapshot (content-addressed, so exact) and fail the group.
+        const refSnapshot = snapshotRefs(REPO);
+        const refsIntact = (who: string): boolean => {
+          const drift = refDrift(REPO, refSnapshot);
+          if (drift.length === 0 && revParse(REPO, "HEAD") === bumpSha) return true;
+          restoreRefs(REPO, refSnapshot, branch);
+          record(
+            "unexpected-commits",
+            `${who} moved git refs or HEAD (${drift.join(", ") || "HEAD"}), but refs are ` +
+              "written deterministically outside agents and scripts. Everything was " +
+              "restored to the bump commit; no PR.",
+          );
+          return false;
+        };
+
         // Full verification against the committed bump.
         log.info(`post-bump verification gate (${verifySteps.length} steps) ...`);
         const postBump = runVerificationPhase("depvisor post-bump verification", verifySteps);
+        if (!refsIntact("The post-bump verification scripts")) continue;
 
         // One session per group (independent context). The fixer and the digest
         // are delegated to named subagent profiles via session.task.
@@ -960,6 +1002,11 @@ export default defineWorkflow({
             // up (ResultUnavailableError) or the defensive re-parse rejected the
             // data (ValiError). Fail closed for this group; other groups run.
             if (err instanceof ResultUnavailableError || err instanceof v.ValiError) {
+              // Quietly undo any ref/HEAD movement first: the group fails
+              // either way, but a moved previous-group branch must not survive.
+              if (refDrift(REPO, refSnapshot).length > 0 || revParse(REPO, "HEAD") !== bumpSha) {
+                restoreRefs(REPO, refSnapshot, branch);
+              }
               record(
                 "no-structured-result",
                 "The fixer did not return a structured result; no PR was created. This is " +
@@ -971,10 +1018,14 @@ export default defineWorkflow({
             throw err;
           }
 
-          // A defer produces no PR. Discard the fixer's uncommitted work (and any
-          // commits it made against the rules) back to the bump commit.
+          // Ref integrity before anything else — not even a defer's verdict is
+          // trusted from a session that moved refs or HEAD.
+          if (!refsIntact("The fixer session")) continue;
+
+          // A defer produces no PR. Discard the fixer's uncommitted work so the
+          // next group starts clean.
           if (result.verdict === "defer") {
-            const leftovers = revParse(REPO, "HEAD") !== bumpSha || hasChanges(REPO);
+            const leftovers = hasChanges(REPO);
             if (leftovers) discardWorkPast(REPO, bumpSha);
             const reason = result.defer_reason
               ? `Deferred: ${result.defer_reason}`
@@ -989,16 +1040,8 @@ export default defineWorkflow({
           }
 
           // Deterministic gates — authoritative regardless of what the fixer
-          // claims. The bump commit is the anchor: the fixer must not commit, and
-          // may touch only source/tests.
-          if (revParse(REPO, "HEAD") !== bumpSha) {
-            record(
-              "unexpected-commits",
-              "The fixer moved HEAD during its session, but commits are made " +
-                "deterministically outside the agent. Refusing to trust them; no PR.",
-            );
-            continue;
-          }
+          // claims. The bump commit is the anchor: checkFixScope diffs the
+          // working tree from it, so the fixer may touch only source/tests.
           const scope = checkFixScope(REPO, bumpSha);
           if (!scope.ok) {
             record(
@@ -1009,6 +1052,9 @@ export default defineWorkflow({
           }
           log.info(`post-fix verification gate (${verifySteps.length} steps) ...`);
           const postFix = runVerificationPhase("depvisor post-fix verification", verifySteps);
+          // The post-fix verification also executed the updated dependency's
+          // code — re-check the refs before trusting its results.
+          if (!refsIntact("The post-fix verification scripts")) continue;
           if (!postFix.every((r) => r.ok)) {
             record("verification-failed", result.summary, {
               verification: stripVerifyTails(postFix),
@@ -1122,20 +1168,28 @@ export default defineWorkflow({
         }
 
         // Seal check: the digest shares the local() sandbox, so untrusted
-        // release notes could prompt-inject it into moving the branch ref
-        // (commit/amend/reset) or dirtying the tree AFTER the gates ran — and
-        // the token-holding open-pr step would push whatever the ref points
-        // at. Restore the sealed tip unconditionally (content-addressed, so
-        // exact) and drop the report of a digest that tampered: its narrative
-        // is not worth trusting either. Restore-and-continue, not fail: the
-        // update itself is verified and the digest is display-only.
-        if (revParse(REPO, "HEAD") !== sealedSha || hasChanges(REPO)) {
-          discardWorkPast(REPO, sealedSha);
+        // release notes could prompt-inject it into moving refs AFTER the
+        // gates ran — and the token-holding open-pr step pushes every
+        // payload's branch at the END of the run, so a `git branch -f`
+        // against ANY branch (this group's, a previous group's, base) is a
+        // live target even when HEAD and the tree look untouched. Expected
+        // state = the post-bump snapshot with this group's branch at the
+        // sealed tip (the fix/leftover commit deterministic code made).
+        // restoreRefs — never a bare `reset --hard`, which would move
+        // whatever branch the digest left checked out (e.g. base) instead of
+        // returning to this group's. A tampering digest's report is discarded
+        // too: its narrative is not worth trusting. Restore-and-continue, not
+        // fail: the update itself is verified and the digest is display-only.
+        const expectedRefs = new Map(refSnapshot);
+        expectedRefs.set(`refs/heads/${branch}`, sealedSha);
+        const sealDrift = refDrift(REPO, expectedRefs);
+        if (sealDrift.length > 0 || currentBranch(REPO) !== branch || hasChanges(REPO)) {
+          restoreRefs(REPO, expectedRefs, branch);
           digestReport = null;
           newFeatures = [];
           log.warn(
-            "The digest session left ref or tree changes; restored the sealed commits and " +
-              "discarded its report (the digest is display-only and may not modify the branch).",
+            "The digest session left ref, checkout, or tree changes; restored the sealed " +
+              "state and discarded its report (the digest is display-only and may not touch git).",
           );
         }
 

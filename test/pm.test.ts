@@ -192,6 +192,8 @@ test("npm updatePlan records pinExact but leaves the argv unchanged", () => {
 
 test("pnpm updatePlan uses a single recursive command when every member is a plain declaration", () => {
   const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
     "packages/a/package.json": JSON.stringify({
       dependencies: { "left-pad": "^1.0.0" },
       devDependencies: { isarray: "^2.0.0" },
@@ -254,6 +256,8 @@ test("pnpm updatePlan routes catalog-declared members to catalogEdits with the r
 
 test("pnpm updatePlan: a catalog:<name> reference yields an edit for that named catalog", () => {
   const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
     "packages/a/package.json": JSON.stringify({ dependencies: { react: "catalog:react18" } }),
   });
   const plan = pnpmToolchain.updatePlan(
@@ -266,6 +270,8 @@ test("pnpm updatePlan: a catalog:<name> reference yields an edit for that named 
 
 test("pnpm updatePlan: two workspaces referencing two different named catalogs yield one edit each", () => {
   const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
     "packages/a/package.json": JSON.stringify({ dependencies: { semver: "catalog:tools" } }),
     "packages/b/package.json": JSON.stringify({ dependencies: { semver: "catalog:build" } }),
   });
@@ -273,7 +279,7 @@ test("pnpm updatePlan: two workspaces referencing two different named catalogs y
     [cand({ name: "semver", latest: "7.7.3", locations: ["packages/a", "packages/b"] })],
     repo,
   );
-  // One CatalogEdit per DISTINCT referenced catalog (insertion order = locations).
+  // One CatalogEdit per DISTINCT referenced catalog (insertion order = enumeration).
   assert.deepEqual(plan.catalogEdits, [
     { name: "semver", target: "7.7.3", catalog: "tools" },
     { name: "semver", target: "7.7.3", catalog: "build" },
@@ -292,6 +298,8 @@ test("pnpm updatePlan emits only the refresh install when every member is catalo
 
 test("pnpm updatePlan: a member declared both as a catalog reference and plain is blocked (fail-closed)", () => {
   const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
     "packages/a/package.json": JSON.stringify({ dependencies: { semver: "catalog:" } }),
     "packages/b/package.json": JSON.stringify({ dependencies: { semver: "^7.3.0" } }),
   });
@@ -307,17 +315,69 @@ test("pnpm updatePlan: a member declared both as a catalog reference and plain i
   assert.deepEqual(plan.commands, []);
 });
 
-test("pnpm updatePlan: an unreadable declaring package.json is blocked, not guessed", () => {
-  const repo = repoWith({}); // no package.json at the declaring location
+test("pnpm updatePlan: an unreadable workspace package.json is blocked, not guessed", () => {
+  const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+    "packages/a/package.json": "{ not json", // exists, so it is enumerated — then illegible
+  });
+  const plan = pnpmToolchain.updatePlan([cand({ name: "semver", latest: "7.7.3" })], repo);
+  const { blockers } = plan;
+  assert.ok(blockers);
+  assert.match(blockers[0] ?? "", /cannot read a workspace package\.json/);
+  assert.deepEqual(plan.catalogEdits, []);
+  assert.deepEqual(plan.commands, []);
+});
+
+test("pnpm updatePlan classifies from ALL workspaces, not Candidate.locations (collector omission repro)", () => {
+  // pnpm's collector reports only the highest installed version's location, so
+  // `locations` can omit a workspace entirely (see collect.ts). Here the
+  // candidate's locations name only the catalog-declaring workspace, but a
+  // plain declaration exists in an omitted one: a locations-based
+  // classification would produce a catalog-only plan that never updates it.
+  // Full-enumeration classification must see both and fail closed as mixed.
+  const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+    "packages/a/package.json": JSON.stringify({ dependencies: { semver: "catalog:" } }),
+    "packages/omitted/package.json": JSON.stringify({ dependencies: { semver: "^7.0.0" } }),
+  });
   const plan = pnpmToolchain.updatePlan(
-    [cand({ name: "semver", latest: "7.7.3", locations: ["packages/missing"] })],
+    [cand({ name: "semver", latest: "7.7.3", locations: ["packages/a"] })],
     repo,
   );
   const { blockers } = plan;
   assert.ok(blockers);
-  assert.match(blockers[0] ?? "", /cannot read a declaring package\.json for semver/);
+  assert.match(blockers[0] ?? "", /both as a catalog reference and a plain version/);
   assert.deepEqual(plan.catalogEdits, []);
   assert.deepEqual(plan.commands, []);
+});
+
+test("pnpm updatePlan: an inexpandable workspace pattern blocks the whole plan", () => {
+  const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - packages/{a,b}\n", // brace glob — unsupported
+  });
+  const plan = pnpmToolchain.updatePlan([cand({ name: "semver", latest: "7.7.3" })], repo);
+  const { blockers } = plan;
+  assert.ok(blockers);
+  assert.match(blockers[0] ?? "", /cannot enumerate the pnpm workspaces/);
+  assert.deepEqual(plan.commands, []);
+});
+
+test("pnpm updatePlan expands ** patterns and honors negations", () => {
+  const repo = repoWith({
+    "package.json": "{}",
+    "pnpm-workspace.yaml": "packages:\n  - nested/**\n  - '!nested/skip'\n",
+    "nested/x/y/package.json": JSON.stringify({ dependencies: { semver: "catalog:" } }),
+    // Excluded by the negation: its plain declaration must NOT flip the
+    // classification to mixed.
+    "nested/skip/package.json": JSON.stringify({ dependencies: { semver: "^7.0.0" } }),
+  });
+  const plan = pnpmToolchain.updatePlan([cand({ name: "semver", latest: "7.7.3" })], repo);
+  assert.equal(plan.blockers, undefined);
+  assert.deepEqual(plan.catalogEdits, [{ name: "semver", target: "7.7.3", catalog: null }]);
+  assert.deepEqual(plan.commands, [["pnpm", "install", "--no-frozen-lockfile"]]);
 });
 
 test("bun updatePlan mirrors the instruction argv (caret, --cwd, -d, no catalogs)", () => {

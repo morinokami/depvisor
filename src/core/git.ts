@@ -114,6 +114,63 @@ export function fileAtRef(repo: string, ref: string, path: string): string | nul
   return res.code === 0 ? res.out : null;
 }
 
+/**
+ * Snapshot of every ref under refs/ (heads, tags, remotes) → object sha. Agent
+ * sessions and the target's own scripts (install lifecycle, verification) all
+ * run with the checkout's .git reachable, so any of them can move ANY ref —
+ * `git branch -f`, a tag, `update-ref` — not just HEAD. A moved ref is exactly
+ * what the token-holding open-pr step would later push: it pushes every
+ * payload's branch at the END of the run, so even an already-processed group's
+ * branch is a live target. The workflow snapshots refs from trusted code right
+ * after the bump commit and verifies/restores against it at every boundary
+ * where untrusted code ran (refDrift / restoreRefs).
+ */
+export function snapshotRefs(repo: string): Map<string, string> {
+  const refs = new Map<string, string>();
+  for (const line of git(repo, ["for-each-ref", "--format=%(refname) %(objectname)"]).split("\n")) {
+    const sp = line.indexOf(" ");
+    if (sp > 0) refs.set(line.slice(0, sp), line.slice(sp + 1));
+  }
+  return refs;
+}
+
+/** Refs that differ from `expected` — moved, created, or deleted. */
+export function refDrift(repo: string, expected: ReadonlyMap<string, string>): string[] {
+  const current = snapshotRefs(repo);
+  const drift: string[] = [];
+  for (const [ref, sha] of expected) {
+    if (current.get(ref) !== sha) drift.push(ref);
+  }
+  for (const ref of current.keys()) {
+    if (!expected.has(ref)) drift.push(ref);
+  }
+  return drift;
+}
+
+/**
+ * Force the repository back to `expected`: every ref to its snapshot sha, extra
+ * refs deleted, `branch` checked out, tracked tree reset and untracked files
+ * cleaned. The order matters: refs are restored first so the checkout target is
+ * guaranteed to exist even if the session deleted it; the force-checkout then
+ * reattaches HEAD (a plain `reset --hard` would move whatever branch the
+ * session left checked out — e.g. the base branch — instead of returning to
+ * `branch`); extra refs are deleted only after HEAD is safely off them.
+ */
+export function restoreRefs(
+  repo: string,
+  expected: ReadonlyMap<string, string>,
+  branch: string,
+): void {
+  for (const [ref, sha] of expected) {
+    git(repo, ["update-ref", ref, sha]);
+  }
+  git(repo, ["checkout", "-f", branch]);
+  for (const ref of snapshotRefs(repo).keys()) {
+    if (!expected.has(ref)) git(repo, ["update-ref", "-d", ref]);
+  }
+  git(repo, ["clean", "-fd"]);
+}
+
 /** Return to base at the end of a clean run; dirty trees stay for inspection. */
 export function tryCheckout(repo: string, ref: string): boolean {
   return probe(repo, ["checkout", ref]).code === 0;

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import type { CatalogEdit } from "./bump.ts";
 import { changedPaths, diffNumstat, fileAtRef, refExists } from "./git.ts";
 
 /**
@@ -140,20 +141,27 @@ function hasOwn(map: Record<string, unknown>, key: string): boolean {
 }
 
 /**
- * Whether a NEW manifest/catalog value is a legal bump for `name`: `name` is a
- * group member (`allowed` maps member → vetted `latest`) and the new value
- * carries that latest as a substring — covering `1.2.3`, `^1.2.3`, `~1.2.3`,
- * `>=1.2.3 <2`, every range shape the three PMs write. Substring, not a range
- * parse (depvisor carries no semver library); the version the deterministic bump
- * chose is authoritative, so requiring it to appear verbatim is enough.
+ * Whether a NEW manifest/catalog value is exactly the vetted bump target: the
+ * bare `target`, `^target`, or `~target` — the only shapes the three PMs'
+ * update commands and bump.ts's catalog edit ever write. A whole-string
+ * grammar, NOT a substring check: `npm:evil@1.3.0` contains the target but
+ * redirects the dependency to a different package, and the same goes for
+ * `git:`/`file:`/`link:`/URL specifiers — all must fail. An exotic legitimate
+ * shape a PM might some day write fails closed here and surfaces loudly as a
+ * scope violation rather than widening the grammar silently.
  */
-function carriesMemberLatest(
+function isLegalBumpValue(value: unknown, target: string): boolean {
+  return value === target || value === `^${target}` || value === `~${target}`;
+}
+
+/** `isLegalBumpValue` keyed on a member map (name → vetted `latest`). */
+function legalMemberBump(
   value: unknown,
   name: string,
   allowed: ReadonlyMap<string, string>,
 ): boolean {
   const latest = allowed.get(name);
-  return latest !== undefined && typeof value === "string" && value.includes(latest);
+  return latest !== undefined && isLegalBumpValue(value, latest);
 }
 
 /**
@@ -205,7 +213,7 @@ function packageJsonBumpViolations(
       }
       if (canonical(b[dep]) === canonical(a[dep])) continue; // unchanged
       const oldIsCatalog = typeof b[dep] === "string" && (b[dep] as string).startsWith("catalog:");
-      if (oldIsCatalog || !carriesMemberLatest(a[dep], dep, allowed)) {
+      if (oldIsCatalog || !legalMemberBump(a[dep], dep, allowed)) {
         violations.push(`${path}#${section}.${dep}`);
       }
     }
@@ -216,14 +224,20 @@ function packageJsonBumpViolations(
 /**
  * Violations in one catalog map (`catalog`, or one named `catalogs.<group>`),
  * either side possibly absent. No entry may be added/removed, and a changed
- * value is legal only for a member whose new value carries `latest`. A
- * present-but-non-map side is illegible → the whole map is denied.
+ * value is legal only when THIS map is a target of one of the plan's own
+ * catalog edits for that entry (`allowedHere`, entry → target) and the new
+ * value is the vetted target under the strict grammar. Keying the allowance on
+ * the plan's edits — not on member names — means a same-named entry in a
+ * catalog the plan did not touch may not change at all: only the executor's
+ * own writes are legal, so a lifecycle script cannot smuggle a redirect into
+ * an unreferenced catalog. A present-but-non-map side is illegible → the whole
+ * map is denied.
  */
 function catalogMapBumpViolations(
   label: string,
   before: unknown,
   after: unknown,
-  allowed: ReadonlyMap<string, string>,
+  allowedHere: ReadonlyMap<string, string>,
 ): string[] {
   const beforeMap = before === undefined ? {} : asPlainMap(before);
   const afterMap = after === undefined ? {} : asPlainMap(after);
@@ -235,7 +249,7 @@ function catalogMapBumpViolations(
       continue;
     }
     if (canonical(beforeMap[key]) === canonical(afterMap[key])) continue; // unchanged
-    if (!carriesMemberLatest(afterMap[key], key, allowed)) {
+    if (!legalMemberBump(afterMap[key], key, allowedHere)) {
       violations.push(`${PNPM_WORKSPACE_FILE}#${label}.${key}`);
     }
   }
@@ -243,17 +257,39 @@ function catalogMapBumpViolations(
 }
 
 /**
+ * The plan's catalog-edit targets that apply to one catalog map. The default
+ * catalog (`catalog: null` on the edit) may legitimately land in either the
+ * top-level `catalog` map or `catalogs.default` — pnpm treats `catalog:` as
+ * sugar for `catalog:default`, and bump.ts's executor resolves in that order —
+ * so a default edit is allowed in both labels; a named edit only in its own.
+ */
+function catalogEditsFor(
+  label: string,
+  edits: readonly CatalogEdit[],
+): ReadonlyMap<string, string> {
+  const allowed = new Map<string, string>();
+  for (const e of edits) {
+    const matches =
+      e.catalog === null
+        ? label === "catalog" || label === "catalogs.default"
+        : label === `catalogs.${e.catalog}`;
+    if (matches) allowed.set(e.name, e.target);
+  }
+  return allowed;
+}
+
+/**
  * Violations in pnpm-workspace.yaml that WOULD enter the bump commit. Legal
- * differences are ONLY catalog / named-catalog entry values of the group's own
- * packages moving to carry `latest`; everything else — any other top-level key
+ * differences are ONLY the plan's own catalog edits (`catalogEditsFor`), each
+ * moved to exactly the vetted target; everything else — any other top-level key
  * (`packages`, `overrides`, `onlyBuiltDependencies`, …), added/removed catalog
- * entries or named catalogs, non-member entries, an unparseable/non-map side,
- * creation or deletion — is a violation (fail-closed).
+ * entries or named catalogs, changes in catalogs the plan did not target, an
+ * unparseable/non-map side, creation or deletion — is a violation (fail-closed).
  */
 function pnpmWorkspaceBumpViolations(
   before: string | null,
   after: string | null,
-  allowed: ReadonlyMap<string, string>,
+  catalogEdits: readonly CatalogEdit[],
 ): string[] {
   if (before === null) return [`${PNPM_WORKSPACE_FILE} (created)`];
   if (after === null) return [`${PNPM_WORKSPACE_FILE} (deleted)`];
@@ -275,7 +311,12 @@ function pnpmWorkspaceBumpViolations(
     }
   }
   violations.push(
-    ...catalogMapBumpViolations("catalog", beforeRoot.catalog, afterRoot.catalog, allowed),
+    ...catalogMapBumpViolations(
+      "catalog",
+      beforeRoot.catalog,
+      afterRoot.catalog,
+      catalogEditsFor("catalog", catalogEdits),
+    ),
   );
   const beforeCatalogs = beforeRoot.catalogs === undefined ? {} : asPlainMap(beforeRoot.catalogs);
   const afterCatalogs = afterRoot.catalogs === undefined ? {} : asPlainMap(afterRoot.catalogs);
@@ -287,12 +328,13 @@ function pnpmWorkspaceBumpViolations(
         violations.push(`${PNPM_WORKSPACE_FILE}#catalogs.${name}`); // named catalog added/removed
         continue;
       }
+      const label = `catalogs.${name}`;
       violations.push(
         ...catalogMapBumpViolations(
-          `catalogs.${name}`,
+          label,
           beforeCatalogs[name],
           afterCatalogs[name],
-          allowed,
+          catalogEditsFor(label, catalogEdits),
         ),
       );
     }
@@ -305,17 +347,26 @@ function pnpmWorkspaceBumpViolations(
  * enter the mechanical bump commit (`git.ts:manifestBumpPaths`) — every changed
  * `package.json` (by basename, including nested workspace manifests) and the root
  * `pnpm-workspace.yaml` — must match a genuine version bump of the group's own
- * `members` (name → `latest`), diffed against `base`. PM lockfiles are allowed
- * without content inspection (they are generated, not executable config); any
- * other path never enters the bump commit and is left to the later
+ * `members` (name → `latest`) under the strict grammar, with pnpm-workspace.yaml
+ * changes additionally keyed to the plan's own `catalogEdits`. PM lockfiles are
+ * allowed without content inspection (they are generated, not executable
+ * config); any other path never enters the bump commit and is left to the later
  * `checkFixScope`. Fail-closed: it exists to catch a poisoned install lifecycle
  * script that rewrote a manifest during the bump, which would otherwise be
  * committed as the "mechanical" bump and slip past every later gate.
+ *
+ * `preBumpSha` must be the IMMUTABLE sha snapshotted before the bump ran, never
+ * a ref name: the same lifecycle scripts this gate defends against can move a
+ * branch ref, which would let them choose the "before" content this gate
+ * compares. The caller has already rejected any HEAD movement during the bump
+ * (`unexpected-commits`), so the `changedPaths` working-tree enumeration and
+ * the `preBumpSha` content reads describe the same diff.
  */
 export function checkBumpScope(
   repo: string,
-  base: string,
+  preBumpSha: string,
   members: readonly { name: string; latest: string }[],
+  catalogEdits: readonly CatalogEdit[],
 ): { ok: boolean; violations: string[] } {
   const allowed = new Map(members.map((m) => [m.name, m.latest] as const));
   const workingTreeFile = (p: string): string | null => {
@@ -329,11 +380,20 @@ export function checkBumpScope(
   for (const p of changedPaths(repo)) {
     if (isPackageJson(p)) {
       violations.push(
-        ...packageJsonBumpViolations(p, fileAtRef(repo, base, p), workingTreeFile(p), allowed),
+        ...packageJsonBumpViolations(
+          p,
+          fileAtRef(repo, preBumpSha, p),
+          workingTreeFile(p),
+          allowed,
+        ),
       );
     } else if (p === PNPM_WORKSPACE_FILE) {
       violations.push(
-        ...pnpmWorkspaceBumpViolations(fileAtRef(repo, base, p), workingTreeFile(p), allowed),
+        ...pnpmWorkspaceBumpViolations(
+          fileAtRef(repo, preBumpSha, p),
+          workingTreeFile(p),
+          catalogEdits,
+        ),
       );
     }
     // Lockfiles are allowed without inspection; any other path is not committed

