@@ -121,9 +121,12 @@ export function fileAtRef(repo: string, ref: string, path: string): string | nul
  * `git branch -f`, a tag, `update-ref` — not just HEAD. A moved ref is exactly
  * what the token-holding open-pr step would later push: it pushes every
  * payload's branch at the END of the run, so even an already-processed group's
- * branch is a live target. The workflow snapshots refs from trusted code right
- * after the bump commit and verifies/restores against it at every boundary
- * where untrusted code ran (refDrift / restoreRefs).
+ * branch is a live target. The workflow snapshots refs from trusted code
+ * before each group's first untrusted execution (the group-boundary reinstall,
+ * the baseline verification, and the bump's install all predate any agent),
+ * maintains the snapshot across its own deliberate ref writes, and
+ * verifies/restores against it at every boundary where untrusted code ran —
+ * failure paths included (refDrift / restoreRefs).
  */
 export function snapshotRefs(repo: string): Map<string, string> {
   const refs = new Map<string, string>();

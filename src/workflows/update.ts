@@ -785,6 +785,37 @@ export default defineWorkflow({
           continue;
         }
 
+        // Ref integrity: agent sessions, install lifecycle scripts, and the
+        // target's own verification scripts all run with the checkout's .git
+        // reachable, so any of them can move ANY ref — `git branch -f`, a
+        // tag, `update-ref` — including a PREVIOUS group's payload branch or
+        // the base branch, both live targets: the token-holding open-pr step
+        // pushes every payload's branch at the END of the run, and later
+        // groups chain new branches off base. Snapshot every ref BEFORE this
+        // iteration's first untrusted execution (the reinstall, the baseline
+        // verification, and the bump's install all run target code),
+        // maintain the snapshot across depvisor's own deliberate ref writes
+        // (ensureBranch, the two commits — always .set from a sha trusted
+        // code just produced, never re-read from a possibly-tampered repo),
+        // and verify at every boundary where untrusted code ran — on failure
+        // paths too. Any drift is tampering: restore everything from the
+        // snapshot (content-addressed, so exact) and fail the group. The
+        // HEAD anchor is always an IMMUTABLE sha captured by trusted code,
+        // never a movable ref name.
+        const refSnapshot = snapshotRefs(REPO);
+        const refsIntactAt = (who: string, head: string, checkoutRef: string): boolean => {
+          const drift = refDrift(REPO, refSnapshot);
+          if (drift.length === 0 && revParse(REPO, "HEAD") === head) return true;
+          restoreRefs(REPO, refSnapshot, checkoutRef);
+          record(
+            "unexpected-commits",
+            `${who} moved git refs or HEAD (${drift.join(", ") || "HEAD"}), but refs are ` +
+              "written deterministically outside agents and scripts. Everything was " +
+              "restored to the last trusted state; no PR.",
+          );
+          return false;
+        };
+
         // (c) Process the group (refresh or open-new). Between processed groups,
         //     reset the tree to base first so post-update failures stay
         //     attributable to the update.
@@ -804,8 +835,16 @@ export default defineWorkflow({
             continue;
           }
           resetToBase(REPO, base);
+          const baseTipSha = revParse(REPO, "HEAD");
           log.info(`reset to ${base}; reinstalling before ${branch}: ${resetCommand}`);
           const install = runInstall(REPO, resetCommand);
+          // Refs first, success or failure: the reinstall ran the base
+          // lockfile's lifecycle scripts, and a FAILING install still ran
+          // some of them. The group branch may not exist yet, so a restore
+          // lands on base.
+          if (!refsIntactAt("The group-boundary reinstall's lifecycle scripts", baseTipSha, base)) {
+            continue;
+          }
           if (!install.ok) {
             run.status = "reset-failed";
             run.summary = `Reinstall between groups failed (exit ${install.code}) while resetting to '${base}' before ${branch}.`;
@@ -815,11 +854,20 @@ export default defineWorkflow({
 
         log.info(`preparing branch ${branch} from base ${base}`);
         ensureBranch(REPO, branch, base);
+        // Maintain the snapshot across the deliberate ref write: the branch
+        // now sits at the base tip, and a restore must put it back there,
+        // not delete it. preBumpSha doubles as the HEAD anchor for the next
+        // two boundaries (baseline verification and the bump's install).
+        const preBumpSha = revParse(REPO, "HEAD");
+        refSnapshot.set(`refs/heads/${branch}`, preBumpSha);
 
         // Baseline gate, per processed group. The first processed group's tree is
         // the shared base tip; a later one red means the reset was incomplete.
         log.info(`baseline verification (${verifySteps.length} steps) ...`);
         const baseline = runVerificationPhase("depvisor baseline verification", verifySteps);
+        // The baseline scripts execute the base tree's code — check the refs
+        // before trusting (or reporting) their results.
+        if (!refsIntactAt("The baseline verification scripts", preBumpSha, branch)) continue;
         const broken = baseline.find((r) => !r.ok);
         if (broken) {
           if (firstProcessed) {
@@ -838,13 +886,16 @@ export default defineWorkflow({
         firstProcessed = false;
 
         // Deterministic bump — the update, install, and manifest edits are done
-        // by LLM-free code (core/bump.ts) before any agent runs. The pre-bump
-        // sha is snapshotted first: the bump runs the target's install
-        // lifecycle scripts with .git reachable, so everything after it is
-        // compared against this IMMUTABLE sha, never a movable ref name.
-        const preBumpSha = revParse(REPO, "HEAD");
+        // by LLM-free code (core/bump.ts) before any agent runs.
         const plan = pm.updatePlan(members, REPO, { pinExact: minimumReleaseAge > 0 });
         const applied = applyUpdatePlan(REPO, plan);
+        // Refs first, success or failure: the bump ran the just-installed
+        // version's lifecycle scripts — exactly the supply-chain vector the
+        // deny list exists for. A script could `git commit` its edits and
+        // leave only the lockfile dirty (the working-tree gates below would
+        // then vouch for commits they never inspected) or move another ref
+        // entirely, and a FAILING install still ran its scripts.
+        if (!refsIntactAt("The bump's install scripts", preBumpSha, branch)) continue;
         if (!applied.ok) {
           // The bump or its install failed (an ERESOLVE, a bad catalog edit, a
           // hung command). The fixer cannot touch manifests, so it cannot help —
@@ -856,20 +907,6 @@ export default defineWorkflow({
             "bump-failed",
             `The deterministic bump of ${pkgList} failed at step '${applied.step}' (${code}).` +
               (bumpTail ? ` Output tail: ${bumpTail}` : " No output was captured."),
-          );
-          continue;
-        }
-        // A lifecycle script could also `git commit` its edits during the bump
-        // and leave only the lockfile dirty — the working-tree gates below
-        // would then vouch for a tree whose commits they never inspected.
-        // Nothing may move HEAD but depvisor's own commit calls: fail closed
-        // and restore.
-        if (revParse(REPO, "HEAD") !== preBumpSha) {
-          discardWorkPast(REPO, preBumpSha);
-          record(
-            "unexpected-commits",
-            `The bump's install scripts moved HEAD while updating ${pkgList}, but commits ` +
-              "are made deterministically outside the install. The branch was restored; no PR.",
           );
           continue;
         }
@@ -921,28 +958,13 @@ export default defineWorkflow({
           continue;
         }
         log.info(`committed deterministic bump for ${pkgList} (${bumpSha.slice(0, 8)})`);
-
-        // Ref integrity: agent sessions AND the target's own verification
-        // scripts (which execute the just-updated dependency's code) run with
-        // the checkout's .git reachable, so any of them could move refs —
-        // `git branch -f`, a tag — including a PREVIOUS group's payload
-        // branch, which the token-holding open-pr step pushes at the END of
-        // the run. Snapshot every ref right after the bump commit; any later
-        // drift, or a moved HEAD, is tampering: restore everything from the
-        // snapshot (content-addressed, so exact) and fail the group.
-        const refSnapshot = snapshotRefs(REPO);
-        const refsIntact = (who: string): boolean => {
-          const drift = refDrift(REPO, refSnapshot);
-          if (drift.length === 0 && revParse(REPO, "HEAD") === bumpSha) return true;
-          restoreRefs(REPO, refSnapshot, branch);
-          record(
-            "unexpected-commits",
-            `${who} moved git refs or HEAD (${drift.join(", ") || "HEAD"}), but refs are ` +
-              "written deterministically outside agents and scripts. Everything was " +
-              "restored to the bump commit; no PR.",
-          );
-          return false;
-        };
+        // Maintain the snapshot across the second deliberate ref write: the
+        // branch now sits at the bump commit, which is also the HEAD anchor
+        // for every boundary below (the agent sessions and the post-bump/
+        // post-fix verification scripts, which execute the just-updated
+        // dependency's code).
+        refSnapshot.set(`refs/heads/${branch}`, bumpSha);
+        const refsIntact = (who: string): boolean => refsIntactAt(who, bumpSha, branch);
 
         // Full verification against the committed bump.
         log.info(`post-bump verification gate (${verifySteps.length} steps) ...`);
