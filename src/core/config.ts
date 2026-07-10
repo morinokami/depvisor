@@ -1,0 +1,193 @@
+/**
+ * The run's configuration surface: every `DEPVISOR_*` knob the update workflow
+ * reads, parsed and validated in one place.
+ *
+ * Each knob's own parser (`budget.ts`, `release-age.ts`, `ignore.ts`,
+ * `suggest-features.ts`) owns its default and its grammar — see those headers.
+ * This module only sequences them and turns the first rejection into the
+ * run-level `bad-*` status the workflow reports. That sequencing is why it
+ * lives in the core rather than inline in the workflow: the summaries a user
+ * reads when a knob is mistyped are the product's error UI, and the core is the
+ * half that can be unit-tested under plain node, without an API key.
+ *
+ * Two conventions hold for every field:
+ *   - An empty string means "not set" (the composite action forwards unset
+ *     inputs as empty strings), so every read is a falsy check, never `??`.
+ *   - Values come from the workflow file / env and are therefore TRUSTED. None
+ *     may ever be sourced from the agent-writable target tree.
+ *
+ * Validation is unconditional: a typo'd exclusion is rejected even when the
+ * cooldown is disabled, so it fails loudly now rather than the day the feature
+ * is re-enabled.
+ *
+ * `DEPVISOR_LLM_MODEL` is deliberately absent. It is the agent factory's input
+ * (`agents/depvisor.ts`), not the workflow's, and it has no default.
+ */
+
+import { parseOpenPullRequestsLimit } from "./budget.ts";
+import { type IgnoreRule, parseIgnore } from "./ignore.ts";
+import { parseMinimumReleaseAge, parseMinimumReleaseAgeExclude } from "./release-age.ts";
+import { parseSuggestFeatures } from "./suggest-features.ts";
+
+/** The environment a run is configured from — `process.env` in production. */
+export type ConfigEnv = Record<string, string | undefined>;
+
+interface RunConfig {
+  /**
+   * CI passes the default branch explicitly; local runs leave this unset and
+   * fall back to the current branch after preflight rejects HEAD or depvisor/*.
+   */
+  baseBranch: string | undefined;
+  /**
+   * Path to a JSON snapshot of open PRs (`{headRefName, body}[]`), written by a
+   * separate token-holding workflow step. Data flows in; credentials never do.
+   */
+  openPrsFile: string | undefined;
+  /**
+   * Newline-separated shell commands that REPLACE auto-detected verification.
+   * Consumed by preflight, which falls back to script auto-detection when empty.
+   */
+  verifyCommands: string;
+  /**
+   * The `install_command` input, forwarded for the group-boundary reset: a
+   * custom command is reused verbatim; `auto`/`skip`/unset fall back to the PM's
+   * lockfile-faithful install (`skip` skips only the pre-agent install step).
+   */
+  installCommand: string;
+  /**
+   * Ceiling on the number of open depvisor PRs (Dependabot's
+   * open-pull-requests-limit model). Refreshing an existing PR never consumes a
+   * slot.
+   */
+  openPullRequestsLimit: number;
+  /**
+   * Minimum age (days) a version must have been public on the npm registry
+   * before depvisor updates to it — the supply-chain cooldown. `0` disables it.
+   */
+  minimumReleaseAge: number;
+  /**
+   * Package names exempted from the cooldown's age check — the escape hatch for
+   * packages the public npm registry cannot vouch for (private-registry
+   * packages), which would otherwise go red as `release-age-unavailable` every
+   * run.
+   */
+  releaseAgeExclude: Set<string>;
+  /**
+   * Rules (`name` or `name@<major>`) that drop candidates before grouping — the
+   * human-decided permanent counterpart to a fixer defer.
+   */
+  ignoreRules: IgnoreRule[];
+  /**
+   * When on, the digest prompt asks the agent to surface newly added
+   * capabilities relevant to the codebase, rendered display-only in the PR body.
+   * Off by default: it costs extra tokens and widens the agent's engagement with
+   * untrusted release notes.
+   */
+  suggestFeatures: boolean;
+}
+
+/**
+ * A parsed config, or the first rejected knob — a run-level `bad-*` status the
+ * workflow reports before it touches the target repository at all.
+ */
+export type ParsedRunConfig =
+  | { ok: true; config: RunConfig }
+  | { ok: false; status: string; summary: string };
+
+/** `entry`/`entries`, so the rejection summaries read as English. */
+function plural(count: number, singular: string, pluralForm: string): string {
+  return count === 1 ? singular : pluralForm;
+}
+
+/** Read a knob, treating an empty string as "not set". */
+function read(env: ConfigEnv, name: string): string {
+  return env[name] || "";
+}
+
+/**
+ * Parse and validate every knob, in the order their `bad-*` statuses are
+ * reported. The first rejection wins: a run with two mistyped knobs names only
+ * the first, which is enough to send the user to their workflow file.
+ */
+export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
+  const openPullRequestsLimitRaw = read(env, "DEPVISOR_OPEN_PULL_REQUESTS_LIMIT");
+  const openPullRequestsLimit = parseOpenPullRequestsLimit(openPullRequestsLimitRaw);
+  if (openPullRequestsLimit === null) {
+    return {
+      ok: false,
+      status: "bad-open-pull-requests-limit",
+      summary:
+        "The open_pull_requests_limit input must be a positive integer; " +
+        `got '${openPullRequestsLimitRaw.trim()}'.`,
+    };
+  }
+
+  const minimumReleaseAgeRaw = read(env, "DEPVISOR_MINIMUM_RELEASE_AGE");
+  const minimumReleaseAge = parseMinimumReleaseAge(minimumReleaseAgeRaw);
+  if (minimumReleaseAge === null) {
+    return {
+      ok: false,
+      status: "bad-minimum-release-age",
+      summary:
+        "The minimum_release_age input must be a non-negative integer (days); " +
+        `got '${minimumReleaseAgeRaw.trim()}'.`,
+    };
+  }
+
+  const releaseAgeExclude = parseMinimumReleaseAgeExclude(
+    read(env, "DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE"),
+  );
+  if (!releaseAgeExclude.ok) {
+    return {
+      ok: false,
+      status: "bad-minimum-release-age-exclude",
+      summary:
+        `The minimum_release_age_exclude input has ${releaseAgeExclude.invalid.length} unrecognized ` +
+        `${plural(releaseAgeExclude.invalid.length, "entry", "entries")}: ` +
+        `${releaseAgeExclude.invalid.join(", ")}. Each line must be a package name ` +
+        "(or a full-line '#' comment); majors, version ranges, and patterns are not " +
+        "supported.",
+    };
+  }
+
+  const ignore = parseIgnore(read(env, "DEPVISOR_IGNORE"));
+  if (!ignore.ok) {
+    return {
+      ok: false,
+      status: "bad-ignore",
+      summary:
+        `The ignore input has ${ignore.invalid.length} unrecognized ` +
+        `${plural(ignore.invalid.length, "entry", "entries")}: ${ignore.invalid.join(", ")}. ` +
+        "Each line must be 'name' (never update it), 'name@<major>' (skip updates to " +
+        "that major), or a full-line '#' comment; full version ranges and update-type " +
+        "rules are not supported yet.",
+    };
+  }
+
+  const suggestFeaturesRaw = read(env, "DEPVISOR_SUGGEST_FEATURES");
+  const suggestFeatures = parseSuggestFeatures(suggestFeaturesRaw);
+  if (suggestFeatures === null) {
+    return {
+      ok: false,
+      status: "bad-suggest-features",
+      summary:
+        "The suggest_features input must be 'true' or 'false' (empty means false); " +
+        `got '${suggestFeaturesRaw.trim()}'.`,
+    };
+  }
+
+  return {
+    ok: true,
+    config: {
+      baseBranch: env.DEPVISOR_BASE_BRANCH || undefined,
+      openPrsFile: env.DEPVISOR_OPEN_PRS_FILE || undefined,
+      verifyCommands: read(env, "DEPVISOR_VERIFY_COMMANDS"),
+      installCommand: read(env, "DEPVISOR_INSTALL_COMMAND"),
+      openPullRequestsLimit,
+      minimumReleaseAge,
+      releaseAgeExclude: releaseAgeExclude.exclude,
+      ignoreRules: ignore.rules,
+      suggestFeatures,
+    },
+  };
+}
