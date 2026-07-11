@@ -69,26 +69,39 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `expect` names the packages every scan must surface as ACTIONABLE
+        # (grouped, not degraded to `unknown`), with `@<location>` pinning the
+        # declaring workspace — so a partial parser regression (one dep-kind
+        # section dropped, one workspace missing from enumeration, the shared
+        # dep losing a location) fails the job instead of shrinking the output
+        # unnoticed. Mirrors the fixture templates; update together.
         include:
-          - { name: npm, init: "fixture:init", dest: fixtures/sample-app }
-          - { name: pnpm, init: "fixture:init:pnpm", dest: fixtures/sample-app-pnpm }
-          - { name: bun, init: "fixture:init:bun", dest: fixtures/sample-app-bun, bun: true }
-          - {
-              name: npm-workspaces,
-              init: "fixture:init:workspaces",
-              dest: fixtures/sample-app-workspaces,
-            }
-          - {
-              name: pnpm-workspaces,
-              init: "fixture:init:workspaces:pnpm",
-              dest: fixtures/sample-app-pnpm-workspaces,
-            }
-          - {
-              name: bun-workspaces,
-              init: "fixture:init:workspaces:bun",
-              dest: fixtures/sample-app-bun-workspaces,
-              bun: true,
-            }
+          - name: npm
+            init: "fixture:init"
+            dest: fixtures/sample-app
+            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
+          - name: pnpm
+            init: "fixture:init:pnpm"
+            dest: fixtures/sample-app-pnpm
+            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
+          - name: bun
+            init: "fixture:init:bun"
+            dest: fixtures/sample-app-bun
+            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
+            bun: true
+          - name: npm-workspaces
+            init: "fixture:init:workspaces"
+            dest: fixtures/sample-app-workspaces
+            expect: "lru-cache@packages/core,chalk@packages/web,semver@packages/core,semver@packages/web,@types/node@packages/core,typescript@packages/web"
+          - name: pnpm-workspaces
+            init: "fixture:init:workspaces:pnpm"
+            dest: fixtures/sample-app-pnpm-workspaces
+            expect: "lru-cache@packages/core,chalk@packages/web,semver@packages/core,semver@packages/web,@types/node@packages/core,typescript@packages/web"
+          - name: bun-workspaces
+            init: "fixture:init:workspaces:bun"
+            dest: fixtures/sample-app-bun-workspaces
+            expect: "lru-cache@packages/core,chalk@packages/web,semver@packages/core,semver@packages/web,@types/node@packages/core,typescript@packages/web"
+            bun: true
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -128,7 +141,8 @@ jobs:
       - name: Run deterministic scan with verification
         env:
           DEST: ${{ matrix.dest }}
-        run: node src/dev/scan.ts "$DEST" --verify --expect-updates
+          EXPECT: ${{ matrix.expect }}
+        run: node src/dev/scan.ts "$DEST" --verify --expect-updates="$EXPECT"
 
   zizmor:
     name: GitHub Actions security audit
