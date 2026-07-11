@@ -1,15 +1,17 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "src/open-pr.ts",
-    "src/report-status.ts",
-    "src/install-target.ts",
-    "src/check-credentials.ts",
+    "src/open-pr.ts!",
+    "src/report-status.ts!",
+    "src/install-target.ts!",
+    "src/check-credentials.ts!",
+    "src/agents/*.ts!",
+    "src/workflows/*.ts!",
     "src/dev/*.ts",
-    "src/agents/*.ts",
-    "src/workflows/*.ts",
     "flue.config.ts",
     "test/*.test.ts"
   ],
-  "project": ["src/**/*.ts", "test/**/*.ts"]
+  "project": ["src/**/*.ts!", "!src/dev/**!", "test/**/*.ts"],
+  "ignoreExportsUsedInFile": true,
+  "treatConfigHintsAsErrors": true
 }

@@ -14,7 +14,7 @@
     "fixture:init:workspaces:pnpm": "bash scripts/init-fixture.sh --pm pnpm --workspaces",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "knip": "knip",
+    "knip": "knip && knip --strict",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "typecheck": "tsc --noEmit"
