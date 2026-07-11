@@ -39,6 +39,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # TODO: Restore `background: true` and `wait-all` once the zizmor version
+      # shipped by zizmor-action can parse GitHub's parallel-step syntax.
       - name: Run oxlint
         run: pnpm run lint
 
