@@ -11,12 +11,19 @@ import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/ve
  * result, so a human can eyeball the pipeline without going through the agent.
  * It is not part of the CI/composite-action flow — hence its home under dev/.
  *
- *   node src/dev/scan.ts [repoPath] [--verify] [--minimum-release-age=<days>]
+ *   node src/dev/scan.ts [repoPath] [--verify] [--expect-updates] [--minimum-release-age=<days>]
  *
  * --minimum-release-age applies the workflow's cooldown clamp (opt-in here, so the
  * default scan stays offline); it hits the real npm registry.
  * DEPVISOR_GROUPS is honored like in the workflow, so user-declared grouping
  * can be eyeballed here too.
+ *
+ * Exit code is nonzero when a --verify step fails or --verify finds no steps
+ * (mirroring the workflow's fail-closed no-verify-scripts), and — with
+ * --expect-updates — when collect surfaces zero candidates. That last flag is
+ * the CI fixture-e2e canary: the fixtures are outdated by construction, so an
+ * empty collect there means a PM's output format drifted and the parser broke
+ * silently, exactly what the CI job exists to catch.
  */
 
 async function main(): Promise<void> {
@@ -24,6 +31,7 @@ async function main(): Promise<void> {
   const repoArg = args.find((a) => !a.startsWith("--")) ?? "fixtures/sample-app";
   const repoPath = resolve(process.cwd(), repoArg);
   const doVerify = args.includes("--verify");
+  const expectUpdates = args.includes("--expect-updates");
   const ageArg = args.find((a) => a.startsWith("--minimum-release-age="));
   const minimumReleaseAge = ageArg
     ? parseMinimumReleaseAge(ageArg.slice("--minimum-release-age=".length))
@@ -48,6 +56,10 @@ async function main(): Promise<void> {
   let candidates = collectCandidates(repoPath, pm);
   if (candidates.length === 0) {
     console.log("No outdated dependencies found.\n");
+    if (expectUpdates) {
+      console.log("--expect-updates: zero candidates on a repo that should have some.\n");
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -106,12 +118,14 @@ async function main(): Promise<void> {
         "\nNo verification scripts (build/lint/test) found in package.json " +
           "and DEPVISOR_VERIFY_COMMANDS is not set.",
       );
+      process.exitCode = 1;
     } else {
       console.log(`\nRunning verification gate (${steps.map((s) => s.name).join(" → ")})...`);
       const results = runVerification(repoPath, steps);
       for (const r of results) {
         console.log(`  ${r.ok ? "✓" : "✗"} ${r.name} (exit ${r.code})`);
       }
+      if (results.some((r) => !r.ok)) process.exitCode = 1;
     }
   }
 
