@@ -104,6 +104,28 @@ test("parseGroups: every malformed line is rejected and named", () => {
   assert.ok(all.some((p) => p.includes("empty")));
 });
 
+test("parseGroups: names that break the branch mapping are rejected", () => {
+  // Would produce a ref git rejects (git check-ref-format --branch):
+  // a trailing '.', a '..' sequence, a '.lock'-suffixed component.
+  for (const name of ["foo.", "foo..bar", "foo.lock"]) {
+    const all = problems(`${name}: react`);
+    assert.equal(all.length, 1, name);
+    assert.ok(all[0]!.includes(`'${name}'`), name);
+  }
+  // slugify() trims trailing '-', so 'foo-'/'foo--' would collide with 'foo'
+  // on the same branch across runs; leading '-'/'.' edges are rejected by the
+  // same start/end-alphanumeric rule.
+  for (const name of ["foo-", "foo--", "-foo", ".foo"]) {
+    const all = problems(`${name}: react`);
+    assert.equal(all.length, 1, name);
+  }
+  // Interior punctuation survives both git and slugify untouched.
+  assert.deepEqual(rules("foo.bar-baz_v2: react"), [
+    { name: "foo.bar-baz_v2", packages: ["react"] },
+  ]);
+  assert.deepEqual(rules("x: react"), [{ name: "x", packages: ["react"] }]);
+});
+
 test("parseGroups: invalid package names are rejected", () => {
   const all = problems("tools: lodash UPPER/bad");
   assert.equal(all.length, 1);

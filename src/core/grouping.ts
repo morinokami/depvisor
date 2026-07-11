@@ -36,9 +36,23 @@ export interface GroupRule {
 export type ParsedGroups = { ok: true; rules: GroupRule[] } | { ok: false; problems: string[] };
 
 // The name is embedded in the group key, which slugify() maps to the branch
-// name — restricting it to slugify's identity charset (no `@`, nothing that
-// maps to `-`) keeps distinct group names on distinct branches by construction.
-const GROUP_NAME_RE = /^[A-Za-z0-9._-]+$/;
+// name — so beyond slugify's identity charset (no `@`, nothing that maps to
+// `-`) the name must also survive both transforms intact:
+//   - start AND end alphanumeric: slugify() trims trailing `-` (so `foo` and
+//     `foo-` would collide on one branch — across runs, where the
+//     branch-collision guard cannot see it), and git rejects a ref component
+//     ending in `.`;
+//   - no `..` and no `.lock` suffix: git rejects both in a ref
+//     (`git check-ref-format --branch`), and accepting them here would defer
+//     the failure to ensureBranch() mid-run — possibly runs later, once the
+//     group first clears the open_pull_requests_limit ceiling.
+// This keeps the group-name → branch mapping total and injective without
+// shelling out to git from the parser.
+const GROUP_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+
+function isValidGroupName(name: string): boolean {
+  return GROUP_NAME_RE.test(name) && !name.includes("..") && !name.endsWith(".lock");
+}
 
 /**
  * Parse the newline-separated `groups` input. Each line is
@@ -66,9 +80,11 @@ export function parseGroups(raw: string): ParsedGroups {
       continue;
     }
     const name = entry.slice(0, colon).trim();
-    if (!GROUP_NAME_RE.test(name)) {
+    if (!isValidGroupName(name)) {
       problems.push(
-        `group name '${name}' must use only letters, digits, '.', '_', and '-' (it becomes part of the branch name)`,
+        `group name '${name}' must use only letters, digits, '.', '_', and '-', start and ` +
+          "end with a letter or digit, and contain no '..' or trailing '.lock' (it becomes " +
+          "part of the branch name)",
       );
       continue;
     }

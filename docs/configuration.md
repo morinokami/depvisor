@@ -207,7 +207,10 @@ groups: |
 ```
 
 Each line is `<group-name>: <package> <package> …` — members separated by
-spaces and/or commas, full-line `#` comments allowed. When at least one member
+spaces and/or commas, full-line `#` comments allowed. The group name may use
+letters, digits, `.`, `_`, and `-`, must start and end with a letter or digit,
+and may not contain `..` or end in `.lock` (it becomes part of the branch
+name, so it must survive git's ref rules unchanged). When at least one member
 has a pending update, the whole group is updated on one branch
 (`depvisor/group-<name>`) in one PR; packages in no group keep getting their
 own PR per package.
