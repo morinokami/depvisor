@@ -79,7 +79,8 @@ export function parseGithubSlug(repository: unknown): string | null {
   if (typeof repository === "string") {
     url = repository;
   } else if (repository && typeof repository === "object" && "url" in repository) {
-    url = String((repository as { url: unknown }).url ?? "");
+    const raw = (repository as { url: unknown }).url;
+    if (typeof raw === "string") url = raw;
   }
   if (!url) return null;
 

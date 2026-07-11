@@ -395,7 +395,7 @@ export function groupLogLine(group: GroupResult): string {
   return summary ? `${parts.join(" ")} - ${summary}` : parts.join(" ");
 }
 
-function mdCell(value: unknown): string {
+function mdCell(value: string | number | null | undefined): string {
   return sanitizeSummary(String(value ?? ""))
     .replace(/\s*\r?\n\s*/g, " ")
     .replace(/\|/g, "\\|");

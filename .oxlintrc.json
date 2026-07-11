@@ -4,7 +4,26 @@
   "categories": {
     "correctness": "error"
   },
-  "rules": {},
+  "options": {
+    "typeAware": true,
+    "reportUnusedDisableDirectives": "error"
+  },
+  "rules": {
+    "typescript/no-floating-promises": [
+      "error",
+      {
+        "allowForKnownSafeCalls": [
+          {
+            "from": "package",
+            "package": "node:test",
+            "name": ["test", "describe", "it", "suite"]
+          }
+        ]
+      }
+    ],
+    "typescript/no-misused-promises": "error"
+  },
+  "ignorePatterns": ["fixtures/"],
   "env": {
     "builtin": true
   }
