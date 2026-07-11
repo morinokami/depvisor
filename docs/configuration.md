@@ -36,10 +36,14 @@ finer points.
   depvisor step (as with bun's `setup-bun`), and set
   `install_command: nub install --frozen-lockfile` (reused verbatim for the
   between-groups reinstall). Verification still launches scripts via
-  `pnpm run <script>`, but their `nub run …` bodies find nub on `PATH` and just
+  `pnpm run <script>` — pnpm may re-materialize a nub-installed `node_modules`
+  into its own layout first, which is harmless because the shared lockfile pins
+  identical versions — and their `nub run …` bodies find nub on `PATH` and just
   work. First-class support (`nub outdated`, `nub run` as the verify prefix) is
   deliberately not offered: nub has no unique on-disk marker to detect, and its
-  `outdated` output is undocumented — see
+  `outdated --json` output is undocumented and (as of nub v0.4.7, which this
+  recipe was verified against) lacks the per-workspace `dependentPackages`
+  attribution depvisor's collector needs — see
   [#40](https://github.com/morinokami/depvisor/issues/40).
 - **Workspace monorepos** (npm, pnpm, and bun `workspaces`) are supported: depvisor
   updates each dependency in the workspace(s) that already declare it, never the
