@@ -25,6 +25,22 @@ finer points.
   a breakage risk. The legacy binary `bun.lockb` works, but the text `bun.lock` keeps
   lockfile diffs reviewable (`bun install --save-text-lockfile --frozen-lockfile
 --lockfile-only` migrates).
+- **[nub](https://nubjs.com) (nubjs) repos** work through depvisor's pnpm support.
+  nub is pnpm-compatible — it round-trips `pnpm-lock.yaml` and keeps
+  `packageManager: "pnpm@…"` in package.json — so depvisor detects such a repo
+  as pnpm and drives the deterministic bump with its own pinned pnpm; nub's
+  lockfile round-trip keeps that coherent. The one thing missing on the runner
+  is the `nub` binary itself, which matters when your package.json scripts wrap
+  `nub run` (they would otherwise fail during verification). The recipe:
+  add [`nubjs/setup-nub`](https://github.com/nubjs/setup-nub) before the
+  depvisor step (as with bun's `setup-bun`), and set
+  `install_command: nub install --frozen-lockfile` (reused verbatim for the
+  between-groups reinstall). Verification still launches scripts via
+  `pnpm run <script>`, but their `nub run …` bodies find nub on `PATH` and just
+  work. First-class support (`nub outdated`, `nub run` as the verify prefix) is
+  deliberately not offered: nub has no unique on-disk marker to detect, and its
+  `outdated` output is undocumented — see
+  [#40](https://github.com/morinokami/depvisor/issues/40).
 - **Workspace monorepos** (npm, pnpm, and bun `workspaces`) are supported: depvisor
   updates each dependency in the workspace(s) that already declare it, never the
   root. This needs the single shared lockfile at the repo root, and verification
