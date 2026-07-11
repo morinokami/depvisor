@@ -53,6 +53,10 @@ inputs:
     description: When "true", the agent also surfaces newly added capabilities from the release notes it already read that may be relevant to your code, as a display-only PR-body section (never adopted). Off by default; costs extra tokens and widens the agent's engagement with untrusted release notes.
     required: false
     default: "false"
+  language:
+    description: BCP 47 language tag (e.g. "ja", "pt-BR") the agent writes the PR's narrative text in. Only the LLM-written free text is localized; statuses, commit messages, branch names, PR titles, and section headings stay English. Empty means English.
+    required: false
+    default: ""
   node_version:
     description: Node version used for depvisor and target verification scripts.
     required: false
@@ -181,6 +185,7 @@ runs:
         DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: ${{ inputs.minimum_release_age_exclude }}
         DEPVISOR_IGNORE: ${{ inputs.ignore }}
         DEPVISOR_SUGGEST_FEATURES: ${{ inputs.suggest_features }}
+        DEPVISOR_LANGUAGE: ${{ inputs.language }}
         # Forwarded for the reset between dependency groups: a custom command is
         # reused verbatim; "auto"/"skip" fall back to the PM's lockfile-faithful
         # install ("skip" skips only the pre-agent install step above, not the

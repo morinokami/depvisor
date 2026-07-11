@@ -113,6 +113,7 @@ function options(repo: string): ProcessGroupOptions {
     requiresResetBefore: false,
     minimumReleaseAge: 1,
     suggestFeatures: false,
+    language: "",
     disposition: "open-new",
     packuments: new Map(),
     advisories: { ok: true, resolvedByPackage: new Map() },

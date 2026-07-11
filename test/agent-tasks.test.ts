@@ -45,6 +45,7 @@ test("fixerPrompt carries bounded failure context and the source-only contract",
     [{ name: "test", run: "npm test" }],
     [{ name: "test", ok: false, code: 1, tail: "TypeError: old API" }],
     '- "example": "^1.0.0"\n+ "example": "^1.1.0"',
+    "",
   );
   assert.match(prompt, /TypeError: old API/);
   assert.match(prompt, /packages\/app/);
@@ -57,9 +58,31 @@ test("feature suggestions use one shared non-patch gate for prompt and rendering
   assert.equal(wantsSuggestions(false, [candidate("minor")]), false);
   assert.equal(wantsSuggestions(true, [candidate("minor")]), true);
 
-  const plain = digestPrompt([candidate("minor")], "notes", false);
-  const suggested = digestPrompt([candidate("minor")], "notes", true);
+  const plain = digestPrompt([candidate("minor")], "notes", false, "");
+  const suggested = digestPrompt([candidate("minor")], "notes", true, "");
   assert.doesNotMatch(plain, /relevant_new_features/);
   assert.match(suggested, /relevant_new_features/);
   assert.match(suggested, /notification only/);
+});
+
+test("the language knob adds one output-language sentence to both prompts, or nothing", () => {
+  const digestEnglish = digestPrompt([candidate("minor")], "notes", false, "");
+  const digestJa = digestPrompt([candidate("minor")], "notes", false, "ja");
+  assert.doesNotMatch(digestEnglish, /BCP 47 tag/);
+  assert.match(
+    digestJa,
+    /free-text field of the structured result in the language with BCP 47 tag `ja`/,
+  );
+  assert.match(digestJa, /untranslated/);
+
+  const fixer = (language: string) =>
+    fixerPrompt(
+      [candidate("minor")],
+      [{ name: "test", run: "npm test" }],
+      [{ name: "test", ok: false, code: 1, tail: "boom" }],
+      "diff",
+      language,
+    );
+  assert.doesNotMatch(fixer(""), /BCP 47 tag/);
+  assert.match(fixer("pt-BR"), /BCP 47 tag `pt-BR`/);
 });

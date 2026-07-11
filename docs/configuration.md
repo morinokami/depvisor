@@ -291,3 +291,40 @@ Details worth knowing:
   capability, so patch-only groups get no suggestion prompt at all.
 - **A typo fails loudly.** Only `true`/`false` (empty means `false`) are accepted;
   anything else stops the run with `bad-suggest-features`.
+
+## PR narrative language (`language`)
+
+The most human-facing thing depvisor produces is the PR body's reviewer digest
+(and, when the fixer ran, its account of the fixes). For a team whose reviewers
+do not read English comfortably, `language` asks the agent to write that
+narrative in your language instead — a BCP 47 language tag such as `ja`,
+`pt-BR`, or `zh-Hant`:
+
+```yaml
+language: ja
+```
+
+Only the LLM-written free text is localized: the digest's summary and notes,
+and the fixer's summary, fixes, residual risks, and defer reasons — in the PR
+body and wherever those summaries surface (the step summary, annotations).
+Everything deterministic stays English on purpose:
+
+- **Statuses and action outputs** (`no-verify-scripts`, `pr-prepared`, …) are a
+  fixed machine vocabulary that consumer workflows branch on.
+- **Commit messages** (`deps: bump …` / `fix: adapt code to …`) are part of the
+  structural guarantee about who authored what; their wording is fixed.
+- **Branch names and the PR body's versions marker** are PR identity — touching
+  them would break idempotency.
+- **PR titles and the PR body's section headings** ("What changed", table
+  headers) are deterministic strings and stay English for now; the narrative
+  under them carries the actual content.
+
+Details worth knowing:
+
+- **Empty means English** and adds nothing to the agent prompts — unset behavior
+  is identical to before the knob existed.
+- **A tag, not free text**: the value must match a short BCP-47-style grammar.
+  Language names (`日本語`, `Brazilian Portuguese`) or any freer instruction are
+  rejected with `bad-language` — the knob sets a language, it is not a prompt.
+- **Code stays code**: the agent is instructed to keep identifiers, file paths,
+  package names, version numbers, and commands untranslated.
