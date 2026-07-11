@@ -24,6 +24,7 @@ concurrency:
 
 jobs:
   release-please:
+    name: Create or update the release
     runs-on: ubuntu-latest
     permissions:
       contents: write # version-bump commit, tag, and GitHub Release
@@ -53,6 +54,7 @@ jobs:
   # in the README follows the latest v1.x. Hand-carved shell — no extra pinned
   # third-party action just to force-move two tags.
   tag-major:
+    name: Move the major and minor tags
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
@@ -60,7 +62,7 @@ jobs:
       contents: write # force-push the movable tags
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
+        with: # zizmor: ignore[artipacked] This job intentionally uses checkout's credential to push the release tags.
           fetch-depth: 0 # need the released commit + all tags present locally
       # Values in env vars so nothing from the outputs can break out of the
       # generated run script (matches action.yml's install-command handling).

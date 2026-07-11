@@ -98,7 +98,7 @@ runs:
     # package_json_file paths by joining them to GITHUB_WORKSPACE.
     - name: Resolve action path and pnpm version
       shell: bash
-      run: |
+      run: | # zizmor: ignore[github-env] trusted action path and manifest only
         echo "DEPVISOR_HOME=$GITHUB_ACTION_PATH" >> "$GITHUB_ENV"
         echo "DEPVISOR_PNPM_VERSION=$(node -p "require(process.env.GITHUB_ACTION_PATH + '/package.json').packageManager.split('@')[1]")" >> "$GITHUB_ENV"
 
