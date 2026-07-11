@@ -154,7 +154,7 @@ export default defineWorkflow({
       releaseAgeNote = describeReleaseAge(aged, minimumReleaseAge);
       if (releaseAgeNote) log.info(releaseAgeNote);
     }
-    let groups = groupCandidates(candidates);
+    let groups = groupCandidates(candidates, config.groupRules);
     if (groups.length === 0 && releaseAgeUnavailable.length === 0) {
       const notes = [ignoreNote, releaseAgeNote].filter(Boolean).join(" ");
       return finish({

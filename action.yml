@@ -49,6 +49,10 @@ inputs:
     description: Newline-separated packages to never update; use "name" to skip a package entirely or "name@<major>" to skip only a specific major. Full-line "#" comments are allowed.
     required: false
     default: ""
+  groups:
+    description: 'Newline-separated package groups updated together in one PR, each line "<group-name>: <package> <package> ..." (members separated by spaces or commas). Exact package names only; each package may belong to at most one group; full-line "#" comments are allowed. Ungrouped packages keep getting their own PR.'
+    required: false
+    default: ""
   suggest_features:
     description: When "true", the agent also surfaces newly added capabilities from the release notes it already read that may be relevant to your code, as a display-only PR-body section (never adopted). Off by default; costs extra tokens and widens the agent's engagement with untrusted release notes.
     required: false
@@ -184,6 +188,7 @@ runs:
         DEPVISOR_MINIMUM_RELEASE_AGE: ${{ inputs.minimum_release_age }}
         DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: ${{ inputs.minimum_release_age_exclude }}
         DEPVISOR_IGNORE: ${{ inputs.ignore }}
+        DEPVISOR_GROUPS: ${{ inputs.groups }}
         DEPVISOR_SUGGEST_FEATURES: ${{ inputs.suggest_features }}
         DEPVISOR_LANGUAGE: ${{ inputs.language }}
         # Forwarded for the reset between dependency groups: a custom command is

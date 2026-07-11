@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { collectCandidates } from "../core/collect.ts";
-import { groupCandidates } from "../core/grouping.ts";
+import { groupCandidates, parseGroups } from "../core/grouping.ts";
 import { detectPackageManager } from "../core/pm.ts";
 import { applyReleaseAge, parseMinimumReleaseAge } from "../core/release-age.ts";
 import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/verify.ts";
@@ -15,6 +15,8 @@ import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/ve
  *
  * --minimum-release-age applies the workflow's cooldown clamp (opt-in here, so the
  * default scan stays offline); it hits the real npm registry.
+ * DEPVISOR_GROUPS is honored like in the workflow, so user-declared grouping
+ * can be eyeballed here too.
  */
 
 async function main(): Promise<void> {
@@ -74,7 +76,14 @@ async function main(): Promise<void> {
     }
   }
 
-  const groups = groupCandidates(candidates);
+  const parsedGroups = parseGroups(process.env.DEPVISOR_GROUPS || "");
+  if (!parsedGroups.ok) {
+    console.log(`\nbad-groups: ${parsedGroups.problems.join("; ")}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const groups = groupCandidates(candidates, parsedGroups.rules);
   console.log(`\nProposed ${groups.length} group(s) — stable keys become branch/PR identity:`);
   for (const g of groups) {
     console.log(`\n  ▸ ${g.key}`);

@@ -62,9 +62,10 @@ export function slugify(s: string): string {
 }
 
 /**
- * Branch name for a group: derived from the stable group key (name/kind/
- * updateType), never from the member list. The key is the PR identity; the
- * same package must map to the same branch run after run.
+ * Branch name for a group: derived from the stable group key (the declared
+ * group name, or the package's name/kind/updateType), never from the member
+ * list. The key is the PR identity; the same package or declared group must
+ * map to the same branch run after run.
  */
 export function branchNameForGroup(groupKey: string): string {
   return `depvisor/${slugify(groupKey)}`;
@@ -239,10 +240,10 @@ export function sanitizeLabels(labels: unknown): string[] {
   return [...kept].sort();
 }
 
-// Every group is a singleton today, so the semver:* label is simply that
-// package's update level; the highest-rank fold below is the plural handling a
-// future user-declared groups config needs (majors stay isolated per package by
-// grouping, so even then a group mixes at most minor and patch).
+// For a singleton group the semver:* label is simply that package's update
+// level; a user-declared group can mix levels (majors included — the user said
+// they move together), so the highest-rank fold below labels the group by its
+// riskiest member.
 const SEMVER_RANK = { patch: 0, minor: 1, major: 2 } as const;
 
 /**
