@@ -297,8 +297,8 @@ Details worth knowing:
 The most human-facing thing depvisor produces is the PR body's reviewer digest
 (and, when the fixer ran, its account of the fixes). For a team whose reviewers
 do not read English comfortably, `language` asks the agent to write that
-narrative in your language instead — a BCP 47 language tag such as `ja`,
-`pt-BR`, or `zh-Hant`:
+narrative in your language instead — a restricted BCP-47-style tag such as
+`ja`, `pt-BR`, or `zh-Hant`:
 
 ```yaml
 language: ja

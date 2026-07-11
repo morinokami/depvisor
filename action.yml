@@ -54,7 +54,7 @@ inputs:
     required: false
     default: "false"
   language:
-    description: BCP 47 language tag (e.g. "ja", "pt-BR") the agent writes the PR's narrative text in. Only the LLM-written free text is localized; statuses, commit messages, branch names, PR titles, and section headings stay English. Empty means English.
+    description: Restricted BCP-47-style language tag (e.g. "ja", "pt-BR") the agent writes the PR's narrative text in. Only the LLM-written free text is localized; statuses, commit messages, branch names, PR titles, and section headings stay English. Empty means English.
     required: false
     default: ""
   node_version:

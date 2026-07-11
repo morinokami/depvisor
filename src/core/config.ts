@@ -191,7 +191,7 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
       ok: false,
       status: "bad-language",
       summary:
-        "The language input must be a BCP 47 language tag such as 'ja' or 'pt-BR'; " +
+        "The language input must be a BCP-47-style language tag such as 'ja' or 'pt-BR'; " +
         `got '${languageRaw.trim()}'.`,
     };
   }
