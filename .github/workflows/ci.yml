@@ -72,9 +72,13 @@ jobs:
         # `expect` names the packages every scan must surface as ACTIONABLE
         # (grouped, not degraded to `unknown`), with `@<location>` pinning the
         # declaring workspace — so a partial parser regression (one dep-kind
-        # section dropped, one workspace missing from enumeration, the shared
-        # dep losing a location) fails the job instead of shrinking the output
-        # unnoticed. Mirrors the fixture templates; update together.
+        # section dropped, one workspace missing from enumeration, a dep losing
+        # a location) fails the job instead of shrinking the output unnoticed.
+        # Each list is the COMPLETE outdated-dependency × declaring-location
+        # enumeration of its fixture template; update together. The npm
+        # workspace template deliberately declares @types/semver only in
+        # packages/core (npm hoists; the bun/pnpm isolated linkers need a copy
+        # per package — see scripts/init-fixture.sh), hence its shorter list.
         include:
           - name: npm
             init: "fixture:init"
@@ -92,15 +96,33 @@ jobs:
           - name: npm-workspaces
             init: "fixture:init:workspaces"
             dest: fixtures/sample-app-workspaces
-            expect: "lru-cache@packages/core,chalk@packages/web,semver@packages/core,semver@packages/web,@types/node@packages/core,typescript@packages/web"
+            expect: >-
+              lru-cache@packages/core,
+              chalk@packages/web,
+              semver@packages/core, semver@packages/web,
+              @types/node@packages/core, @types/node@packages/web,
+              @types/semver@packages/core,
+              typescript@packages/core, typescript@packages/web
           - name: pnpm-workspaces
             init: "fixture:init:workspaces:pnpm"
             dest: fixtures/sample-app-pnpm-workspaces
-            expect: "lru-cache@packages/core,chalk@packages/web,semver@packages/core,semver@packages/web,@types/node@packages/core,typescript@packages/web"
+            expect: >-
+              lru-cache@packages/core,
+              chalk@packages/web,
+              semver@packages/core, semver@packages/web,
+              @types/node@packages/core, @types/node@packages/web,
+              @types/semver@packages/core, @types/semver@packages/web,
+              typescript@packages/core, typescript@packages/web
           - name: bun-workspaces
             init: "fixture:init:workspaces:bun"
             dest: fixtures/sample-app-bun-workspaces
-            expect: "lru-cache@packages/core,chalk@packages/web,semver@packages/core,semver@packages/web,@types/node@packages/core,typescript@packages/web"
+            expect: >-
+              lru-cache@packages/core,
+              chalk@packages/web,
+              semver@packages/core, semver@packages/web,
+              @types/node@packages/core, @types/node@packages/web,
+              @types/semver@packages/core, @types/semver@packages/web,
+              typescript@packages/core, typescript@packages/web
             bun: true
     steps:
       - name: Checkout code
