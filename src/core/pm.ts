@@ -170,6 +170,19 @@ export const ALL_PM_LOCKFILES: readonly string[] = [
   ...BUN_LOCKFILES,
 ];
 
+/**
+ * Lockfiles of package managers depvisor does NOT support but a developer's
+ * machine may honor: yarn, and nub (nubjs — pnpm-compatible, but writes its own
+ * `nub.lock` when no incumbent PM is present). The fixer scope gate denies these
+ * too — "the deterministic bump owns ALL dependency state" must cover a lockfile
+ * the fixer *creates*, or a poisoned fixer could smuggle resolutions into the
+ * fix commit that the next `yarn install` / `nub install` treats as real.
+ * Deliberately NOT part of detection: yarn.lock already fails detection closed
+ * via the LOCKFILES table, and recognizing nub.lock there would change which
+ * repos depvisor accepts (see #40 — nub support is a docs recipe, not a PM).
+ */
+export const UNSUPPORTED_PM_LOCKFILES: readonly string[] = ["yarn.lock", "nub.lock"];
+
 export const npmToolchain: PmToolchain = {
   name: "npm",
   // --long adds each entry's `type` (dependencies/devDependencies) and
