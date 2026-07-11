@@ -108,6 +108,7 @@ committed lockfile (npm/pnpm only) are all supported with caveats — see
 | `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                                                         |
 | `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). **Exact names only** (full-line `#` comments allowed); globs and version ranges are not supported |
 | `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; full-line `#` comments are allowed                                                                                                   |
+| `groups`                      | Newline-separated package groups updated together in one PR, each line `<group-name>: <package> <package> …` (members separated by spaces or commas). Exact names only, each package in at most one group; ungrouped packages keep getting their own PR                                |
 | `suggest_features`            | `true` to also surface newly added capabilities relevant to your code as a display-only PR-body section (default `false`). Opt-in because it costs extra tokens and widens the agent's engagement with untrusted release notes                                                         |
 | `language`                    | Restricted BCP-47-style language tag (e.g. `ja`, `pt-BR`) the agent writes the PR's narrative text in; empty (the default) means English. Only the LLM-written free text is localized — statuses, commit messages, branch names, PR titles, and section headings stay English          |
 
@@ -121,6 +122,10 @@ verify_commands: |
 ignore: |
   left-pad
   lru-cache@11
+
+# e.g. packages that must move in lockstep, in one PR:
+groups: |
+  react: react react-dom @types/react
 ```
 
 Every input above is documented in depth — behavior, edge cases, and failure
@@ -207,9 +212,10 @@ source fixes the AI made — present only when the update actually needed them.
 
 - [docs/configuration.md](./docs/configuration.md) — repository requirements in
   detail, and every behavior-shaping input: verification commands, the
-  supply-chain cooldown (`minimum_release_age`), `ignore`, the PR ceiling
-  (`open_pull_requests_limit`), security prioritization, opt-in feature
-  suggestions, and the PR narrative's output language (`language`).
+  supply-chain cooldown (`minimum_release_age`), `ignore`, package grouping
+  (`groups`), the PR ceiling (`open_pull_requests_limit`), security
+  prioritization, opt-in feature suggestions, and the PR narrative's output
+  language (`language`).
 - [docs/results.md](./docs/results.md) — the job summary and annotations, the
   action outputs, PR labels, the test-change and license-change warnings, and
   the full [status reference](./docs/results.md#status-reference).

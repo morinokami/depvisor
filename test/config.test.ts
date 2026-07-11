@@ -27,6 +27,7 @@ test("an empty env yields every documented default", () => {
   assert.equal(config.installCommand, "");
   assert.deepEqual([...config.releaseAgeExclude], []);
   assert.deepEqual(config.ignoreRules, []);
+  assert.deepEqual(config.groupRules, []);
 });
 
 test("empty strings mean 'not set', as the composite action forwards them", () => {
@@ -37,6 +38,7 @@ test("empty strings mean 'not set', as the composite action forwards them", () =
     DEPVISOR_MINIMUM_RELEASE_AGE: "",
     DEPVISOR_SUGGEST_FEATURES: "",
     DEPVISOR_IGNORE: "",
+    DEPVISOR_GROUPS: "",
     DEPVISOR_LANGUAGE: "",
   });
   assert.ok(parsed.ok);
@@ -53,6 +55,7 @@ test("set knobs are carried through", () => {
     DEPVISOR_MINIMUM_RELEASE_AGE: "0",
     DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "@acme/private\n# a comment",
     DEPVISOR_IGNORE: "lodash\nreact@19",
+    DEPVISOR_GROUPS: "react: react react-dom",
     DEPVISOR_SUGGEST_FEATURES: "true",
     DEPVISOR_LANGUAGE: "pt-BR",
   });
@@ -71,6 +74,7 @@ test("set knobs are carried through", () => {
     config.ignoreRules.map((r) => r.name),
     ["lodash", "react"],
   );
+  assert.deepEqual(config.groupRules, [{ name: "react", packages: ["react", "react-dom"] }]);
 });
 
 test("each knob fails closed with its own bad-* status and echoes the value", () => {
@@ -98,6 +102,12 @@ test("list knobs name every unrecognized entry, pluralized", () => {
   assert.equal(two?.status, "bad-minimum-release-age-exclude");
   assert.ok(two.summary.includes("2 unrecognized entries:"));
   assert.ok(two.summary.includes("bad name, lodash@4"));
+
+  const groups = rejection({ DEPVISOR_GROUPS: "react react-dom\nreact: react\nweb: react" });
+  assert.equal(groups?.status, "bad-groups");
+  assert.ok(groups.summary.includes("2 invalid entries:"));
+  assert.ok(groups.summary.includes("react react-dom")); // the line missing its ':'
+  assert.ok(groups.summary.includes("'react'")); // the package claimed by two groups
 });
 
 test("the cooldown exclusion is validated even when the cooldown is disabled", () => {

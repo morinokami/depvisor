@@ -3,8 +3,8 @@
  * reads, parsed and validated in one place.
  *
  * Each knob's own parser (`budget.ts`, `release-age.ts`, `ignore.ts`,
- * `suggest-features.ts`, `language.ts`) owns its default and its grammar — see
- * those headers.
+ * `grouping.ts`, `suggest-features.ts`, `language.ts`) owns its default and its
+ * grammar — see those headers.
  * This module only sequences them and turns the first rejection into the
  * run-level `bad-*` status the workflow reports. That sequencing is why it
  * lives in the core rather than inline in the workflow: the summaries a user
@@ -26,6 +26,7 @@
  */
 
 import { parseOpenPullRequestsLimit } from "./budget.ts";
+import { type GroupRule, parseGroups } from "./grouping.ts";
 import { type IgnoreRule, parseIgnore } from "./ignore.ts";
 import { parseLanguage } from "./language.ts";
 import { parseMinimumReleaseAge, parseMinimumReleaseAgeExclude } from "./release-age.ts";
@@ -79,6 +80,12 @@ interface RunConfig {
    * human-decided permanent counterpart to a fixer defer.
    */
   ignoreRules: IgnoreRule[];
+  /**
+   * User-declared package groups (`<group-name>: pkg pkg …`) updated together
+   * in one branch/PR — Dependabot's `groups`, exact names only. Empty = every
+   * package is its own group.
+   */
+  groupRules: GroupRule[];
   /**
    * When on, the digest prompt asks the agent to surface newly added
    * capabilities relevant to the codebase, rendered display-only in the PR body.
@@ -172,6 +179,20 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
     };
   }
 
+  const groups = parseGroups(read(env, "DEPVISOR_GROUPS"));
+  if (!groups.ok) {
+    return {
+      ok: false,
+      status: "bad-groups",
+      summary:
+        `The groups input has ${groups.problems.length} invalid ` +
+        `${plural(groups.problems.length, "entry", "entries")}: ${groups.problems.join("; ")}. ` +
+        "Each line must be '<group-name>: <package> <package> …' — exact package names " +
+        "separated by spaces or commas, each package in at most one group; full-line '#' " +
+        "comments are allowed. Globs, version ranges, and majors are not supported.",
+    };
+  }
+
   const suggestFeaturesRaw = read(env, "DEPVISOR_SUGGEST_FEATURES");
   const suggestFeatures = parseSuggestFeatures(suggestFeaturesRaw);
   if (suggestFeatures === null) {
@@ -207,6 +228,7 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
       minimumReleaseAge,
       releaseAgeExclude: releaseAgeExclude.exclude,
       ignoreRules: ignore.rules,
+      groupRules: groups.rules,
       suggestFeatures,
       language,
     },

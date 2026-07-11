@@ -1,20 +1,136 @@
+import { isValidNpmName } from "./changelog.ts";
 import type { Candidate, Group } from "./types.ts";
 
 /**
  * Assign candidates to groups with stable keys. The key becomes the branch/PR
- * identity, so it derives from the candidate's name/kind/updateType — never
- * from which other members happen to be present in a given run.
+ * identity, so it derives from configuration and the candidate's own
+ * name/kind/updateType — never from which other members happen to be present
+ * in a given run.
  *
- * Every group is a singleton: one package, one PR (vanilla Dependabot's model).
  * Layering:
- *   1. major updates    → major/<name> (isolated for individual review)
- *   2. dev deps         → dev/<name>
- *   3. prod deps        → prod/<name>
+ *   1. user-declared groups → group/<group-name> (the `groups` input; all
+ *      update types, majors included — the user said these move together)
+ *   2. major updates       → major/<name> (isolated for individual review)
+ *   3. dev deps            → dev/<name>
+ *   4. prod deps           → prod/<name>
  *
- * No preset bundles anything (`@types/*` included): related-package bundling
- * is a future user-declared `groups` config, not a heuristic.
+ * A user-declared group's key comes from its declared NAME alone, so members
+ * entering or leaving a run (a cooldown clamp maturing, an `ignore` rule, a
+ * package simply being up to date) refresh the same branch/PR instead of
+ * forging a new identity. A declared group none of whose members has an update
+ * simply does not appear. No preset bundles anything (`@types/*` included):
+ * related-package bundling is exactly what the user-declared config is for,
+ * never a heuristic.
  */
-export function groupCandidates(candidates: Candidate[]): Group[] {
+
+/**
+ * One parsed `groups` rule: a stable group name and the exact package names it
+ * bundles. Like every config knob, rules come from the workflow file/env
+ * (TRUSTED), never from the agent-writable target tree.
+ */
+export interface GroupRule {
+  name: string;
+  packages: string[];
+}
+
+export type ParsedGroups = { ok: true; rules: GroupRule[] } | { ok: false; problems: string[] };
+
+// The name is embedded in the group key, which slugify() maps to the branch
+// name — so beyond slugify's identity charset (no `@`, nothing that maps to
+// `-`) the name must also survive both transforms intact:
+//   - start AND end alphanumeric: slugify() trims trailing `-` (so `foo` and
+//     `foo-` would collide on one branch — across runs, where the
+//     branch-collision guard cannot see it), and git rejects a ref component
+//     ending in `.`;
+//   - no `..` and no `.lock` suffix: git rejects both in a ref
+//     (`git check-ref-format --branch`), and accepting them here would defer
+//     the failure to ensureBranch() mid-run — possibly runs later, once the
+//     group first clears the open_pull_requests_limit ceiling.
+// This keeps the group-name → branch mapping total and injective without
+// shelling out to git from the parser.
+const GROUP_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+
+function isValidGroupName(name: string): boolean {
+  return GROUP_NAME_RE.test(name) && !name.includes("..") && !name.endsWith(".lock");
+}
+
+/**
+ * Parse the newline-separated `groups` input. Each line is
+ * `<group-name>: <package> <package> …` (members separated by spaces and/or
+ * commas); blank lines and full-line `#` comments are skipped. The grammar is
+ * deliberately minimal — exact package names only, no globs — matching the
+ * exact-string stance of every other list knob. Every problem is collected and
+ * the whole input rejected on any (the "thought I grouped it" trap is the same
+ * as ignore's), with fail-closed rules for the identity-sensitive parts:
+ * duplicate group names and a package claimed by two groups (or twice by one)
+ * are rejected rather than resolved by precedence, because either would make
+ * PR identity depend on rule order.
+ */
+export function parseGroups(raw: string): ParsedGroups {
+  const rules: GroupRule[] = [];
+  const problems: string[] = [];
+  const names = new Set<string>();
+  const claimedBy = new Map<string, string>();
+  for (const line of raw.split(/\r?\n/)) {
+    const entry = line.trim();
+    if (!entry || entry.startsWith("#")) continue;
+    const colon = entry.indexOf(":");
+    if (colon === -1) {
+      problems.push(`'${entry}' has no ':' between the group name and its packages`);
+      continue;
+    }
+    const name = entry.slice(0, colon).trim();
+    if (!isValidGroupName(name)) {
+      problems.push(
+        `group name '${name}' must use only letters, digits, '.', '_', and '-', start and ` +
+          "end with a letter or digit, and contain no '..' or trailing '.lock' (it becomes " +
+          "part of the branch name)",
+      );
+      continue;
+    }
+    if (names.has(name)) {
+      problems.push(`group '${name}' is declared more than once`);
+      continue;
+    }
+    const packages: string[] = [];
+    let bad = false;
+    for (const pkg of entry
+      .slice(colon + 1)
+      .split(/[\s,]+/)
+      .filter(Boolean)) {
+      if (!isValidNpmName(pkg)) {
+        problems.push(`'${pkg}' in group '${name}' is not a valid package name`);
+        bad = true;
+        continue;
+      }
+      const owner = claimedBy.get(pkg);
+      if (owner !== undefined) {
+        problems.push(`package '${pkg}' is listed more than once ('${owner}' and '${name}')`);
+        bad = true;
+        continue;
+      }
+      claimedBy.set(pkg, name);
+      packages.push(pkg);
+    }
+    if (packages.length === 0 && !bad) {
+      problems.push(`group '${name}' lists no packages`);
+      continue;
+    }
+    names.add(name);
+    rules.push({ name, packages });
+  }
+  return problems.length > 0 ? { ok: false, problems } : { ok: true, rules };
+}
+
+export function groupCandidates(
+  candidates: Candidate[],
+  rules: readonly GroupRule[] = [],
+): Group[] {
+  const declaredGroup = new Map<string, string>();
+  for (const rule of rules) {
+    for (const pkg of rule.packages) declaredGroup.set(pkg, rule.name);
+  }
+
   const groups = new Map<string, Group>();
   const add = (key: string, reason: string, c: Candidate) => {
     let g = groups.get(key);
@@ -28,8 +144,13 @@ export function groupCandidates(candidates: Candidate[]): Group[] {
   for (const c of candidates) {
     // 'unknown' means the current/latest pair is unparseable or latest is not
     // ahead (prerelease in use, MISSING install) — "update to latest" could be
-    // a downgrade, so these never reach the agent.
+    // a downgrade, so these never reach the agent, declared in a group or not.
     if (c.updateType === "unknown") continue;
+    const declared = declaredGroup.get(c.name);
+    if (declared !== undefined) {
+      add(`group/${declared}`, `user-declared group '${declared}'`, c);
+      continue;
+    }
     if (c.updateType === "major") {
       add(`major/${c.name}`, "major update isolated for individual review", c);
       continue;

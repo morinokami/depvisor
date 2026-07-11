@@ -152,6 +152,9 @@ Details worth knowing:
   `depvisor/prod-foo`); once the major has aged, the update moves to its own
   `depvisor/major-foo` PR. The earlier PR is not closed automatically — close
   or merge it yourself, since it counts against `open_pull_requests_limit` until you do.
+  (Packages in a declared [group](#grouping-packages-groups) are not affected:
+  their PR identity is the group's name, so a maturing major just refreshes the
+  group's existing PR.)
 
 ## Ignoring packages (`ignore`)
 
@@ -189,9 +192,60 @@ Details worth knowing:
 - **Typos fail loudly**: an unrecognized entry stops the run with `bad-ignore`
   rather than silently ignoring nothing.
 
+## Grouping packages (`groups`)
+
+Some packages only make sense updated together — `react` and `react-dom` must
+move in lockstep, and a lint stack is easier to review as one change. The
+`groups` input declares such bundles (Dependabot's `groups`), one group per
+line:
+
+```yaml
+groups: |
+  # react and its type stubs move in lockstep
+  react: react react-dom @types/react @types/react-dom
+  linting: eslint, eslint-config-prettier
+```
+
+Each line is `<group-name>: <package> <package> …` — members separated by
+spaces and/or commas, full-line `#` comments allowed. The group name may use
+letters, digits, `.`, `_`, and `-`, must start and end with a letter or digit,
+and may not contain `..` or end in `.lock` (it becomes part of the branch
+name, so it must survive git's ref rules unchanged). When at least one member
+has a pending update, the whole group is updated on one branch
+(`depvisor/group-<name>`) in one PR; packages in no group keep getting their
+own PR per package.
+
+Details worth knowing:
+
+- **Exact names only**: like `ignore` and `minimum_release_age_exclude`, globs
+  (`@types/*`), version ranges, and majors are not supported — expand a pattern
+  into one line per package. Any line that does not parse stops the run with
+  `bad-groups`.
+- **The group name is the PR identity**: the branch derives from the declared
+  name, never from which members happen to have updates in a given run — so a
+  member joining later (a major maturing past the `minimum_release_age`
+  cooldown, or simply its first update since you declared the group) refreshes
+  the same PR instead of opening a new one. Renaming a group changes its branch
+  and strands the old PR — close it yourself.
+- **Majors are included**: ungrouped majors are isolated in their own PR for
+  individual review, but a declared group takes all of its members' update
+  types together — you declared them related, and the react/react-dom case is
+  precisely a simultaneous major. The PR's `semver:*` label reflects the
+  riskiest member. Group with intent.
+- **One group per package**: a package listed in two groups (or twice in one)
+  stops the run with `bad-groups` — a precedence rule would make PR identity
+  depend on rule order.
+- **The group succeeds or fails as a unit**: the deterministic bump, the
+  verification gate, and (when needed) the fixer all operate on the whole
+  group, so one member's breakage defers or fails the group's PR, not just
+  that member.
+- **Trusted config only**: like every knob, `groups` is read from the workflow
+  file, never from the (agent-writable) target repository.
+
 ## One PR per package (`open_pull_requests_limit`)
 
-Every PR updates a single package, so `open_pull_requests_limit` directly controls how many
+Every PR updates a single package — or a single declared group (see
+[Grouping packages](#grouping-packages-groups)) — so `open_pull_requests_limit` directly controls how many
 independent updates can be in flight. It is a ceiling on **open** depvisor PRs
 (default `5`, matching Dependabot's `open-pull-requests-limit` default), not a
 per-run throughput cap. Concretely, with `open_pull_requests_limit: 5`, eight pending
@@ -205,8 +259,8 @@ The one-package granularity is deliberate: unrelated updates never share a PR,
 so each one is reviewable — and mergeable or rejectable — on its own. The
 trade-off is volume: a repository with many pending dev-dependency updates gets
 many small PRs instead of one big one, throttled by the ceiling. Lower
-`open_pull_requests_limit` if that is too chatty; a user-declared grouping config
-(Dependabot's `groups`) is a recorded future feature, not present.
+`open_pull_requests_limit` if that is too chatty, and bundle the packages that
+genuinely belong together with [`groups`](#grouping-packages-groups).
 
 Each group runs its own agent session with a fresh reinstall in between, so a
 higher `open_pull_requests_limit` costs proportionally more LLM calls and CI time. The

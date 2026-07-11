@@ -104,9 +104,12 @@ made a choice in the conversation, treat it as binding.
    omit it.
 4. **Optional inputs** — keep the defaults unless the user asks:
    `open_pull_requests_limit` (default: at most 5 open depvisor PRs; every PR updates
-   exactly one package), `minimum_release_age`
+   exactly one package or one declared group), `minimum_release_age`
    (default: 1-day supply-chain cooldown — keep it enabled), `ignore`
-   (packages never to update), `suggest_features` (default off — set `"true"`
+   (packages never to update), `groups` (packages updated together in one PR —
+   newline-separated `<group-name>: <package> <package> …` lines, exact names
+   only, each package in at most one group; e.g.
+   `react: react react-dom @types/react`), `suggest_features` (default off — set `"true"`
    to add a display-only "new features that may be relevant" section to PRs;
    costs extra tokens and widens the agent's exposure to untrusted release
    notes, so leave off unless the user asks), `language` (default empty =
