@@ -10,7 +10,7 @@ depvisor prepares Dependabot-style dependency-update PRs, shipped as a GitHub **
 
 ## Commands
 
-depvisor itself uses **pnpm** (the default fixture is an npm project; a pnpm variant exists). Node >= 22.19 required (Flue; declared in package.json `engines`).
+depvisor itself uses **pnpm** (the default fixture is an npm project; a pnpm variant exists). Node >= 24 required (declared in package.json `engines`; stricter than Flue's own >= 22.19 floor, and CI verifies 24 only).
 
 ```bash
 pnpm test                                    # unit tests (node --test), no API key
