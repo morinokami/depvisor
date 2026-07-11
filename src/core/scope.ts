@@ -4,7 +4,7 @@ import { parse as parseYaml } from "yaml";
 import type { CatalogEdit } from "./bump.ts";
 import { changedPaths, diffNumstat, fileAtRef, refExists } from "./git.ts";
 import { asPlainMap, DEPENDENCY_FIELDS } from "./manifest.ts";
-import { ALL_PM_LOCKFILES } from "./pm.ts";
+import { ALL_PM_LOCKFILES, UNSUPPORTED_PM_LOCKFILES } from "./pm.ts";
 
 /**
  * Two scope gates bound the update, both allow-list/deny gates over a git diff:
@@ -54,13 +54,19 @@ const PNPM_WORKSPACE_FILE = "pnpm-workspace.yaml";
 
 /**
  * Every package-manager lockfile depvisor knows (pm.ts's `ALL_PM_LOCKFILES` —
- * derived, so a new PM's lockfiles extend this gate automatically) plus pnpm's
- * workspace/catalog file. The fixer gate denies them all regardless of the
- * detected PM — the deterministic bump owns dependency state, so a lockfile the
- * fixer touched can only be scope creep. pnpm-workspace.yaml is also in DENY
- * (root-anchored); listing it here by basename additionally catches a nested one.
+ * derived, so a new PM's lockfiles extend this gate automatically — plus the
+ * `UNSUPPORTED_PM_LOCKFILES` other tools honor even though depvisor never runs
+ * them) plus pnpm's workspace/catalog file. The fixer gate denies them all
+ * regardless of the detected PM — the deterministic bump owns dependency state,
+ * so a lockfile the fixer touched (or created) can only be scope creep.
+ * pnpm-workspace.yaml is also in DENY (root-anchored); listing it here by
+ * basename additionally catches a nested one.
  */
-const FIXER_DENIED_FILES = new Set([...ALL_PM_LOCKFILES, PNPM_WORKSPACE_FILE]);
+const FIXER_DENIED_FILES = new Set([
+  ...ALL_PM_LOCKFILES,
+  ...UNSUPPORTED_PM_LOCKFILES,
+  PNPM_WORKSPACE_FILE,
+]);
 
 /**
  * The scope gate for the fixer's changes: everything the fixer altered relative

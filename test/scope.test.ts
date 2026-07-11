@@ -28,16 +28,22 @@ test("checkFixScope denies any manifest, lockfile, and workspace-file change", (
   writeFileSync(join(repo, "package-lock.json"), `{"lockfileVersion":3}`); // new lockfiles
   writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   writeFileSync(join(repo, "bun.lock"), "{}\n");
+  // Unsupported PMs' lockfiles: depvisor never runs yarn/nub, but a developer's
+  // `yarn install` / `nub install` would honor a smuggled one.
+  writeFileSync(join(repo, "yarn.lock"), "# yarn lockfile v1\n");
+  writeFileSync(join(repo, "nub.lock"), "lockfileVersion: '9.0'\n");
   writeFileSync(join(repo, "pnpm-workspace.yaml"), "packages: []\n");
   writeFileSync(join(repo, "src.ts"), "export const fixed = 1;\n"); // the one legit change
   const scope = checkFixScope(repo, "HEAD");
   assert.equal(scope.ok, false);
   assert.deepEqual(scope.violations.sort(), [
     "bun.lock",
+    "nub.lock",
     "package-lock.json",
     "package.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
+    "yarn.lock",
   ]);
   assert.ok(!scope.violations.includes("src.ts"), "a source fix is in scope");
 });

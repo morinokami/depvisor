@@ -31,8 +31,9 @@ whole run on a scope violation:
 
 - Never run git commands (no commit, branch, or push — that is handled outside).
 - Never edit any package.json, any lockfile (`package-lock.json`,
-  `pnpm-lock.yaml`, `bun.lock`/`bun.lockb`, `npm-shrinkwrap.json`), or
-  `pnpm-workspace.yaml`. The dependency bump is already done; you fix code, not
+  `pnpm-lock.yaml`, `bun.lock`/`bun.lockb`, `npm-shrinkwrap.json`, `yarn.lock`,
+  `nub.lock`), or `pnpm-workspace.yaml`. The dependency bump is already done;
+  you fix code, not
   dependencies. If the only way to make the checks pass is to change a dependency
   (a peer-dependency conflict, a sibling package that must move too), you cannot
   do it here — defer.
