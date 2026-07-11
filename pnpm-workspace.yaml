@@ -1,3 +1,21 @@
+# Strict 24h cooldown on every resolution, direct and transitive. pnpm 11's
+# built-in minimumReleaseAge default is non-strict for backward compatibility;
+# setting it explicitly turns strict resolution failures on, and
+# minimumReleaseAgeIgnoreMissingTime: false keeps missing registry time
+# metadata from becoming a silent bypass. Note this also gates our own bump
+# PRs: a version published <24h ago fails CI until it matures.
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+
+# Refuse releases whose publish trust dropped below the previous release
+# (e.g. 2FA/provenance downgrade). The whole lockfile passes with no
+# exceptions today; if one ever becomes necessary, record it here as a
+# version-scoped trustPolicyExclude entry, never a bare package name.
+# trustLockfile stays unset on purpose: external PRs can edit the lockfile,
+# so trusting it unconditionally would skip this verification pass.
+trustPolicy: no-downgrade
+
 # @mongodb-js/zstd and node-liblzma (optional native accelerators of
 # @flue/runtime's just-bash) are deliberately denied: their builds need
 # network egress (release-assets.githubusercontent.com, nodejs.org) that
