@@ -17,6 +17,8 @@ pnpm test                                    # unit tests (node --test), no API 
 node --test test/grouping.test.ts            # single test file
 pnpm run typecheck && pnpm run lint && pnpm run fmt:check && pnpm run knip
                                              # CI gates (plus test) — all must pass
+zizmor --persona=auditor --min-confidence=high .
+                                             # GitHub Actions/composite-action security gate
 node src/dev/scan.ts fixtures/sample-app --verify   # deterministic core E2E, no API key
 pnpm run fixture:init                        # create the throwaway fixture (required before agent runs)
 pnpm run fixture:init:pnpm                   # pnpm variant → fixtures/sample-app-pnpm (tests PM detection)
