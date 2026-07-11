@@ -60,7 +60,7 @@ function osvStub(vulnsByPkg: Record<string, OsvVuln[]>, calls: string[] = []): t
   ): Promise<Response> => {
     const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     calls.push(u);
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
     if (u.endsWith("/v1/querybatch")) {
       const queries = (body.queries ?? []) as { package: { name: string } }[];
       return jsonResponse({
@@ -309,7 +309,7 @@ test("fetchAdvisories checks every workspace current, not just the merged lowest
     init?: RequestInit,
   ): Promise<Response> => {
     const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
     if (u.endsWith("/v1/querybatch")) {
       const queries = (body.queries ?? []) as { version: string }[];
       return jsonResponse({
@@ -361,7 +361,7 @@ test("fetchAdvisories fails soft to ok:false + empty map when a flagged package'
     init?: RequestInit,
   ): Promise<Response> => {
     const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
     if (u.endsWith("/v1/querybatch")) {
       const queries = (body.queries ?? []) as { package: { name: string } }[];
       return jsonResponse({ results: queries.map(() => ({ vulns: [{ id: "x" }] })) });
