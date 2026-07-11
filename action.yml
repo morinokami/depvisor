@@ -58,7 +58,7 @@ inputs:
     required: false
     default: ""
   node_version:
-    description: Node version used for depvisor and target verification scripts.
+    description: Node version used for depvisor and target verification scripts. Must be >= 24, depvisor's engines floor.
     required: false
     default: "24"
 
