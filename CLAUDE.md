@@ -18,7 +18,7 @@ node --test test/grouping.test.ts            # single test file
 pnpm run check                               # all CI gates in one: typecheck + lint + fmt:check + knip + test
 zizmor --persona=auditor --min-confidence=high .
                                              # GitHub Actions/composite-action security gate
-node src/dev/scan.ts fixtures/sample-app --verify   # deterministic core E2E, no API key
+node src/dev/scan.ts fixtures/sample-app --verify   # deterministic core E2E, no API key (CI's fixture-e2e job runs this per variant)
 pnpm run fixture:init                        # create the throwaway fixture (required before agent runs)
 pnpm run fixture:init:pnpm                   # pnpm variant → fixtures/sample-app-pnpm (tests PM detection)
 pnpm run fixture:init:bun                    # bun variant → fixtures/sample-app-bun (needs a local bun)

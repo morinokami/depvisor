@@ -6,17 +6,32 @@ import { applyReleaseAge, parseMinimumReleaseAge } from "../core/release-age.ts"
 import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/verify.ts";
 
 /**
- * depvisor scan — a developer-only tool (no LLM, no API key). It runs the
- * deterministic core (collect → group → verify) against a repo and prints the
- * result, so a human can eyeball the pipeline without going through the agent.
- * It is not part of the CI/composite-action flow — hence its home under dev/.
+ * depvisor scan — runs the deterministic core (collect → group → verify)
+ * against a repo and prints the result, no LLM, no API key. Two callers: a
+ * developer eyeballing the pipeline without going through the agent, and CI's
+ * fixture-e2e job, which runs it per fixture variant as the real-package-manager
+ * E2E gate. It is not part of the composite action — hence its home under dev/.
  *
  *   node src/dev/scan.ts [repoPath] [--verify] [--minimum-release-age=<days>]
+ *                        [--expect-updates[=<name>[@<location>],...]]
  *
  * --minimum-release-age applies the workflow's cooldown clamp (opt-in here, so the
  * default scan stays offline); it hits the real npm registry.
  * DEPVISOR_GROUPS is honored like in the workflow, so user-declared grouping
  * can be eyeballed here too.
+ *
+ * Exit code is nonzero when a --verify step fails or --verify finds no steps
+ * (mirroring the workflow's fail-closed no-verify-scripts), and — with
+ * --expect-updates — when the scan ends with zero candidates, zero actionable
+ * groups, or a named expectation unmet. An expectation may pin a declaring
+ * workspace (`semver@packages/core`); the location separator is the LAST `@`,
+ * so scoped names work bare (`@types/node`) and pinned
+ * (`@types/node@packages/web`). This is the CI fixture-e2e canary: the
+ * fixtures are outdated by construction, so a hole here means a PM's output
+ * format drifted and a parser broke silently — including the partial
+ * breakages a bare zero-candidates check would miss (every candidate
+ * degrading to `unknown` and leaving no groups, or one workspace quietly
+ * dropping out of enumeration).
  */
 
 async function main(): Promise<void> {
@@ -24,6 +39,13 @@ async function main(): Promise<void> {
   const repoArg = args.find((a) => !a.startsWith("--")) ?? "fixtures/sample-app";
   const repoPath = resolve(process.cwd(), repoArg);
   const doVerify = args.includes("--verify");
+  const expectArg = args.find((a) => a === "--expect-updates" || a.startsWith("--expect-updates="));
+  const expectUpdates = expectArg !== undefined;
+  const expectations = (expectArg?.startsWith("--expect-updates=") ? expectArg : "")
+    .slice("--expect-updates=".length)
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
   const ageArg = args.find((a) => a.startsWith("--minimum-release-age="));
   const minimumReleaseAge = ageArg
     ? parseMinimumReleaseAge(ageArg.slice("--minimum-release-age=".length))
@@ -48,6 +70,10 @@ async function main(): Promise<void> {
   let candidates = collectCandidates(repoPath, pm);
   if (candidates.length === 0) {
     console.log("No outdated dependencies found.\n");
+    if (expectUpdates) {
+      console.log("--expect-updates: zero candidates on a repo that should have some.\n");
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -72,6 +98,10 @@ async function main(): Promise<void> {
     candidates = aged.kept;
     if (candidates.length === 0) {
       console.log("\nNo candidates remain after the release-age clamp.\n");
+      if (expectUpdates) {
+        console.log("--expect-updates: the clamp left zero candidates.\n");
+        process.exitCode = 1;
+      }
       return;
     }
   }
@@ -88,13 +118,45 @@ async function main(): Promise<void> {
   for (const g of groups) {
     console.log(`\n  ▸ ${g.key}`);
     console.log(`    ${g.reason}`);
-    for (const m of g.members) console.log(`      - ${m.name} (${m.current} → ${m.latest})`);
+    for (const m of g.members) {
+      const where = m.locations.filter((l) => l !== "");
+      const at = where.length > 0 ? `  @ ${where.join(", ")}` : "";
+      console.log(`      - ${m.name} (${m.current} → ${m.latest})${at}`);
+    }
   }
   const skipped = candidates.filter((c) => c.updateType === "unknown");
   if (skipped.length > 0) {
     console.log(
       `\nSkipped (unknown update type — latest not ahead of current): ${skipped.map((c) => c.name).join(", ")}`,
     );
+  }
+
+  if (expectUpdates) {
+    // Match against group MEMBERS, not raw candidates: a candidate that
+    // degraded to `unknown` never becomes a PR, so it must not satisfy an
+    // expectation either.
+    const members = groups.flatMap((g) => g.members);
+    const problems: string[] = [];
+    if (groups.length === 0) problems.push("zero actionable groups");
+    for (const e of expectations) {
+      const sep = e.lastIndexOf("@");
+      const name = sep > 0 ? e.slice(0, sep) : e;
+      const location = sep > 0 ? e.slice(sep + 1) : undefined;
+      const met = members.some(
+        (m) => m.name === name && (location === undefined || m.locations.includes(location)),
+      );
+      if (!met)
+        problems.push(`${name} missing${location === undefined ? "" : ` at "${location}"`}`);
+    }
+    if (problems.length > 0) {
+      console.log(`\n--expect-updates: ${problems.join("; ")}.`);
+      console.log(
+        members.length === 0
+          ? "No actionable members."
+          : `Actionable members: ${members.map((m) => `${m.name}[${m.locations.join(",")}]`).join(" ")}`,
+      );
+      process.exitCode = 1;
+    }
   }
 
   if (doVerify) {
@@ -106,12 +168,14 @@ async function main(): Promise<void> {
         "\nNo verification scripts (build/lint/test) found in package.json " +
           "and DEPVISOR_VERIFY_COMMANDS is not set.",
       );
+      process.exitCode = 1;
     } else {
       console.log(`\nRunning verification gate (${steps.map((s) => s.name).join(" → ")})...`);
       const results = runVerification(repoPath, steps);
       for (const r of results) {
         console.log(`  ${r.ok ? "✓" : "✗"} ${r.name} (exit ${r.code})`);
       }
+      if (results.some((r) => !r.ok)) process.exitCode = 1;
     }
   }
 
