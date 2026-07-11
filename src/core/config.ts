@@ -3,7 +3,8 @@
  * reads, parsed and validated in one place.
  *
  * Each knob's own parser (`budget.ts`, `release-age.ts`, `ignore.ts`,
- * `suggest-features.ts`) owns its default and its grammar — see those headers.
+ * `suggest-features.ts`, `language.ts`) owns its default and its grammar — see
+ * those headers.
  * This module only sequences them and turns the first rejection into the
  * run-level `bad-*` status the workflow reports. That sequencing is why it
  * lives in the core rather than inline in the workflow: the summaries a user
@@ -26,6 +27,7 @@
 
 import { parseOpenPullRequestsLimit } from "./budget.ts";
 import { type IgnoreRule, parseIgnore } from "./ignore.ts";
+import { parseLanguage } from "./language.ts";
 import { parseMinimumReleaseAge, parseMinimumReleaseAgeExclude } from "./release-age.ts";
 import { parseSuggestFeatures } from "./suggest-features.ts";
 
@@ -84,6 +86,12 @@ interface RunConfig {
    * untrusted release notes.
    */
   suggestFeatures: boolean;
+  /**
+   * BCP-47-style tag for the language the fixer/digest write their narrative
+   * fields in (`""` = unset = English, adding nothing to the prompts). Only
+   * LLM free text is localized; deterministic strings are machine contracts.
+   */
+  language: string;
 }
 
 /**
@@ -176,6 +184,18 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
     };
   }
 
+  const languageRaw = read(env, "DEPVISOR_LANGUAGE");
+  const language = parseLanguage(languageRaw);
+  if (language === null) {
+    return {
+      ok: false,
+      status: "bad-language",
+      summary:
+        "The language input must be a BCP-47-style language tag such as 'ja' or 'pt-BR'; " +
+        `got '${languageRaw.trim()}'.`,
+    };
+  }
+
   return {
     ok: true,
     config: {
@@ -188,6 +208,7 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
       releaseAgeExclude: releaseAgeExclude.exclude,
       ignoreRules: ignore.rules,
       suggestFeatures,
+      language,
     },
   };
 }

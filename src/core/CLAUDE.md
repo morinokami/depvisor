@@ -57,7 +57,7 @@ Registry data (licenses, release notes, packuments) and agent output are both un
 
 ## Config parsers share one shape
 
-`budget.ts`, `release-age.ts`, `ignore.ts`, `suggest-features.ts`: an empty string means "not set" (falsy checks, never `??`), matching is exact-string, and an unrecognized value is a **fail-closed run-level `bad-*` status**, never a silent default. Follow this shape for a new knob. Validate even when the feature is disabled, so a typo fails now rather than on re-enable.
+`budget.ts`, `release-age.ts`, `ignore.ts`, `suggest-features.ts`, `language.ts`: an empty string means "not set" (falsy checks, never `??`), matching is exact-string, and an unrecognized value is a **fail-closed run-level `bad-*` status**, never a silent default. Follow this shape for a new knob. Validate even when the feature is disabled, so a typo fails now rather than on re-enable.
 
 `config.ts` sequences all of them into one `parseRunConfig(env)` and owns the rejection summaries; a new knob is a parser plus a field there. It runs **before** `preflight.ts`, so a mistyped knob is reported without touching the target repository (and its `bad-*` status carries no base branch). `DEPVISOR_LLM_MODEL` is deliberately not a `RunConfig` field — it belongs to the agent factory.
 

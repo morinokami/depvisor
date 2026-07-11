@@ -108,7 +108,7 @@ export default defineWorkflow({
       });
     }
     const config = parsedConfig.config;
-    const { minimumReleaseAge, openPullRequestsLimit, suggestFeatures } = config;
+    const { minimumReleaseAge, openPullRequestsLimit, suggestFeatures, language } = config;
 
     const pre = preflight(REPO, {
       baseBranch: config.baseBranch,
@@ -327,6 +327,7 @@ export default defineWorkflow({
           requiresResetBefore: requiresReset,
           minimumReleaseAge,
           suggestFeatures,
+          language,
           disposition,
           packuments,
           advisories,

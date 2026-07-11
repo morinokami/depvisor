@@ -52,6 +52,23 @@ export const DigestResult = v.object({
 // a wide (from, to] window can still be large, so cap the per-package block too.
 const DIGEST_NOTES_CHARS_PER_PACKAGE = 8_000;
 
+/**
+ * Appended to both task prompts only when the language knob is set (empty =
+ * English = no sentence at all, keeping unset behavior bit-identical). It
+ * constrains ONLY the structured result's free-text fields — never the fixer's
+ * work — and the field names stay the English machine contract. The tag is
+ * prompt-embedded, which is why core/language.ts confines it to a strict
+ * BCP-47-style grammar.
+ */
+function languageInstruction(language: string): string {
+  if (!language) return "";
+  return (
+    `\n\nWrite every free-text field of the structured result in the language with BCP 47 ` +
+    `tag \`${language}\`. Keep code identifiers, file paths, package names, version numbers, ` +
+    "and commands untranslated."
+  );
+}
+
 /** One member per line for a task prompt: name, version window, dev flag, workspaces. */
 function describeTargets(members: readonly Candidate[]): string {
   return members
@@ -75,6 +92,7 @@ export function fixerPrompt(
   verifySteps: VerifyStep[],
   verification: readonly VerifyResult[],
   manifestHunks: string,
+  language: string,
 ): string {
   const failing = verification
     .filter((r) => !r.ok)
@@ -103,7 +121,8 @@ export function fixerPrompt(
     "to a changed API is fine, but never weaken a test to force the checks green.\n\n" +
     "Return the structured result: summary, fixes_applied, residual_risks, and verdict " +
     "'fixed' (source changed, checks should pass) or 'defer' (cannot be made safe here — give " +
-    "defer_reason and leave no half-finished changes)."
+    "defer_reason and leave no half-finished changes)." +
+    languageInstruction(language)
   );
 }
 
@@ -143,6 +162,7 @@ export function digestPrompt(
   members: readonly Candidate[],
   notesText: string,
   wantSuggestions: boolean,
+  language: string,
 ): string {
   return (
     "Write a reviewer digest for this dependency update.\n\n" +
@@ -153,7 +173,8 @@ export function digestPrompt(
     "Read this repository to judge which of these changes actually matter here, then return " +
     "the structured result: summary, upstream_changes (per-package notes grounded in this " +
     "repository), and review_notes." +
-    (wantSuggestions ? `\n\n${featureSuggestionInstruction}` : "")
+    (wantSuggestions ? `\n\n${featureSuggestionInstruction}` : "") +
+    languageInstruction(language)
   );
 }
 

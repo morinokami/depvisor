@@ -101,6 +101,7 @@ export interface ProcessGroupOptions {
   requiresResetBefore: boolean;
   minimumReleaseAge: number;
   suggestFeatures: boolean;
+  language: string;
   disposition: "refresh" | "open-new";
   packuments: Map<string, Packument | null>;
   advisories: AdvisoryResult;
@@ -172,6 +173,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     resetCommand,
     minimumReleaseAge,
     suggestFeatures,
+    language,
     disposition,
     packuments,
     advisories,
@@ -433,6 +435,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
           verifySteps,
           postBump,
           manifestDiff(repo, base, "HEAD", pm.extraBumpFiles),
+          language,
         ),
         { agent: "fixer", result: FixerResult },
       );
@@ -567,10 +570,10 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
   let digestReport: DigestReport | null = null;
   let newFeatures: RelevantNewFeature[] = [];
   try {
-    const response = await session.task(digestPrompt(members, notesText, wantSuggestions), {
-      agent: "digest",
-      result: DigestResult,
-    });
+    const response = await session.task(
+      digestPrompt(members, notesText, wantSuggestions, language),
+      { agent: "digest", result: DigestResult },
+    );
     // Capture usage before the defensive re-parse.
     usageEntries.push(projectUsage("digest", response));
     const data = v.parse(DigestResult, response.data);

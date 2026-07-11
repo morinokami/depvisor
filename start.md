@@ -109,7 +109,10 @@ made a choice in the conversation, treat it as binding.
    (packages never to update), `suggest_features` (default off — set `"true"`
    to add a display-only "new features that may be relevant" section to PRs;
    costs extra tokens and widens the agent's exposure to untrusted release
-   notes, so leave off unless the user asks).
+   notes, so leave off unless the user asks), `language` (default empty =
+   English — a BCP-47-style tag like `ja` or `pt-BR` makes the agent write the PR's
+   narrative text in that language; statuses, commit messages, branch names,
+   and PR titles stay English).
 
 Before implementing, restate the choices to yourself as a contract:
 

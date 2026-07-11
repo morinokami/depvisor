@@ -20,6 +20,7 @@ test("an empty env yields every documented default", () => {
   assert.equal(config.openPullRequestsLimit, 5);
   assert.equal(config.minimumReleaseAge, 1);
   assert.equal(config.suggestFeatures, false);
+  assert.equal(config.language, "");
   assert.equal(config.baseBranch, undefined);
   assert.equal(config.openPrsFile, undefined);
   assert.equal(config.verifyCommands, "");
@@ -36,6 +37,7 @@ test("empty strings mean 'not set', as the composite action forwards them", () =
     DEPVISOR_MINIMUM_RELEASE_AGE: "",
     DEPVISOR_SUGGEST_FEATURES: "",
     DEPVISOR_IGNORE: "",
+    DEPVISOR_LANGUAGE: "",
   });
   assert.ok(parsed.ok);
   assert.deepEqual(parsed.config, defaults());
@@ -52,6 +54,7 @@ test("set knobs are carried through", () => {
     DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "@acme/private\n# a comment",
     DEPVISOR_IGNORE: "lodash\nreact@19",
     DEPVISOR_SUGGEST_FEATURES: "true",
+    DEPVISOR_LANGUAGE: "pt-BR",
   });
   assert.ok(parsed.ok);
   const config = parsed.config;
@@ -62,6 +65,7 @@ test("set knobs are carried through", () => {
   assert.equal(config.openPullRequestsLimit, 3);
   assert.equal(config.minimumReleaseAge, 0);
   assert.equal(config.suggestFeatures, true);
+  assert.equal(config.language, "pt-BR");
   assert.deepEqual([...config.releaseAgeExclude], ["@acme/private"]);
   assert.deepEqual(
     config.ignoreRules.map((r) => r.name),
@@ -75,6 +79,7 @@ test("each knob fails closed with its own bad-* status and echoes the value", ()
     [{ DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "many" }, "bad-open-pull-requests-limit", "'many'"],
     [{ DEPVISOR_MINIMUM_RELEASE_AGE: "-1" }, "bad-minimum-release-age", "'-1'"],
     [{ DEPVISOR_SUGGEST_FEATURES: "yes" }, "bad-suggest-features", "'yes'"],
+    [{ DEPVISOR_LANGUAGE: "japanese please" }, "bad-language", "'japanese please'"],
   ];
   for (const [env, status, echoed] of cases) {
     const rejected = rejection(env);
@@ -110,6 +115,7 @@ test("the first rejection wins, in the order the knobs are parsed", () => {
     DEPVISOR_MINIMUM_RELEASE_AGE: "nope",
     DEPVISOR_IGNORE: "nope nope",
     DEPVISOR_SUGGEST_FEATURES: "nope",
+    DEPVISOR_LANGUAGE: "nope nope",
   });
   assert.equal(rejected?.status, "bad-open-pull-requests-limit");
 });

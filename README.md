@@ -109,6 +109,7 @@ committed lockfile (npm/pnpm only) are all supported with caveats — see
 | `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). **Exact names only** (full-line `#` comments allowed); globs and version ranges are not supported |
 | `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; full-line `#` comments are allowed                                                                                                   |
 | `suggest_features`            | `true` to also surface newly added capabilities relevant to your code as a display-only PR-body section (default `false`). Opt-in because it costs extra tokens and widens the agent's engagement with untrusted release notes                                                         |
+| `language`                    | Restricted BCP-47-style language tag (e.g. `ja`, `pt-BR`) the agent writes the PR's narrative text in; empty (the default) means English. Only the LLM-written free text is localized — statuses, commit messages, branch names, PR titles, and section headings stay English          |
 
 ```yaml
 # e.g. when your checks go by other names:
@@ -207,8 +208,8 @@ source fixes the AI made — present only when the update actually needed them.
 - [docs/configuration.md](./docs/configuration.md) — repository requirements in
   detail, and every behavior-shaping input: verification commands, the
   supply-chain cooldown (`minimum_release_age`), `ignore`, the PR ceiling
-  (`open_pull_requests_limit`), security prioritization, and opt-in feature
-  suggestions.
+  (`open_pull_requests_limit`), security prioritization, opt-in feature
+  suggestions, and the PR narrative's output language (`language`).
 - [docs/results.md](./docs/results.md) — the job summary and annotations, the
   action outputs, PR labels, the test-change and license-change warnings, and
   the full [status reference](./docs/results.md#status-reference).
