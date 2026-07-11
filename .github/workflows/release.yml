@@ -61,7 +61,7 @@ jobs:
     permissions:
       contents: write # force-push the movable tags
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with: # zizmor: ignore[artipacked] This job intentionally uses checkout's credential to push the release tags.
           fetch-depth: 0 # need the released commit + all tags present locally
       # Values in env vars so nothing from the outputs can break out of the
