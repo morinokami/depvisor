@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { asPlainMap } from "./manifest.ts";
 import type { PmToolchain } from "./pm.ts";
 import type { Candidate, DepKind, UpdateType } from "./types.ts";
 import { compareTriple, parseVersionCore, type Triple } from "./version-core.ts";
@@ -64,17 +65,21 @@ export function classifyUpdate(current: string, latest: string): UpdateType {
 export function parseOutdated(data: Record<string, unknown>): Candidate[] {
   const out: Candidate[] = [];
   for (const [name, infoRaw] of Object.entries(data)) {
-    const entries = (Array.isArray(infoRaw) ? infoRaw : [infoRaw]) as Record<string, string>[];
+    const entries = (Array.isArray(infoRaw) ? infoRaw : [infoRaw]).map(asPlainMap);
+    if (entries.some((entry) => entry === null)) {
+      throw new Error(`malformed npm outdated entry for ${name}`);
+    }
     const currents: string[] = [];
     const locations = new Set<string>();
     let latest = "";
     let allDev = entries.length > 0;
     for (const info of entries) {
-      const cur = String(info.current ?? "");
+      if (!info) continue;
+      const cur = typeof info.current === "string" ? info.current : "";
       if (cur) currents.push(cur);
-      const lat = String(info.latest ?? "");
+      const lat = typeof info.latest === "string" ? info.latest : "";
       if (lat) latest = lat; // registry `latest`, identical across occurrences
-      locations.add(String(info.dependedByLocation ?? ""));
+      locations.add(typeof info.dependedByLocation === "string" ? info.dependedByLocation : "");
       if (info.type !== "devDependencies") allDev = false;
     }
     const current = lowestVersion(currents);
@@ -86,8 +91,8 @@ export function parseOutdated(data: Record<string, unknown>): Candidate[] {
       latest,
       kind,
       updateType: classifyUpdate(current, latest),
-      locations: [...locations].sort(),
-      currents: [...new Set(currents)].sort(),
+      locations: [...locations].toSorted(),
+      currents: [...new Set(currents)].toSorted(),
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -108,18 +113,19 @@ export function parseOutdated(data: Record<string, unknown>): Candidate[] {
 export function parsePnpmOutdated(data: Record<string, unknown>, repoPath: string): Candidate[] {
   const out: Candidate[] = [];
   for (const [name, infoRaw] of Object.entries(data)) {
-    const info = infoRaw as {
-      current?: string;
-      latest?: string;
-      dependencyType?: string;
-      dependentPackages?: { location?: string }[];
-    };
-    const current = String(info.current ?? "");
-    const latest = String(info.latest ?? "");
+    const info = asPlainMap(infoRaw);
+    if (!info) throw new Error(`malformed pnpm outdated entry for ${name}`);
+    const current = typeof info.current === "string" ? info.current : "";
+    const latest = typeof info.latest === "string" ? info.latest : "";
     if (!latest || latest === current) continue;
     const locations = new Set<string>();
-    for (const dep of info.dependentPackages ?? []) {
-      locations.add(relativeLocation(repoPath, dep.location));
+    const dependentPackages = Array.isArray(info.dependentPackages) ? info.dependentPackages : [];
+    for (const depRaw of dependentPackages) {
+      const dep = asPlainMap(depRaw);
+      if (!dep) throw new Error(`malformed pnpm dependent package for ${name}`);
+      locations.add(
+        relativeLocation(repoPath, typeof dep.location === "string" ? dep.location : undefined),
+      );
     }
     if (locations.size === 0) locations.add(""); // defensive: treat as root
     const kind: DepKind = info.dependencyType === "devDependencies" ? "dev" : "prod";
@@ -129,7 +135,7 @@ export function parsePnpmOutdated(data: Record<string, unknown>, repoPath: strin
       latest,
       kind,
       updateType: classifyUpdate(current, latest),
-      locations: [...locations].sort(),
+      locations: [...locations].toSorted(),
       // pnpm's name-keyed JSON reports one entry per package whose `current` is
       // the HIGHEST installed version across workspaces; lower-versioned
       // workspaces are omitted entirely (verified on pnpm 11). So `currents` can
@@ -165,10 +171,8 @@ const BUN_COLUMNS = ["Package", "Current", "Update", "Latest", "Workspace"] as c
 export function bunWorkspaceMap(repoPath: string): Map<string, string> {
   const nameAt = (dir: string): string | null => {
     try {
-      const pkg = JSON.parse(readFileSync(join(repoPath, dir, "package.json"), "utf8")) as {
-        name?: unknown;
-      };
-      return typeof pkg.name === "string" ? pkg.name : null;
+      const pkg = asPlainMap(JSON.parse(readFileSync(join(repoPath, dir, "package.json"), "utf8")));
+      return typeof pkg?.name === "string" ? pkg.name : null;
     } catch {
       return null;
     }
@@ -182,16 +186,12 @@ export function bunWorkspaceMap(repoPath: string): Map<string, string> {
   const rootName = nameAt(".");
   if (rootName) map.set(rootName, "");
 
-  const rootPkg = JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8")) as {
-    workspaces?: unknown;
-  };
+  const rootPkg = asPlainMap(JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8")));
+  if (!rootPkg) throw new Error("root package.json is not an object");
   // bun accepts both the array form and npm's `{ packages: [...] }` object form.
   const ws = rootPkg.workspaces;
-  const patterns = Array.isArray(ws)
-    ? ws
-    : Array.isArray((ws as { packages?: unknown })?.packages)
-      ? (ws as { packages: unknown[] }).packages
-      : [];
+  const wsMap = asPlainMap(ws);
+  const patterns = Array.isArray(ws) ? ws : Array.isArray(wsMap?.packages) ? wsMap.packages : [];
 
   for (const patternRaw of patterns) {
     if (typeof patternRaw !== "string") continue;
@@ -300,8 +300,8 @@ export function parseBunOutdated(raw: string, workspaces: Map<string, string>): 
       latest: acc.latest,
       kind: acc.allDev ? "dev" : "prod",
       updateType: classifyUpdate(current, acc.latest),
-      locations: [...acc.locations].sort(),
-      currents: [...new Set(acc.currents)].sort(),
+      locations: [...acc.locations].toSorted(),
+      currents: [...new Set(acc.currents)].toSorted(),
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -370,17 +370,20 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
       return parseBunOutdated(raw, workspaces);
     } catch (err) {
       const stderr = (res.stderr ?? "").trim();
-      const message = err instanceof Error ? err.message : String(err);
+      const message = Error.isError(err) ? err.message : String(err);
       throw new Error(
         `bun outdated output was not parseable (exit ${res.status}): ${message}` +
           (stderr ? ` — stderr: ${stderr.slice(0, 200)}` : ""),
+        { cause: err },
       );
     }
   }
 
   let data: Record<string, unknown>;
   try {
-    data = JSON.parse(raw) as Record<string, unknown>;
+    const parsed = asPlainMap(JSON.parse(raw));
+    if (!parsed) throw new Error("root value is not an object");
+    data = parsed;
   } catch {
     const stderr = (res.stderr ?? "").trim();
     throw new Error(
@@ -402,7 +405,8 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
     !("latest" in errInfo) &&
     ("code" in errInfo || "summary" in errInfo)
   ) {
-    const { code, summary } = errInfo as { code?: unknown; summary?: unknown };
+    const code = "code" in errInfo ? errInfo.code : undefined;
+    const summary = "summary" in errInfo ? errInfo.summary : undefined;
     throw new Error(
       `${pm.name} outdated failed (exit ${res.status}): ` +
         (typeof code === "string" ? `${code}: ` : "") +

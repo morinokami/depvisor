@@ -120,7 +120,7 @@ function pnpmWorkspaceDirs(repoPath: string): string[] | null {
   try {
     raw = parseYaml(readFileSync(join(repoPath, "pnpm-workspace.yaml"), "utf8"));
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
+    return err && typeof err === "object" && "code" in err && err.code === "ENOENT" ? [] : null;
   }
   const root = asPlainMap(raw);
   if (raw !== null && raw !== undefined && !root) return null;

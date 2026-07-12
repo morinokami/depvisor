@@ -110,7 +110,7 @@ export interface ProcessGroupOptions {
 }
 
 function dirtyPaths(repo: string): string {
-  return changedPaths(repo).sort().join(", ");
+  return changedPaths(repo).toSorted().join(", ");
 }
 
 function describeMembers(
@@ -160,6 +160,10 @@ function runVerificationPhase(repo: string, title: string, steps: VerifyStep[]):
   } finally {
     groupEnd();
   }
+}
+
+function stopOutcome(status: "baseline-red" | "reset-failed", summary: string): GroupOutcome {
+  return { kind: "stop", status, summary };
 }
 
 export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutcome> {
@@ -212,12 +216,6 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     result: result(status, summary, extra),
     requiresResetNext,
   });
-  const stop = (status: "baseline-red" | "reset-failed", summary: string): GroupOutcome => ({
-    kind: "stop",
-    status,
-    summary,
-  });
-
   // Install lifecycle scripts and target verification run with `.git`
   // reachable, so they can move ANY ref — including a PREVIOUS group's payload
   // branch or base, both still live targets because open-pr pushes all payloads
@@ -269,13 +267,13 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     );
     if (installRefFailure) return installRefFailure;
     if (!install.ok) {
-      return stop(
+      return stopOutcome(
         "reset-failed",
         `Reinstall between groups failed (exit ${install.code}) while resetting to '${base}' before ${branch}.`,
       );
     }
     if (hasChanges(repo)) {
-      return stop(
+      return stopOutcome(
         "reset-failed",
         `Reinstall between groups modified tracked or untracked repository files before ${branch}: ` +
           `${dirtyPaths(repo)}. Stopping before verification.`,
@@ -301,11 +299,11 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
   if (hasChanges(repo)) {
     const paths = dirtyPaths(repo);
     return requiresResetNext
-      ? stop(
+      ? stopOutcome(
           "reset-failed",
           `Verification on '${base}' modified repository files after resetting from the previous group: ${paths}. Stopping before the bump.`,
         )
-      : stop(
+      : stopOutcome(
           "baseline-red",
           `Verification on '${base}' modified repository files before any update: ${paths}. Fix the baseline scripts first; no PR.`,
         );
@@ -313,11 +311,11 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
   const broken = baseline.find((r) => !r.ok);
   if (broken) {
     return requiresResetNext
-      ? stop(
+      ? stopOutcome(
           "reset-failed",
           `Verification ('${broken.name}') fails on '${base}' after resetting from the previous group — the tree reset was incomplete. Stopping to keep failures attributable.`,
         )
-      : stop(
+      : stopOutcome(
           "baseline-red",
           `Verification ('${broken.name}') already fails on '${base}' before any update. Fix the baseline first; no agent run, no PR.`,
         );
@@ -599,7 +597,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
       err instanceof ResultUnavailableError ||
       err instanceof v.ValiError
     ) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = Error.isError(err) ? err.message : String(err);
       log.warn(
         "The digest agent failed; preparing the PR with a deterministic summary and no " +
           `narrative digest. (${detail})`,

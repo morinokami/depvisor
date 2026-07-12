@@ -48,6 +48,10 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function affectedWorkspaceVersion(version: string): boolean {
+  return version === "2.1.0";
+}
+
 /**
  * Stub the two OSV endpoints. `vulnsByPkg` maps a package name to the full vuln
  * list `/v1/query` returns; querybatch triage is derived from it (a package is
@@ -76,7 +80,7 @@ function osvStub(vulnsByPkg: Record<string, OsvVuln[]>, calls: string[] = []): t
     }
     return new Response("not found", { status: 404 });
   };
-  return impl as typeof fetch;
+  return impl;
 }
 
 test("resolvesAdvisory is true when the fix version is at or below latest", () => {
@@ -303,7 +307,6 @@ test("fetchAdvisories checks every workspace current, not just the merged lowest
       },
     ],
   };
-  const affected = (version: string): boolean => version === "2.1.0"; // only this current is in range
   const impl = async (
     input: Parameters<typeof fetch>[0],
     init?: RequestInit,
@@ -313,15 +316,17 @@ test("fetchAdvisories checks every workspace current, not just the merged lowest
     if (u.endsWith("/v1/querybatch")) {
       const queries = (body.queries ?? []) as { version: string }[];
       return jsonResponse({
-        results: queries.map((q) => (affected(q.version) ? { vulns: [{ id: vuln.id }] } : {})),
+        results: queries.map((q) =>
+          affectedWorkspaceVersion(q.version) ? { vulns: [{ id: vuln.id }] } : {},
+        ),
       });
     }
     const version = (body as { version: string }).version;
-    return jsonResponse({ vulns: affected(version) ? [vuln] : [] });
+    return jsonResponse({ vulns: affectedWorkspaceVersion(version) ? [vuln] : [] });
   };
   const result = await fetchAdvisories(
     [cand({ name: "foo", current: "1.0.0", latest: "2.2.0", currents: ["1.0.0", "2.1.0"] })],
-    { fetch: impl as typeof fetch },
+    { fetch: impl },
   );
   assert.deepEqual([...(result.resolvedByPackage.get("foo") ?? [])], ["GHSA-aaaa-bbbb-cccc"]);
 });
@@ -375,7 +380,7 @@ test("fetchAdvisories fails soft to ok:false + empty map when a flagged package'
       cand({ name: "flaky", current: "1.0.0", latest: "1.5.0" }),
       cand({ name: "solid", current: "1.0.0", latest: "1.5.0" }),
     ],
-    { fetch: impl as typeof fetch },
+    { fetch: impl },
   );
   assert.equal(result.ok, false);
   assert.equal(result.resolvedByPackage.size, 0);

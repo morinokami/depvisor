@@ -56,7 +56,7 @@ export function parsePrPayload(raw: unknown): PrPayload | null {
 
 export function slugify(s: string): string {
   return s
-    .replace(/@/g, "")
+    .replaceAll("@", "")
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
@@ -88,8 +88,8 @@ export function versionsMarker(
   members: Pick<Candidate, "name" | "latest" | "locations">[],
 ): string {
   const list = members
-    .map((m) => `${m.name}@${m.latest}@${[...m.locations].sort().join("~")}`)
-    .sort()
+    .map((m) => `${m.name}@${m.latest}@${[...m.locations].toSorted().join("~")}`)
+    .toSorted()
     .join(",");
   return `<!-- depvisor:versions=${list} -->`;
 }
@@ -163,8 +163,8 @@ function sanitizeText(s: string): string {
   return (
     s
       .replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/</g, "&lt;")
-      .replace(/!\[/g, "!\\[")
+      .replaceAll("<", "&lt;")
+      .replaceAll("![", "!\\[")
       // Lookahead excludes name chars too, so backtracking can't shorten
       // "@types" into a match for "@type" just because "/" follows.
       .replace(/@([A-Za-z0-9-]+)(?![A-Za-z0-9/-])/g, "@\u200b$1")
@@ -237,7 +237,7 @@ export function sanitizeLabels(labels: unknown): string[] {
   for (const label of labels) {
     if (typeof label === "string" && LABEL_RE.test(label)) kept.add(label);
   }
-  return [...kept].sort();
+  return [...kept].toSorted();
 }
 
 // For a singleton group the semver:* label is simply that package's update

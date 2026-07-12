@@ -83,12 +83,8 @@ function redactSubsection(key: string): string {
 }
 
 function httpUrlHasUserinfo(raw: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return false; // scp-style ssh or a local path — not an http URL with userinfo
-  }
+  const url = URL.parse(raw);
+  if (!url) return false; // scp-style ssh or a local path — not an http URL with userinfo
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
   return url.username !== "" || url.password !== "";
 }

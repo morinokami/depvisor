@@ -23,8 +23,12 @@ function payloadFiles(explicit: string | undefined): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
-    .sort()
+    .toSorted()
     .map((f) => join(dir, f));
+}
+
+function errorMessage(err: unknown): string {
+  return Error.isError(err) ? err.message : String(err);
 }
 
 function main(): void {
@@ -55,7 +59,7 @@ function main(): void {
       }
       payload = parsed;
     } catch (err) {
-      const message = (err as Error).message;
+      const message = errorMessage(err);
       console.error(`  failed: unreadable payload ${file}: ${message}`);
       recordGroupOutcome(statusFile, null, {
         status: "open-pr-failed",
@@ -78,7 +82,7 @@ function main(): void {
     try {
       result = openPrWithGh(REPO, payload, process.env.DEPVISOR_REMOTE_URL || undefined);
     } catch (err) {
-      const message = (err as Error).message;
+      const message = errorMessage(err);
       console.error(`  failed: ${message}`);
       recordGroupOutcome(statusFile, payload.branch, {
         status: "open-pr-failed",

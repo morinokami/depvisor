@@ -79,7 +79,7 @@ const PNPM_WORKSPACE_FILE = "pnpm-workspace.yaml";
 const CATALOG_STEP = `catalog edit (${PNPM_WORKSPACE_FILE})`;
 
 function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return Error.isError(err) ? err.message : String(err);
 }
 
 /**

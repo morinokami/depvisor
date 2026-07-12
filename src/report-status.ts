@@ -17,7 +17,7 @@ const DEFAULT_STATUS_FILE = fileURLToPath(
 );
 
 function workflowEscape(value: string): string {
-  return value.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  return value.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
 }
 
 function emitAnnotation(level: "notice" | "error", message: string): void {

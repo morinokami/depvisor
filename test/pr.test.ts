@@ -435,7 +435,7 @@ test("emitPrPayload names payloads by processing order and branch slug", () => {
   assert.ok(a.endsWith(join(PR_PAYLOADS_DIR, "00-depvisor-dev-knip.json")));
   assert.ok(b.endsWith(join(PR_PAYLOADS_DIR, "01-depvisor-major-lru-cache.json")));
   // Filenames sort in processing order, and round-trip the payload.
-  const files = readdirSync(join(dir, PR_PAYLOADS_DIR)).sort();
+  const files = readdirSync(join(dir, PR_PAYLOADS_DIR)).toSorted();
   assert.deepEqual(files, ["00-depvisor-dev-knip.json", "01-depvisor-major-lru-cache.json"]);
   assert.equal(
     (JSON.parse(readFileSync(a, "utf8")) as { branch: string }).branch,
@@ -802,7 +802,12 @@ test("buildPrPayload attaches the deterministic label set to the payload", () =>
     narrative: narrative("Bump lodash."),
     verification: [{ name: "test", ok: true, code: 0 }],
   });
-  assert.deepEqual(p.labels.sort(), ["depvisor", "dev-dependencies", "security", "semver:major"]);
+  assert.deepEqual(p.labels.toSorted(), [
+    "depvisor",
+    "dev-dependencies",
+    "security",
+    "semver:major",
+  ]);
 });
 
 test("sanitizeLabels keeps only the fixed vocabulary, deduping and stabilizing", () => {
