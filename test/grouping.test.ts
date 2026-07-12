@@ -76,13 +76,16 @@ function problems(raw: string): string[] {
 
 test("parseGroups: one group per line, members split on spaces and commas", () => {
   assert.deepEqual(rules("react: react react-dom, @types/react"), [
-    { name: "react", packages: ["react", "react-dom", "@types/react"] },
+    {
+      name: "react",
+      packages: [{ name: "react" }, { name: "react-dom" }, { name: "@types/react" }],
+    },
   ]);
 });
 
 test("parseGroups: blank lines and full-line comments are skipped", () => {
   assert.deepEqual(rules("# the react stack moves together\n\nreact: react react-dom\n"), [
-    { name: "react", packages: ["react", "react-dom"] },
+    { name: "react", packages: [{ name: "react" }, { name: "react-dom" }] },
   ]);
 });
 
@@ -121,9 +124,9 @@ test("parseGroups: names that break the branch mapping are rejected", () => {
   }
   // Interior punctuation survives both git and slugify untouched.
   assert.deepEqual(rules("foo.bar-baz_v2: react"), [
-    { name: "foo.bar-baz_v2", packages: ["react"] },
+    { name: "foo.bar-baz_v2", packages: [{ name: "react" }] },
   ]);
-  assert.deepEqual(rules("x: react"), [{ name: "x", packages: ["react"] }]);
+  assert.deepEqual(rules("x: react"), [{ name: "x", packages: [{ name: "react" }] }]);
 });
 
 test("parseGroups: invalid package names are rejected", () => {
@@ -138,6 +141,39 @@ test("parseGroups: a package claimed twice fails closed, across and within group
 
   const within = problems("a: react react");
   assert.ok(within.some((p) => p.includes("'react'")));
+});
+
+test("parseGroups: trailing-'*' glob members parse; other patterns are rejected", () => {
+  assert.deepEqual(rules("types: @types/*\nlint: eslint-*"), [
+    { name: "types", packages: [{ namePrefix: "@types/" }] },
+    { name: "lint", packages: [{ namePrefix: "eslint-" }] },
+  ]);
+  for (const member of ["*", "@acme*", "foo*bar", "@types/*@3"]) {
+    const all = problems(`g: ${member}`);
+    assert.equal(all.length, 1, member);
+    assert.ok(all[0]!.includes(`'${member}'`), member);
+  }
+});
+
+test("parseGroups: overlap is rejected STATICALLY, pattern against pattern", () => {
+  // An exact member matching another group's glob — whichever is declared first.
+  const exactVsGlob = problems("types: @types/*\nreact: react @types/react");
+  assert.ok(
+    exactVsGlob.some(
+      (p) => p.includes("'@types/react'") && p.includes("'@types/*'") && p.includes("overlaps"),
+    ),
+  );
+  // Two globs where one stem prefixes the other.
+  const globVsGlob = problems("acme: @acme/*\nui: @acme/ui-*");
+  assert.ok(globVsGlob.some((p) => p.includes("'@acme/ui-*'") && p.includes("'@acme/*'")));
+  // The same glob verbatim in two groups reads as a duplicate listing.
+  const verbatim = problems("a: @types/*\nb: @types/*");
+  assert.ok(verbatim.some((p) => p.includes("'@types/*'") && p.includes("more than once")));
+  // Overlap depends only on the patterns, never on collected candidates:
+  // non-overlapping globs coexist, and a glob may cover its OWN group's
+  // explicit member (redundant, not ambiguous).
+  assert.ok(parseGroups("acme: @acme/*\nother: @other/*").ok);
+  assert.ok(parseGroups("acme: @acme/* @acme/core").ok);
 });
 
 test("parseGroups: a duplicated group name fails closed", () => {
@@ -162,6 +198,32 @@ test("user-declared groups bundle their members under group/<name>, majors inclu
   assert.deepEqual(
     groups[0]!.members.map((m) => m.name),
     ["react", "react-dom", "@types/react"],
+  );
+});
+
+test("glob members expand against this run's candidates under the declared name", () => {
+  const declared = rules("types: @types/*");
+  const groups = groupCandidates(
+    [
+      c({ name: "@types/react", kind: "dev", updateType: "minor" }),
+      c({ name: "@types/node", kind: "dev", updateType: "major" }),
+      c({ name: "@typescript-eslint/parser", kind: "dev" }),
+    ],
+    declared,
+  );
+  assert.deepEqual(
+    groups.map((g) => g.key),
+    ["dev/@typescript-eslint/parser", "group/types"],
+  );
+  // Majors included (the group takes all member update types), stem match only.
+  assert.deepEqual(
+    groups[1]!.members.map((m) => m.name),
+    ["@types/react", "@types/node"],
+  );
+  // No candidate matches -> the declared glob group simply does not appear.
+  assert.deepEqual(
+    groupCandidates([c({ name: "lodash" })], declared).map((g) => g.key),
+    ["prod/lodash"],
   );
 });
 

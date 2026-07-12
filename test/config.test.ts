@@ -53,9 +53,9 @@ test("set knobs are carried through", () => {
     DEPVISOR_INSTALL_COMMAND: "npm ci",
     DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "3",
     DEPVISOR_MINIMUM_RELEASE_AGE: "0",
-    DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "@acme/private\n# a comment",
-    DEPVISOR_IGNORE: "lodash\nreact@19",
-    DEPVISOR_GROUPS: "react: react react-dom",
+    DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "@acme/private\n@acme/tools-*\n# a comment",
+    DEPVISOR_IGNORE: "lodash\nreact@19\n@types/*",
+    DEPVISOR_GROUPS: "react: react react-dom\nacme: @acme/*",
     DEPVISOR_SUGGEST_FEATURES: "true",
     DEPVISOR_LANGUAGE: "pt-BR",
   });
@@ -69,12 +69,19 @@ test("set knobs are carried through", () => {
   assert.equal(config.minimumReleaseAge, 0);
   assert.equal(config.suggestFeatures, true);
   assert.equal(config.language, "pt-BR");
-  assert.deepEqual([...config.releaseAgeExclude], ["@acme/private"]);
-  assert.deepEqual(
-    config.ignoreRules.map((r) => r.name),
-    ["lodash", "react"],
-  );
-  assert.deepEqual(config.groupRules, [{ name: "react", packages: ["react", "react-dom"] }]);
+  assert.deepEqual(config.releaseAgeExclude, [
+    { name: "@acme/private" },
+    { namePrefix: "@acme/tools-" },
+  ]);
+  assert.deepEqual(config.ignoreRules, [
+    { name: "lodash", major: null },
+    { name: "react", major: 19 },
+    { namePrefix: "@types/" },
+  ]);
+  assert.deepEqual(config.groupRules, [
+    { name: "react", packages: [{ name: "react" }, { name: "react-dom" }] },
+    { name: "acme", packages: [{ namePrefix: "@acme/" }] },
+  ]);
 });
 
 test("each knob fails closed with its own bad-* status and echoes the value", () => {

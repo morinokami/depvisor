@@ -108,7 +108,8 @@ made a choice in the conversation, treat it as binding.
    (default: 1-day supply-chain cooldown — keep it enabled), `ignore`
    (packages never to update), `groups` (packages updated together in one PR —
    newline-separated `<group-name>: <package> <package> …` lines, exact names
-   only, each package in at most one group; e.g.
+   or trailing-`*` prefix globs like `@acme/*`, each package in at most one
+   group; e.g.
    `react: react react-dom @types/react`), `suggest_features` (default off — set `"true"`
    to add a display-only "new features that may be relevant" section to PRs;
    costs extra tokens and widens the agent's exposure to untrusted release
@@ -193,14 +194,16 @@ Tailor it per the Step 2 contract:
   ```yaml
   minimum_release_age_exclude: |
     # private packages — not on registry.npmjs.org
-    @acme/design-tokens
+    @acme/*
   ```
 
-  Exact package names only, one per line (full-line `#` comments allowed).
-  Globs, version ranges, and majors are not supported — a pattern like
-  `@acme/*` must be expanded into one line per package. (pnpm's similarly
-  named `minimumReleaseAgeExclude` does accept globs; this input does not, so
-  a list carried over from `pnpm-workspace.yaml` may need expanding.)
+  One entry per line: an exact package name or a trailing-`*` prefix glob
+  like `@acme/*` — use the glob for a private scope so new packages are
+  covered automatically, and never one broader than the private scope (every
+  match skips a real supply-chain defense). Full-line `#` comments are
+  allowed; version ranges, majors, and other pattern forms are not supported.
+  (pnpm's similarly named `minimumReleaseAgeExclude` accepts richer globs;
+  only the trailing-`*` form carries over from `pnpm-workspace.yaml` as-is.)
 
 - **bun repositories**: insert before the depvisor step, pinning
   `bun-version` (depvisor parses `bun outdated`'s text output, so an unpinned

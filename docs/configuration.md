@@ -125,15 +125,20 @@ Details worth knowing:
     @acme/eslint-config
   ```
 
-  Every line must be an **exact package name**: globs (`@acme/*`), version
-  ranges, and majors (`@acme/design-tokens@2`) are **not** supported, so a
-  pattern has to be expanded into one line per package. (pnpm's
-  `minimumReleaseAgeExclude` _does_ accept globs — a list carried over from
-  `pnpm-workspace.yaml` may therefore need expanding.)
+  Every line is an **exact package name or a trailing-`*` prefix glob**
+  (`@acme/*` — the natural shape for a private scope, and new `@acme/…`
+  packages are covered without editing the workflow). Version ranges, majors
+  (`@acme/design-tokens@2`), and any other pattern form (`@acme*`, `?`,
+  a `*` anywhere but the end) are **not** supported. A glob only ever matches
+  packages the outdated scan actually reported — it never queries a registry.
+  (pnpm's `minimumReleaseAgeExclude` accepts richer globs; only the
+  trailing-`*` form carries over as-is.)
 
   The exemption is meant for packages the public registry cannot vouch for.
   Excluding a package that _does_ exist on npmjs removes a real supply-chain
-  defense for it, so keep the list to your private packages. Malformed entries
+  defense for it — and a glob widens that risk: `@acme/*` exempts **every**
+  current and future match, so never use one broader than your private scope.
+  Malformed entries
   fail loudly (`bad-minimum-release-age-exclude`); a _misspelled_ name is still a
   valid package name, so it parses, exempts nothing, and the package it was
   meant to exempt keeps failing the run with `release-age-unavailable`. Either
@@ -169,11 +174,14 @@ ignore: |
   left-pad
   # v11 needs a newer Node; revisit after our runtime upgrade
   lru-cache@11
+  # our forked plugins are managed out-of-band
+  @acme-forks/*
 ```
 
 (`left-pad` is never updated; `lru-cache` keeps updating, just not to the `11.x`
-major. Full-line `#` comments are allowed — use them to record _why_ a package
-is ignored; anything else must parse as `name` or `name@<major>`.)
+major; anything under `@acme-forks/` is never updated. Full-line `#` comments
+are allowed — use them to record _why_ a package is ignored; anything else must
+parse as `name`, `name@<major>`, or a trailing-`*` prefix glob.)
 
 Details worth knowing:
 
@@ -182,6 +190,16 @@ Details worth knowing:
   LLM call.
 - **Trusted config only**: like `verify_commands`, `ignore` is read from the
   workflow file, never from the (agent-writable) target repository.
+- **Prefix globs match silently-growing sets — the run summary shows what they
+  hit**: a glob rule (`@types/*`, `eslint-*`) drops every candidate whose name
+  starts with the stem, including packages added to the repo after the rule was
+  written. Because ignoring is where over-matching hurts most (updates just
+  stop, silently), every candidate a glob dropped is attributed to its rule in
+  the run summary (`@types/react 17.0.0 -> 18.0.0 (via @types/*)`), and a glob
+  that matched nothing this run is reported too (`@nope/* matched no outdated
+candidate`) — matching zero is normal, but it is also how a typo'd stem
+  surfaces, the glob counterpart of the misspelled-exact-name trap. A glob
+  cannot take a major suffix — `@acme/*@3` fails with `bad-ignore`.
 - **Ordering vs the cooldown**: `name@<major>` matches the registry's latest
   major. If `minimum_release_age` would clamp that major down to an older one
   anyway, the update was never going to that major, so the rule conservatively
@@ -207,7 +225,9 @@ groups: |
 ```
 
 Each line is `<group-name>: <package> <package> …` — members separated by
-spaces and/or commas, full-line `#` comments allowed. The group name may use
+spaces and/or commas, full-line `#` comments allowed. A member is an exact
+package name or a trailing-`*` prefix glob (`@acme/*` groups every `@acme/…`
+package that has an update). The group name may use
 letters, digits, `.`, `_`, and `-`, must start and end with a letter or digit,
 and may not contain `..` or end in `.lock` (it becomes part of the branch
 name, so it must survive git's ref rules unchanged). When at least one member
@@ -217,10 +237,13 @@ own PR per package.
 
 Details worth knowing:
 
-- **Exact names only**: like `ignore` and `minimum_release_age_exclude`, globs
-  (`@types/*`), version ranges, and majors are not supported — expand a pattern
-  into one line per package. Any line that does not parse stops the run with
-  `bad-groups`.
+- **Exact names or trailing-`*` prefix globs only**: like `ignore` and
+  `minimum_release_age_exclude`, version ranges, majors, and any other pattern
+  form (`@acme*`, `?`, a `*` anywhere but the end) are not supported. Any line
+  that does not parse stops the run with `bad-groups`. A glob expands against
+  the packages the outdated scan reported, so a new `@acme/…` package joins the
+  group automatically — and since the branch derives from the group's _name_
+  (next bullet), that just refreshes the same PR.
 - **The group name is the PR identity**: the branch derives from the declared
   name, never from which members happen to have updates in a given run — so a
   member joining later (a major maturing past the `minimum_release_age`
@@ -234,7 +257,12 @@ Details worth knowing:
   riskiest member. Group with intent.
 - **One group per package**: a package listed in two groups (or twice in one)
   stops the run with `bad-groups` — a precedence rule would make PR identity
-  depend on rule order.
+  depend on rule order. With globs the check is **static, pattern against
+  pattern**: members of different groups that could ever match the same package
+  (`@types/react` vs `@types/*`, or `@acme/*` vs `@acme/ui-*`) are rejected at
+  parse time, so a config can never be valid one run and `bad-groups` the next
+  just because a new package appeared. Within one group, an exact member
+  covered by that group's own glob is allowed (redundant, not ambiguous).
 - **The group succeeds or fails as a unit**: the deterministic bump, the
   verification gate, and (when needed) the fixer all operate on the whole
   group, so one member's breakage defers or fails the group's PR, not just
