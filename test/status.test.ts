@@ -107,7 +107,7 @@ test("toRunOutput projects the workflow output, dropping packages, prUrl, and us
   assert.ok(!("usage" in g), "usage is record-only and must not appear in the workflow output");
 });
 
-test("toActionOutputs projects status, failed, prepared_count, and gated pr_urls", () => {
+test("toActionOutputs projects status, result counts, URLs, and zero usage", () => {
   const outputs = toActionOutputs(
     run({
       groups: [
@@ -126,6 +126,8 @@ test("toActionOutputs projects status, failed, prepared_count, and gated pr_urls
     failed: "false",
     prepared_count: "2",
     pr_urls: "https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/2",
+    total_tokens: "0",
+    est_cost_usd: "0.000000",
   });
 });
 
@@ -148,7 +150,86 @@ test("toActionOutputs reports a missing status file (crash before reporting) as 
     failed: "true",
     prepared_count: "0",
     pr_urls: "",
+    total_tokens: "0",
+    est_cost_usd: "",
   });
+});
+
+test("toActionOutputs reports a no-updates run as known zero usage", () => {
+  const outputs = toActionOutputs(run({ status: "no-updates", groups: [] }));
+  assert.equal(outputs.total_tokens, "0");
+  assert.equal(outputs.est_cost_usd, "0.000000");
+});
+
+test("toActionOutputs sums run usage and formats the provider-priced estimate", () => {
+  const outputs = toActionOutputs(
+    run({
+      groups: [
+        group({ usage: [usage()] }),
+        group({
+          usage: [
+            usage({
+              role: "digest",
+              input: 500,
+              output: 100,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 600,
+              costUsd: 0.005,
+            }),
+          ],
+        }),
+      ],
+    }),
+  );
+  assert.equal(outputs.total_tokens, "1860");
+  assert.equal(outputs.est_cost_usd, "0.017300");
+});
+
+test("toActionOutputs leaves cost empty when any token-bearing operation is unpriced", () => {
+  const unpriced = usage({ totalTokens: 600, costUsd: 0, model: "openai/unknown-model" });
+  const onlyUnpriced = toActionOutputs(run({ groups: [group({ usage: [unpriced] })] }));
+  assert.equal(onlyUnpriced.total_tokens, "600");
+  assert.equal(onlyUnpriced.est_cost_usd, "");
+
+  // Never expose the priced operation's partial subtotal as the whole run cost.
+  const mixed = toActionOutputs(
+    run({ groups: [group({ usage: [usage()] }), group({ usage: [unpriced] })] }),
+  );
+  assert.equal(mixed.total_tokens, "1860");
+  assert.equal(mixed.est_cost_usd, "");
+});
+
+test("toActionOutputs fails malformed token usage toward numeric zero and unavailable cost", () => {
+  for (const malformed of [
+    usage({ totalTokens: -1 }),
+    usage({ totalTokens: 1.5 }),
+    usage({ totalTokens: Number.MAX_SAFE_INTEGER, costUsd: 1 }),
+  ]) {
+    const groups =
+      malformed.totalTokens === Number.MAX_SAFE_INTEGER
+        ? [group({ usage: [malformed, usage({ totalTokens: 1 })] })]
+        : [group({ usage: [malformed] })];
+    const outputs = toActionOutputs(run({ groups }));
+    assert.equal(outputs.total_tokens, "0");
+    assert.equal(outputs.est_cost_usd, "");
+  }
+});
+
+test("toActionOutputs preserves valid tokens when only the cost is malformed", () => {
+  for (const malformed of [
+    usage({ costUsd: -0.01 }),
+    usage({ costUsd: Number.POSITIVE_INFINITY }),
+  ]) {
+    const outputs = toActionOutputs(run({ groups: [group({ usage: [malformed] })] }));
+    assert.equal(outputs.total_tokens, "1260");
+    assert.equal(outputs.est_cost_usd, "");
+  }
+  const impossibleCostWithoutTokens = toActionOutputs(
+    run({ groups: [group({ usage: [usage({ totalTokens: 0, costUsd: 0.01 })] })] }),
+  );
+  assert.equal(impossibleCostWithoutTokens.total_tokens, "0");
+  assert.equal(impossibleCostWithoutTokens.est_cost_usd, "");
 });
 
 test("toActionOutputs counts only pr-prepared groups; a red group flips failed", () => {

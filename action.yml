@@ -93,6 +93,17 @@ outputs:
     description: >-
       Newline-separated URLs of the PRs this run opened or refreshed.
     value: ${{ steps.report.outputs.pr_urls }}
+  total_tokens:
+    description: >-
+      Total LLM tokens used across every fixer and digest operation in the run.
+      "0" when no usage was recorded or the run crashed before reporting.
+    value: ${{ steps.report.outputs.total_tokens }}
+  est_cost_usd:
+    description: >-
+      Estimated run cost in USD as a decimal string (provider-priced, not an
+      invoice). "0.000000" when no agent ran; empty when the run did not report
+      or any token-bearing model had no known price.
+    value: ${{ steps.report.outputs.est_cost_usd }}
 
 runs:
   using: composite
