@@ -1,4 +1,5 @@
 import { isValidNpmName } from "./changelog.ts";
+import { matchesPattern, parseNamePattern } from "./name-pattern.ts";
 import type { Candidate } from "./types.ts";
 import { parseVersionCore } from "./version-core.ts";
 
@@ -18,6 +19,12 @@ import { parseVersionCore } from "./version-core.ts";
  * nothing here needs range satisfaction:
  *   - `name`          — always exclude this package.
  *   - `name@<major>`  — exclude only when the update target's major is <major>.
+ *   - `prefix*`       — a trailing-`*` prefix glob (`@types/*`, `eslint-*`;
+ *                       grammar in name-pattern.ts). Ignoring is where a glob
+ *                       over-matching hurts most (updates silently stop), so
+ *                       describeIgnore attributes every glob-dropped candidate
+ *                       to its rule, and combining a glob with a major
+ *                       (`@acme/*@3`) is NOT supported — it fails closed.
  *   - `# …`           — a full-line comment (npm names cannot start with `#`,
  *                       so this can never shadow a real rule). Trailing
  *                       comments after a rule are NOT supported — they fail
@@ -35,12 +42,21 @@ import { parseVersionCore } from "./version-core.ts";
  * to touch release-age's fail-closed "unavailable" path.
  */
 
-/** A parsed ignore rule: a bare name (major null) or a name pinned to one major. */
-export interface IgnoreRule {
-  name: string;
-  /** null → match any update to this package; a number → only that target major. */
-  major: number | null;
-}
+/**
+ * A parsed ignore rule: an exact name (bare, major null, or pinned to one
+ * major), or a trailing-`*` prefix glob (which can never carry a major — the
+ * union makes `@acme/*@3` unrepresentable, not just unparsed).
+ */
+export type IgnoreRule =
+  | {
+      name: string;
+      /** null → match any update to this package; a number → only that target major. */
+      major: number | null;
+    }
+  | {
+      /** The stem of a trailing-`*` glob: `@types/*` is stored as `@types/`. */
+      namePrefix: string;
+    };
 
 export type ParsedIgnore = { ok: true; rules: IgnoreRule[] } | { ok: false; invalid: string[] };
 
@@ -55,8 +71,14 @@ function latestMajor(version: string): number | null {
  * (`@scope/pkg`) the leading `@` is part of the name, so the search starts
  * after the `/`. A major must be a bare non-negative integer — full versions
  * (`pkg@1.2.3`), ranges (`pkg@^1`), and an empty major (`pkg@`) are rejected.
+ * An entry containing `*` is a prefix glob and takes no major: `@acme/*@3`
+ * neither ends in `*` nor names a valid package, so it fails closed.
  */
 function parseEntry(entry: string): IgnoreRule | null {
+  if (entry.includes("*")) {
+    const pattern = parseNamePattern(entry);
+    return pattern && "namePrefix" in pattern ? { namePrefix: pattern.namePrefix } : null;
+  }
   const scoped = entry.startsWith("@");
   const slash = entry.indexOf("/");
   if (scoped && slash === -1) return null; // `@foo` with no scope path
@@ -91,15 +113,20 @@ export function parseIgnore(raw: string): ParsedIgnore {
   return invalid.length > 0 ? { ok: false, invalid } : { ok: true, rules };
 }
 
-/** True when any rule ignores this candidate (`name`, or `name@<latest-major>`). */
-function isIgnored(candidate: Candidate, rules: readonly IgnoreRule[]): boolean {
+/**
+ * The first rule that ignores this candidate (`name`, `name@<latest-major>`,
+ * or a matching prefix glob), or null. Shared by the filter and by
+ * describeIgnore's attribution so the summary names the rule that actually
+ * fired, not just any rule that could have.
+ */
+function matchedRule(candidate: Candidate, rules: readonly IgnoreRule[]): IgnoreRule | null {
   const major = latestMajor(candidate.latest);
   for (const rule of rules) {
-    if (rule.name !== candidate.name) continue;
-    if (rule.major === null) return true;
-    if (major !== null && major === rule.major) return true;
+    if (!matchesPattern(candidate.name, rule)) continue;
+    if ("namePrefix" in rule || rule.major === null) return rule;
+    if (major !== null && major === rule.major) return rule;
   }
-  return false;
+  return null;
 }
 
 /**
@@ -117,18 +144,30 @@ export function applyIgnore(
   const kept: Candidate[] = [];
   const ignored: Candidate[] = [];
   for (const c of candidates) {
-    (isIgnored(c, rules) ? ignored : kept).push(c);
+    (matchedRule(c, rules) ? ignored : kept).push(c);
   }
   return { kept, ignored };
 }
 
 /**
- * One-line note for the run log — ignoring is a deliberate config choice (green),
- * but echoing what it dropped confirms the rules took effect. "" when nothing
- * was ignored.
+ * One-line note for the run log and summary — ignoring is a deliberate config
+ * choice (green), but echoing what it dropped confirms the rules took effect.
+ * A candidate dropped by a prefix glob is attributed to its rule (`via
+ * @types/*`): a glob's matches drift as the repo's dependencies do, so unlike
+ * an exact rule the user cannot know them from the config alone. "" when
+ * nothing was ignored.
  */
-export function describeIgnore(ignored: readonly Candidate[]): string {
+export function describeIgnore(
+  ignored: readonly Candidate[],
+  rules: readonly IgnoreRule[],
+): string {
   if (ignored.length === 0) return "";
-  const list = ignored.map((c) => `${c.name} ${c.current} -> ${c.latest}`).join(", ");
+  const list = ignored
+    .map((c) => {
+      const rule = matchedRule(c, rules);
+      const via = rule && "namePrefix" in rule ? ` (via ${rule.namePrefix}*)` : "";
+      return `${c.name} ${c.current} -> ${c.latest}${via}`;
+    })
+    .join(", ");
   return `ignore: skipped ${list}.`;
 }

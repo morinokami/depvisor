@@ -1,5 +1,6 @@
 import { isValidNpmName } from "./changelog.ts";
 import { classifyUpdate } from "./collect.ts";
+import { parseNamePattern, type NamePattern } from "./name-pattern.ts";
 import type { Candidate, UpdateType } from "./types.ts";
 import { compareTriple, parseVersionCore, type Triple } from "./version-core.ts";
 
@@ -22,8 +23,9 @@ import { compareTriple, parseVersionCore, type Triple } from "./version-core.ts"
  * check while the cooldown keeps defending everything else
  * (`minimum_release_age: 0` remains the full disable). Exemption is a human
  * opt-out, not a fail-open path — an excluded name skips the registry check
- * entirely, so listing a package that DOES exist on npmjs removes a real
- * defense for it (the input is meant for private-registry packages).
+ * entirely, so listing a package (or a `@acme/*`-style prefix glob) that DOES
+ * cover packages existing on npmjs removes a real defense for them (the input
+ * is meant for private-registry packages).
  */
 
 const NPM_REGISTRY = "https://registry.npmjs.org";
@@ -48,25 +50,31 @@ export function parseMinimumReleaseAge(raw: string): number | null {
 }
 
 export type ParsedReleaseAgeExclude =
-  | { ok: true; exclude: Set<string> }
+  | { ok: true; exclude: NamePattern[] }
   | { ok: false; invalid: string[] };
 
 /**
  * Parse the minimum_release_age_exclude input: newline-separated package names
  * exempted from the cooldown. Blank lines and full-line `#` comments are
  * skipped (ignore.ts's conventions); every other line must be a bare npm name
- * — no majors, version ranges, or patterns — else the whole input is rejected
- * with the offending entries. Fail-closed like parseIgnore: silently dropping
- * a bad entry would be the "thought I excluded it" trap, except here the trap
+ * or a trailing-`*` prefix glob (`@acme/*` — the natural shape for the private
+ * scope this input exists for; grammar in name-pattern.ts) — no majors,
+ * version ranges, or other patterns — else the whole input is rejected with
+ * the offending entries. Fail-closed like parseIgnore: silently dropping a
+ * bad entry would be the "thought I excluded it" trap, except here the trap
  * is a run that stays red (`release-age-unavailable`) despite the exclusion.
+ * The workflow expands the patterns against the collected candidate names
+ * (name-pattern.ts's expandPatterns) before calling applyReleaseAge, which
+ * keeps taking the concrete name set.
  */
 export function parseMinimumReleaseAgeExclude(raw: string): ParsedReleaseAgeExclude {
-  const exclude = new Set<string>();
+  const exclude: NamePattern[] = [];
   const invalid: string[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const entry = line.trim();
     if (!entry || entry.startsWith("#")) continue;
-    if (isValidNpmName(entry)) exclude.add(entry);
+    const pattern = parseNamePattern(entry);
+    if (pattern) exclude.push(pattern);
     else invalid.push(entry);
   }
   return invalid.length > 0 ? { ok: false, invalid } : { ok: true, exclude };

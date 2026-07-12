@@ -29,6 +29,7 @@ import { parseOpenPullRequestsLimit } from "./budget.ts";
 import { type GroupRule, parseGroups } from "./grouping.ts";
 import { type IgnoreRule, parseIgnore } from "./ignore.ts";
 import { parseLanguage } from "./language.ts";
+import type { NamePattern } from "./name-pattern.ts";
 import { parseMinimumReleaseAge, parseMinimumReleaseAgeExclude } from "./release-age.ts";
 import { parseSuggestFeatures } from "./suggest-features.ts";
 
@@ -69,21 +70,21 @@ interface RunConfig {
    */
   minimumReleaseAge: number;
   /**
-   * Package names exempted from the cooldown's age check — the escape hatch for
-   * packages the public npm registry cannot vouch for (private-registry
-   * packages), which would otherwise go red as `release-age-unavailable` every
-   * run.
+   * Package names (or `@acme/*`-style prefix globs) exempted from the
+   * cooldown's age check — the escape hatch for packages the public npm
+   * registry cannot vouch for (private-registry packages), which would
+   * otherwise go red as `release-age-unavailable` every run.
    */
-  releaseAgeExclude: Set<string>;
+  releaseAgeExclude: NamePattern[];
   /**
-   * Rules (`name` or `name@<major>`) that drop candidates before grouping — the
-   * human-decided permanent counterpart to a fixer defer.
+   * Rules (`name`, `name@<major>`, or a `prefix*` glob) that drop candidates
+   * before grouping — the human-decided permanent counterpart to a fixer defer.
    */
   ignoreRules: IgnoreRule[];
   /**
    * User-declared package groups (`<group-name>: pkg pkg …`) updated together
-   * in one branch/PR — Dependabot's `groups`, exact names only. Empty = every
-   * package is its own group.
+   * in one branch/PR — Dependabot's `groups`; members are exact names or
+   * `prefix*` globs. Empty = every package is its own group.
    */
   groupRules: GroupRule[];
   /**
@@ -160,8 +161,8 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
         `The minimum_release_age_exclude input has ${releaseAgeExclude.invalid.length} unrecognized ` +
         `${plural(releaseAgeExclude.invalid.length, "entry", "entries")}: ` +
         `${releaseAgeExclude.invalid.join(", ")}. Each line must be a package name ` +
-        "(or a full-line '#' comment); majors, version ranges, and patterns are not " +
-        "supported.",
+        "or a trailing-'*' prefix glob like '@acme/*' (full-line '#' comments are " +
+        "allowed); majors, version ranges, and other patterns are not supported.",
     };
   }
 
@@ -174,8 +175,9 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
         `The ignore input has ${ignore.invalid.length} unrecognized ` +
         `${plural(ignore.invalid.length, "entry", "entries")}: ${ignore.invalid.join(", ")}. ` +
         "Each line must be 'name' (never update it), 'name@<major>' (skip updates to " +
-        "that major), or a full-line '#' comment; full version ranges and update-type " +
-        "rules are not supported yet.",
+        "that major), a trailing-'*' prefix glob like '@types/*' (no major suffix), or " +
+        "a full-line '#' comment; full version ranges and update-type rules are not " +
+        "supported yet.",
     };
   }
 
@@ -187,9 +189,10 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
       summary:
         `The groups input has ${groups.problems.length} invalid ` +
         `${plural(groups.problems.length, "entry", "entries")}: ${groups.problems.join("; ")}. ` +
-        "Each line must be '<group-name>: <package> <package> …' — exact package names " +
-        "separated by spaces or commas, each package in at most one group; full-line '#' " +
-        "comments are allowed. Globs, version ranges, and majors are not supported.",
+        "Each line must be '<group-name>: <package> <package> …' — package names or " +
+        "trailing-'*' prefix globs like '@acme/*', separated by spaces or commas, each " +
+        "package in at most one group; full-line '#' comments are allowed. Other " +
+        "patterns, version ranges, and majors are not supported.",
     };
   }
 

@@ -15,6 +15,7 @@ import { parseRunConfig } from "../core/config.ts";
 import { isClean, tryCheckout } from "../core/git.ts";
 import { groupCandidates } from "../core/grouping.ts";
 import { applyIgnore, describeIgnore } from "../core/ignore.ts";
+import { expandPatterns } from "../core/name-pattern.ts";
 import { preflight, resolveResetCommand } from "../core/preflight.ts";
 import {
   branchNameForGroup,
@@ -144,7 +145,7 @@ export default defineWorkflow({
     // spurious red release-age-unavailable entry. A `name@<major>` rule matches
     // the raw registry latest here (see core/ignore.ts).
     const { kept: notIgnored, ignored } = applyIgnore(collected, config.ignoreRules);
-    const ignoreNote = describeIgnore(ignored);
+    const ignoreNote = describeIgnore(ignored, config.ignoreRules);
     if (ignoreNote) log.info(ignoreNote);
 
     const packuments = new Map<string, Packument | null>();
@@ -152,9 +153,16 @@ export default defineWorkflow({
     let releaseAgeNote = "";
     let releaseAgeUnavailable: typeof collected = [];
     if (minimumReleaseAge > 0 && notIgnored.length > 0) {
+      // The exclusion patterns expand here — post-collect, against this run's
+      // candidate names only (a `@acme/*` glob can exempt only packages the
+      // scan actually reported) — so applyReleaseAge keeps taking the concrete
+      // name set it always has.
       const aged = await applyReleaseAge(notIgnored, minimumReleaseAge, {
         packuments,
-        exclude: config.releaseAgeExclude,
+        exclude: expandPatterns(
+          config.releaseAgeExclude,
+          notIgnored.map((c) => c.name),
+        ),
       });
       candidates = aged.kept;
       releaseAgeUnavailable = aged.unavailable;
@@ -370,12 +378,13 @@ export default defineWorkflow({
 
     // Graceful end of the loop: upgrade the crash marker to the real outcome.
     // Run-level stops (baseline-red, reset-failed) already set their status.
-    // The release-age and OSV-unavailable notes ride along so cooldown
-    // clamps/hold-backs and a degraded security prioritization are visible in
-    // the summary rather than silent.
+    // The ignore, release-age, and OSV-unavailable notes ride along so ignore
+    // matches (a prefix glob's matches drift with the repo's dependencies),
+    // cooldown clamps/hold-backs, and a degraded security prioritization are
+    // visible in the summary rather than silent.
     if (run.status === "in-progress") {
       run.status = "completed";
-      run.summary = [summarizeRun(run), releaseAgeNote, osvUnavailableNote]
+      run.summary = [summarizeRun(run), ignoreNote, releaseAgeNote, osvUnavailableNote]
         .filter(Boolean)
         .join(" ");
     }

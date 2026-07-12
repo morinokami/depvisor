@@ -60,6 +60,18 @@ test("parseIgnore fails closed on ranges, full versions, and empty majors", () =
   }
 });
 
+test("parseIgnore accepts trailing-'*' prefix globs, never with a major", () => {
+  const parsed = parseIgnore("@types/*\neslint-*");
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.rules, [{ namePrefix: "@types/" }, { namePrefix: "eslint-" }]);
+  // Glob + major, and every non-trailing-'*' pattern, fail closed.
+  for (const raw of ["@acme/*@3", "*", "@acme*", "foo*bar"]) {
+    const bad = parseIgnore(raw);
+    assert.ok(!bad.ok, `expected failure for '${raw}'`);
+    assert.deepEqual(bad.invalid, [raw]);
+  }
+});
+
 test("parseIgnore rejects structurally invalid names and reports every bad entry", () => {
   const parsed = parseIgnore("good-name\n../etc/passwd\n@\nbad name@1");
   assert.ok(!parsed.ok);
@@ -115,6 +127,25 @@ test("applyIgnore matches name@<major> against the latest core, prerelease inclu
   );
 });
 
+test("applyIgnore drops every candidate a prefix glob matches, regardless of version", () => {
+  const { kept, ignored } = applyIgnore(
+    [
+      cand({ name: "@types/react" }),
+      cand({ name: "@types/node", updateType: "patch", latest: "1.0.1" }),
+      cand({ name: "@typescript-eslint/parser" }),
+    ],
+    [{ namePrefix: "@types/" }],
+  );
+  assert.deepEqual(
+    ignored.map((c) => c.name),
+    ["@types/react", "@types/node"],
+  );
+  assert.deepEqual(
+    kept.map((c) => c.name),
+    ["@typescript-eslint/parser"],
+  );
+});
+
 test("applyIgnore with no rules keeps everything (fresh copy)", () => {
   const candidates = [cand({ name: "a" }), cand({ name: "b" })];
   const { kept, ignored } = applyIgnore(candidates, []);
@@ -127,12 +158,33 @@ test("applyIgnore with no rules keeps everything (fresh copy)", () => {
 });
 
 test("describeIgnore lists dropped packages, empty when nothing was ignored", () => {
-  assert.equal(describeIgnore([]), "");
-  const note = describeIgnore([
-    cand({ name: "lru-cache", current: "10.0.0", latest: "11.0.0" }),
-    cand({ name: "left-pad", current: "1.0.0", latest: "1.3.0" }),
-  ]);
+  assert.equal(describeIgnore([], []), "");
+  const note = describeIgnore(
+    [
+      cand({ name: "lru-cache", current: "10.0.0", latest: "11.0.0" }),
+      cand({ name: "left-pad", current: "1.0.0", latest: "1.3.0" }),
+    ],
+    [
+      { name: "lru-cache", major: null },
+      { name: "left-pad", major: null },
+    ],
+  );
   assert.match(note, /^ignore: skipped /);
   assert.match(note, /lru-cache 10\.0\.0 -> 11\.0\.0/);
   assert.match(note, /left-pad 1\.0\.0 -> 1\.3\.0/);
+  // Exact rules get no attribution suffix — the config already names them.
+  assert.ok(!note.includes("via"));
+});
+
+test("describeIgnore attributes glob-dropped candidates to their rule", () => {
+  const rules = [{ name: "left-pad", major: null }, { namePrefix: "@types/" }];
+  const note = describeIgnore(
+    [
+      cand({ name: "@types/react", current: "17.0.0", latest: "18.0.0" }),
+      cand({ name: "left-pad", current: "1.0.0", latest: "1.3.0" }),
+    ],
+    rules,
+  );
+  assert.match(note, /@types\/react 17\.0\.0 -> 18\.0\.0 \(via @types\/\*\)/);
+  assert.match(note, /left-pad 1\.0\.0 -> 1\.3\.0(,|\.)/);
 });

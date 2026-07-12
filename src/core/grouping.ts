@@ -1,4 +1,9 @@
-import { isValidNpmName } from "./changelog.ts";
+import {
+  describePattern,
+  parseNamePattern,
+  patternsOverlap,
+  type NamePattern,
+} from "./name-pattern.ts";
 import type { Candidate, Group } from "./types.ts";
 
 /**
@@ -16,21 +21,23 @@ import type { Candidate, Group } from "./types.ts";
  *
  * A user-declared group's key comes from its declared NAME alone, so members
  * entering or leaving a run (a cooldown clamp maturing, an `ignore` rule, a
- * package simply being up to date) refresh the same branch/PR instead of
- * forging a new identity. A declared group none of whose members has an update
+ * package simply being up to date, a prefix-glob member matching a package
+ * that did not exist last run) refresh the same branch/PR instead of forging
+ * a new identity. A declared group none of whose members has an update
  * simply does not appear. No preset bundles anything (`@types/*` included):
  * related-package bundling is exactly what the user-declared config is for,
  * never a heuristic.
  */
 
 /**
- * One parsed `groups` rule: a stable group name and the exact package names it
- * bundles. Like every config knob, rules come from the workflow file/env
- * (TRUSTED), never from the agent-writable target tree.
+ * One parsed `groups` rule: a stable group name and the member patterns it
+ * bundles — exact package names or trailing-`*` prefix globs (name-pattern.ts).
+ * Like every config knob, rules come from the workflow file/env (TRUSTED),
+ * never from the agent-writable target tree.
  */
 export interface GroupRule {
   name: string;
-  packages: string[];
+  packages: NamePattern[];
 }
 
 export type ParsedGroups = { ok: true; rules: GroupRule[] } | { ok: false; problems: string[] };
@@ -56,21 +63,27 @@ function isValidGroupName(name: string): boolean {
 
 /**
  * Parse the newline-separated `groups` input. Each line is
- * `<group-name>: <package> <package> …` (members separated by spaces and/or
- * commas); blank lines and full-line `#` comments are skipped. The grammar is
- * deliberately minimal — exact package names only, no globs — matching the
- * exact-string stance of every other list knob. Every problem is collected and
- * the whole input rejected on any (the "thought I grouped it" trap is the same
- * as ignore's), with fail-closed rules for the identity-sensitive parts:
- * duplicate group names and a package claimed by two groups (or twice by one)
- * are rejected rather than resolved by precedence, because either would make
- * PR identity depend on rule order.
+ * `<group-name>: <member> <member> …` (members separated by spaces and/or
+ * commas); blank lines and full-line `#` comments are skipped. A member is an
+ * exact package name or a trailing-`*` prefix glob (name-pattern.ts). Every
+ * problem is collected and the whole input rejected on any (the "thought I
+ * grouped it" trap is the same as ignore's), with fail-closed rules for the
+ * identity-sensitive parts: duplicate group names, a member repeated verbatim
+ * anywhere, and any pair of members from DIFFERENT groups that could match
+ * the same package (`react` vs `react*`, `@acme/*` vs `@acme/ui-*`) are
+ * rejected rather than resolved by precedence, because either would make PR
+ * identity depend on rule order. The overlap check is deliberately static —
+ * pattern against pattern, at parse time, never against collected candidates
+ * — so a config's validity can never flip run-to-run as new packages appear.
+ * Within ONE group, an exact member covered by that group's own glob is
+ * allowed: it is redundant, not ambiguous.
  */
 export function parseGroups(raw: string): ParsedGroups {
   const rules: GroupRule[] = [];
   const problems: string[] = [];
   const names = new Set<string>();
   const claimedBy = new Map<string, string>();
+  const patterns: { pattern: NamePattern; group: string }[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const entry = line.trim();
     if (!entry || entry.startsWith("#")) continue;
@@ -92,25 +105,39 @@ export function parseGroups(raw: string): ParsedGroups {
       problems.push(`group '${name}' is declared more than once`);
       continue;
     }
-    const packages: string[] = [];
+    const packages: NamePattern[] = [];
     let bad = false;
     for (const pkg of entry
       .slice(colon + 1)
       .split(/[\s,]+/)
       .filter(Boolean)) {
-      if (!isValidNpmName(pkg)) {
-        problems.push(`'${pkg}' in group '${name}' is not a valid package name`);
+      const pattern = parseNamePattern(pkg);
+      if (!pattern) {
+        problems.push(
+          `'${pkg}' in group '${name}' is not a valid package name or trailing-'*' prefix glob`,
+        );
         bad = true;
         continue;
       }
-      const owner = claimedBy.get(pkg);
+      const key = describePattern(pattern);
+      const owner = claimedBy.get(key);
       if (owner !== undefined) {
-        problems.push(`package '${pkg}' is listed more than once ('${owner}' and '${name}')`);
+        problems.push(`'${key}' is listed more than once ('${owner}' and '${name}')`);
         bad = true;
         continue;
       }
-      claimedBy.set(pkg, name);
-      packages.push(pkg);
+      const clash = patterns.find((p) => p.group !== name && patternsOverlap(p.pattern, pattern));
+      if (clash) {
+        problems.push(
+          `'${key}' in group '${name}' overlaps '${describePattern(clash.pattern)}' in group ` +
+            `'${clash.group}' — a package matching both would belong to two groups`,
+        );
+        bad = true;
+        continue;
+      }
+      claimedBy.set(key, name);
+      patterns.push({ pattern, group: name });
+      packages.push(pattern);
     }
     if (packages.length === 0 && !bad) {
       problems.push(`group '${name}' lists no packages`);
@@ -126,9 +153,16 @@ export function groupCandidates(
   candidates: Candidate[],
   rules: readonly GroupRule[] = [],
 ): Group[] {
-  const declaredGroup = new Map<string, string>();
+  // Glob members expand here, against the candidates of THIS run — parseGroups
+  // already rejected every cross-group overlap, so each candidate name can
+  // match members of at most one group and the lookup order cannot matter.
+  const declaredExact = new Map<string, string>();
+  const declaredPrefix: { prefix: string; group: string }[] = [];
   for (const rule of rules) {
-    for (const pkg of rule.packages) declaredGroup.set(pkg, rule.name);
+    for (const pkg of rule.packages) {
+      if ("name" in pkg) declaredExact.set(pkg.name, rule.name);
+      else declaredPrefix.push({ prefix: pkg.namePrefix, group: rule.name });
+    }
   }
 
   const groups = new Map<string, Group>();
@@ -146,7 +180,8 @@ export function groupCandidates(
     // ahead (prerelease in use, MISSING install) — "update to latest" could be
     // a downgrade, so these never reach the agent, declared in a group or not.
     if (c.updateType === "unknown") continue;
-    const declared = declaredGroup.get(c.name);
+    const declared =
+      declaredExact.get(c.name) ?? declaredPrefix.find((p) => c.name.startsWith(p.prefix))?.group;
     if (declared !== undefined) {
       add(`group/${declared}`, `user-declared group '${declared}'`, c);
       continue;

@@ -332,32 +332,36 @@ test("describeReleaseAge reports clamps, hold-backs, exclusions, and drops; sile
   assert.match(note, /dropped @acme\/private \(release age unverifiable\)/);
 });
 
-test("parseMinimumReleaseAgeExclude accepts names, skipping blanks and # comments", () => {
+test("parseMinimumReleaseAgeExclude accepts names and prefix globs, skipping blanks and # comments", () => {
   const parsed = parseMinimumReleaseAgeExclude(
-    "# private registry — npmjs cannot vouch for these\n@acme/internal\n\n  left-pad  \n@acme/internal\n",
+    "# private registry — npmjs cannot vouch for these\n@acme/internal\n\n  left-pad  \n@acme/tools-*\n",
   );
   assert.ok(parsed.ok);
-  assert.deepEqual([...parsed.exclude].toSorted(), ["@acme/internal", "left-pad"]);
+  assert.deepEqual(parsed.exclude, [
+    { name: "@acme/internal" },
+    { name: "left-pad" },
+    { namePrefix: "@acme/tools-" },
+  ]);
 });
 
-test("parseMinimumReleaseAgeExclude returns an empty set for empty/whitespace input", () => {
+test("parseMinimumReleaseAgeExclude returns an empty list for empty/whitespace input", () => {
   for (const raw of ["", "   ", "\n\n"]) {
     const parsed = parseMinimumReleaseAgeExclude(raw);
     assert.ok(parsed.ok);
-    assert.equal(parsed.exclude.size, 0);
+    assert.equal(parsed.exclude.length, 0);
   }
 });
 
-test("parseMinimumReleaseAgeExclude fails closed on majors, patterns, and invalid names", () => {
-  for (const raw of ["lru-cache@11", "@acme/*", "bad name", "../etc/passwd", "@"]) {
+test("parseMinimumReleaseAgeExclude fails closed on majors, other patterns, and invalid names", () => {
+  for (const raw of ["lru-cache@11", "@acme*", "*", "bad name", "../etc/passwd", "@"]) {
     const parsed = parseMinimumReleaseAgeExclude(raw);
     assert.ok(!parsed.ok, `expected failure for '${raw}'`);
     assert.deepEqual(parsed.invalid, [raw.trim()]);
   }
   // One valid line does not rescue the input; every bad entry is reported.
-  const mixed = parseMinimumReleaseAgeExclude("good-name\npkg@2\n@scope/*");
+  const mixed = parseMinimumReleaseAgeExclude("good-name\npkg@2\nfoo*bar");
   assert.ok(!mixed.ok);
-  assert.deepEqual(mixed.invalid, ["pkg@2", "@scope/*"]);
+  assert.deepEqual(mixed.invalid, ["pkg@2", "foo*bar"]);
 });
 
 test("applyReleaseAge passes excluded candidates through verbatim without fetching", async () => {
