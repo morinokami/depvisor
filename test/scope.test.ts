@@ -36,7 +36,7 @@ test("checkFixScope denies any manifest, lockfile, and workspace-file change", (
   writeFileSync(join(repo, "src.ts"), "export const fixed = 1;\n"); // the one legit change
   const scope = checkFixScope(repo, "HEAD");
   assert.equal(scope.ok, false);
-  assert.deepEqual(scope.violations.sort(), [
+  assert.deepEqual(scope.violations.toSorted(), [
     "bun.lock",
     "nub.lock",
     "package-lock.json",
@@ -57,7 +57,7 @@ test("checkFixScope inherits the DENY list and catches nested manifests", () => 
   writeFileSync(join(repo, "packages/a/package.json"), `{"name":"a"}`);
   const scope = checkFixScope(repo, "HEAD");
   assert.equal(scope.ok, false);
-  assert.deepEqual(scope.violations.sort(), [
+  assert.deepEqual(scope.violations.toSorted(), [
     ".github/workflows/evil.yml",
     ".npmrc",
     "packages/a/package.json",
@@ -259,7 +259,7 @@ test("checkBumpScope denies non-catalog pnpm-workspace.yaml changes (packages / 
     [{ name: "semver", target: "7.7.3", catalog: null }],
   );
   assert.equal(scope.ok, false);
-  assert.deepEqual(scope.violations.sort(), [
+  assert.deepEqual(scope.violations.toSorted(), [
     "pnpm-workspace.yaml#onlyBuiltDependencies",
     "pnpm-workspace.yaml#packages",
   ]);

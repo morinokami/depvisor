@@ -148,7 +148,7 @@ function collectRepoFiles(abs: string, rel: string, max: number): string[] {
 
   const files: string[] = [];
   const walk = (dir: string, prefix: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    for (const entry of readdirSync(dir, { withFileTypes: true }).toSorted((a, b) =>
       a.name.localeCompare(b.name),
     )) {
       if (files.length >= max) return;

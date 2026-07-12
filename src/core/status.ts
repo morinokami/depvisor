@@ -223,19 +223,19 @@ export function emitRunStatus(outDir: string, status: RunStatus): string {
 
 function parseGroup(raw: Partial<GroupResult>): GroupResult {
   const group: GroupResult = {
-    status: String(raw.status ?? "unknown"),
+    status: raw.status ?? "unknown",
     branch: typeof raw.branch === "string" ? raw.branch : null,
     group: typeof raw.group === "string" ? raw.group : null,
     summary: typeof raw.summary === "string" ? raw.summary : "",
-    packages: Array.isArray(raw.packages) ? (raw.packages as StatusPackage[]) : [],
-    verification: Array.isArray(raw.verification) ? (raw.verification as VerifyResult[]) : [],
+    packages: Array.isArray(raw.packages) ? raw.packages : [],
+    verification: Array.isArray(raw.verification) ? raw.verification : [],
     prUrl: typeof raw.prUrl === "string" ? raw.prUrl : null,
   };
   // Preserve testChanges across the open-pr read→rewrite round-trip; parseGroup
   // rebuilds the object field-by-field, so an omitted field would be silently
   // dropped when open-pr patches the PR URL back in.
   if (Array.isArray(raw.testChanges) && raw.testChanges.length > 0) {
-    group.testChanges = raw.testChanges as NumstatEntry[];
+    group.testChanges = raw.testChanges;
   }
   // Same round-trip concern for usage — a list of numeric-only records,
   // re-normalized defensively (a hand-edited/truncated status file must not
@@ -287,12 +287,12 @@ export function readRunStatus(file: string): RunStatus | null {
   try {
     const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (!raw || typeof raw !== "object") return null;
-    parsed = raw as Partial<RunStatus>;
+    parsed = raw;
   } catch {
     return null;
   }
   return {
-    status: String(parsed.status ?? "unknown"),
+    status: parsed.status ?? "unknown",
     base: typeof parsed.base === "string" ? parsed.base : null,
     summary: typeof parsed.summary === "string" ? parsed.summary : "",
     groups: Array.isArray(parsed.groups)

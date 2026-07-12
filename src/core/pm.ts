@@ -267,10 +267,9 @@ export type PmDetection =
 
 function packageManagerField(repoPath: string): string | null {
   try {
-    const pkg = JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8")) as {
-      packageManager?: unknown;
-    };
-    return typeof pkg.packageManager === "string" ? pkg.packageManager : null;
+    const parsed: unknown = JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8"));
+    if (!parsed || typeof parsed !== "object" || !("packageManager" in parsed)) return null;
+    return typeof parsed.packageManager === "string" ? parsed.packageManager : null;
   } catch {
     return null;
   }
@@ -301,12 +300,13 @@ function toolchainFor(name: PmName, source: string): PmDetection {
 export function detectPackageManager(repoPath: string): PmDetection {
   const field = packageManagerField(repoPath);
   const named = field ? /^(npm|pnpm|yarn|bun)@/.exec(field) : null;
-  if (named) {
-    return toolchainFor(named[1] as PmName, `the packageManager field ("${field}")`);
+  const name = named?.[1];
+  if (name === "npm" || name === "pnpm" || name === "yarn" || name === "bun") {
+    return toolchainFor(name, `the packageManager field ("${field}")`);
   }
 
   const present = LOCKFILES.filter(([file]) => existsSync(join(repoPath, file)));
-  const names = [...new Set(present.map(([, name]) => name))];
+  const names = [...new Set(present.map(([, pmName]) => pmName))];
   if (names.length > 1) {
     return {
       ok: false,

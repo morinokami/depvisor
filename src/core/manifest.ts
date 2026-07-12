@@ -17,6 +17,6 @@ export const DEPENDENCY_FIELDS = [
 /** A parsed (JSON/YAML) value that is a plain string→value map, else null. */
 export function asPlainMap(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
+    ? Object.fromEntries(Object.entries(value))
     : null;
 }

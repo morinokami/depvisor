@@ -217,7 +217,7 @@ test("recordGroupOutcome can flip a single group to a failed open-pr outcome", (
   });
   const patched = readRunStatus(file);
   assert.equal(patched?.status, "completed");
-  assert.equal(runFailsJob(patched as RunStatus), true);
+  assert.equal(runFailsJob(patched), true);
 });
 
 test("recordGroupOutcome appends a synthetic entry for an unreadable payload (null branch)", () => {
@@ -235,7 +235,7 @@ test("recordGroupOutcome appends a synthetic entry for an unreadable payload (nu
   const synthetic = next?.groups[1];
   assert.equal(synthetic?.status, "open-pr-failed");
   assert.equal(synthetic?.branch, null);
-  assert.equal(runFailsJob(next as RunStatus), true);
+  assert.equal(runFailsJob(next), true);
   const outputs = toActionOutputs(next);
   assert.equal(outputs.failed, "true", "outputs must agree with the red job (review finding 1)");
 });
@@ -257,7 +257,7 @@ test("recordGroupOutcome appends via fallback when a patched branch matches no e
   assert.equal(appended?.status, "pr-prepared");
   assert.equal(appended?.branch, "depvisor/ghost");
   assert.equal(appended?.prUrl, "https://github.com/o/r/pull/9");
-  assert.equal(runFailsJob(next as RunStatus), false);
+  assert.equal(runFailsJob(next), false);
   assert.equal(toActionOutputs(next).prepared_count, "2");
   assert.ok(toActionOutputs(next).pr_urls.includes("https://github.com/o/r/pull/9"));
 });

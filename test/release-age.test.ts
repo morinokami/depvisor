@@ -50,7 +50,7 @@ function stubFetch(routes: Record<string, () => Response>, calls: string[] = [])
     }
     return new Response("not found", { status: 404 });
   };
-  return impl as typeof fetch;
+  return impl;
 }
 
 test("parseMinimumReleaseAge defaults empty to 1 and accepts non-negative integers", () => {
@@ -76,14 +76,14 @@ test("versionTimes intersects time with versions, dropping bookkeeping and unpub
       "1.0.0": daysAgo(300),
       "1.1.0": daysAgo(100), // unpublished: absent from versions below
       "1.2.0": daysAgo(10),
-      "1.3.0": 12345 as unknown as string, // non-string time
+      "1.3.0": 12345, // non-string time
       "1.4.0": "not-a-date",
       constructor: daysAgo(5), // prototype key must not leak through `in`
     },
     versions: { "1.0.0": {}, "1.2.0": {}, "1.3.0": {}, "1.4.0": {} },
   };
   const times = versionTimes(packument);
-  assert.deepEqual([...times.keys()].sort(), ["1.0.0", "1.2.0"]);
+  assert.deepEqual([...times.keys()].toSorted(), ["1.0.0", "1.2.0"]);
 });
 
 test("versionTimes is empty when time or versions is missing", () => {
@@ -337,7 +337,7 @@ test("parseMinimumReleaseAgeExclude accepts names, skipping blanks and # comment
     "# private registry — npmjs cannot vouch for these\n@acme/internal\n\n  left-pad  \n@acme/internal\n",
   );
   assert.ok(parsed.ok);
-  assert.deepEqual([...parsed.exclude].sort(), ["@acme/internal", "left-pad"]);
+  assert.deepEqual([...parsed.exclude].toSorted(), ["@acme/internal", "left-pad"]);
 });
 
 test("parseMinimumReleaseAgeExclude returns an empty set for empty/whitespace input", () => {
