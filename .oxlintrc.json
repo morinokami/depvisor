@@ -1,8 +1,9 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc"],
+  "plugins": ["typescript", "unicorn", "oxc", "import"],
   "categories": {
-    "correctness": "error"
+    "correctness": "error",
+    "suspicious": "error"
   },
   "options": {
     "typeAware": true,
@@ -21,8 +22,18 @@
         ]
       }
     ],
-    "typescript/no-misused-promises": "error"
+    "typescript/no-misused-promises": "error",
+    "import/no-cycle": "error",
+    "typescript/switch-exhaustiveness-check": "error"
   },
+  "overrides": [
+    {
+      "files": ["test/**/*.ts"],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off"
+      }
+    }
+  ],
   "ignorePatterns": ["fixtures/"],
   "env": {
     "builtin": true

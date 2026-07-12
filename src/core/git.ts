@@ -273,7 +273,9 @@ function pathFingerprint(repo: string, path: string): string {
   try {
     stat = lstatSync(full);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") {
+      return "missing";
+    }
     throw err;
   }
   if (stat.isSymbolicLink()) return `link:${stat.mode}:${readlinkSync(full)}`;
@@ -303,7 +305,7 @@ function pathFingerprint(repo: string, path: string): string {
 export function snapshotWorktree(repo: string): WorktreeSnapshot {
   return new Map(
     changedPaths(repo)
-      .sort()
+      .toSorted()
       .map((path) => [path, pathFingerprint(repo, path)]),
   );
 }
@@ -318,7 +320,7 @@ export function worktreeDrift(repo: string, expected: ReadonlyMap<string, string
   for (const path of current.keys()) {
     if (!expected.has(path)) drift.add(path);
   }
-  return [...drift].sort();
+  return [...drift].toSorted();
 }
 
 /** Per-file line-change counts for a committed diff. */
@@ -329,6 +331,10 @@ export interface NumstatEntry {
   added: number | null;
   /** Removed lines, or null for binary files. */
   removed: number | null;
+}
+
+function parseNumstatNumber(value: string): number | null {
+  return value === "-" ? null : Number(value);
 }
 
 /**
@@ -355,7 +361,6 @@ export function diffNumstat(repo: string, from: string, to: string): NumstatEntr
   if (res.code !== 0) {
     throw new GitError(`git diff --numstat ${from} ${to} failed (exit ${res.code}): ${res.err}`);
   }
-  const num = (s: string): number | null => (s === "-" ? null : Number(s));
   const entries: NumstatEntry[] = [];
   for (const record of res.out.split("\0")) {
     if (record === "") continue; // trailing NUL leaves a final empty token
@@ -364,8 +369,8 @@ export function diffNumstat(repo: string, from: string, to: string): NumstatEntr
     if (t1 === -1 || t2 === -1) continue; // malformed record; skip rather than mis-slice
     entries.push({
       path: record.slice(t2 + 1),
-      added: num(record.slice(0, t1)),
-      removed: num(record.slice(t1 + 1, t2)),
+      added: parseNumstatNumber(record.slice(0, t1)),
+      removed: parseNumstatNumber(record.slice(t1 + 1, t2)),
     });
   }
   return entries;

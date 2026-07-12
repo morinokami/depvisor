@@ -79,7 +79,7 @@ export function parseGithubSlug(repository: unknown): string | null {
   if (typeof repository === "string") {
     url = repository;
   } else if (repository && typeof repository === "object" && "url" in repository) {
-    const raw = (repository as { url: unknown }).url;
+    const raw = repository.url;
     if (typeof raw === "string") url = raw;
   }
   if (!url) return null;
@@ -105,13 +105,6 @@ export function sanitizeReleaseText(raw: string): string {
   return `${stripped.slice(0, PER_RELEASE_CHARS)}\n…(truncated)`;
 }
 
-interface RawRelease {
-  tag_name?: unknown;
-  body?: unknown;
-  draft?: unknown;
-  prerelease?: unknown;
-}
-
 /**
  * From the raw GitHub releases list, keep those whose version falls in
  * (from, to], newest first, capped and sanitized. Drafts and prereleases are
@@ -126,14 +119,19 @@ export function selectReleases(releases: unknown, from: string, to: string): Rel
   const toV = parseSemver(to);
 
   const picked: { v: Triple; note: ReleaseNote }[] = [];
-  for (const r of releases as RawRelease[]) {
-    if (r?.draft === true || r?.prerelease === true) continue;
-    const tag = typeof r?.tag_name === "string" ? r.tag_name : "";
+  for (const r of releases) {
+    if (!r || typeof r !== "object") continue;
+    const draft = "draft" in r ? r.draft : undefined;
+    const prerelease = "prerelease" in r ? r.prerelease : undefined;
+    if (draft === true || prerelease === true) continue;
+    const tagName = "tag_name" in r ? r.tag_name : undefined;
+    const tag = typeof tagName === "string" ? tagName : "";
     const v = parseSemver(tag);
     if (!v) continue;
     if (fromV && compareTriple(v, fromV) <= 0) continue;
     if (toV && compareTriple(v, toV) > 0) continue;
-    const body = typeof r?.body === "string" ? r.body : "";
+    const rawBody = "body" in r ? r.body : undefined;
+    const body = typeof rawBody === "string" ? rawBody : "";
     picked.push({ v, note: { version: tag.replace(/^v/, ""), notes: sanitizeReleaseText(body) } });
   }
   picked.sort((a, b) => compareTriple(b.v, a.v));
@@ -172,8 +170,10 @@ export async function resolveSourceRepo(
   try {
     const res = await doFetch(`${NPM_REGISTRY}/${pkg}`, requestInit(opts.signal));
     if (!res.ok) return null;
-    const meta = (await res.json()) as { repository?: unknown };
-    return parseGithubSlug(meta.repository);
+    const meta: unknown = await res.json();
+    return parseGithubSlug(
+      meta && typeof meta === "object" && "repository" in meta ? meta.repository : null,
+    );
   } catch {
     // Network blocked, offline, or timed out: no slug, no links.
     return null;

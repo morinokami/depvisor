@@ -26,7 +26,7 @@ function stubFetch(routes: Record<string, () => Response>, calls: string[] = [])
     }
     return new Response("not found", { status: 404 });
   };
-  return impl as typeof fetch;
+  return impl;
 }
 
 test("parseGithubSlug extracts owner/repo for github only", () => {

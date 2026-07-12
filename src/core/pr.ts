@@ -88,8 +88,8 @@ export function versionsMarker(
   members: Pick<Candidate, "name" | "latest" | "locations">[],
 ): string {
   const list = members
-    .map((m) => `${m.name}@${m.latest}@${[...m.locations].sort().join("~")}`)
-    .sort()
+    .map((m) => `${m.name}@${m.latest}@${[...m.locations].toSorted().join("~")}`)
+    .toSorted()
     .join(",");
   return `<!-- depvisor:versions=${list} -->`;
 }
@@ -237,7 +237,7 @@ export function sanitizeLabels(labels: unknown): string[] {
   for (const label of labels) {
     if (typeof label === "string" && LABEL_RE.test(label)) kept.add(label);
   }
-  return [...kept].sort();
+  return [...kept].toSorted();
 }
 
 // For a singleton group the semver:* label is simply that package's update

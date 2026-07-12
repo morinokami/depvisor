@@ -46,7 +46,7 @@ test("RefGuard restores moved, created, and deleted refs", () => {
   execSync("git branch -D keep", { cwd: repo });
 
   const drift = guard.intactAt(trusted, "main");
-  assert.deepEqual(drift?.refs.sort(), [
+  assert.deepEqual(drift?.refs.toSorted(), [
     "refs/heads/attacker",
     "refs/heads/keep",
     "refs/heads/main",

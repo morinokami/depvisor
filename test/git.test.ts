@@ -75,14 +75,14 @@ test("changedPaths reports quoting-triggering paths verbatim and they stay commi
 
   writeFileSync(join(repo, "ワークスペース/package.json"), '{"name":"ws","version":"2"}\n');
   writeFileSync(join(repo, 'has"quote.txt'), "y\n");
-  assert.deepEqual(changedPaths(repo).sort(), ['has"quote.txt', "ワークスペース/package.json"]);
+  assert.deepEqual(changedPaths(repo).toSorted(), ['has"quote.txt', "ワークスペース/package.json"]);
 
   // The mechanical bump path must reach the commit, not die on a pathspec.
   const bump = manifestBumpPaths(repo, ["package-lock.json"]);
   assert.deepEqual(bump, ["ワークスペース/package.json"]);
   const sha = commitPaths(repo, bump, "deps: bump");
   assert.ok(sha);
-  assert.deepEqual(changedPaths(repo).sort(), ['has"quote.txt']);
+  assert.deepEqual(changedPaths(repo).toSorted(), ['has"quote.txt']);
 });
 
 test("changedPaths lists files under a new untracked directory individually, not collapsed", () => {
@@ -92,14 +92,14 @@ test("changedPaths lists files under a new untracked directory individually, not
   mkdirSync(join(repo, "pkgs/evil"), { recursive: true });
   writeFileSync(join(repo, "pkgs/evil/package.json"), '{"name":"evil"}\n');
   writeFileSync(join(repo, "pkgs/evil/index.js"), "module.exports = 1;\n");
-  assert.deepEqual(changedPaths(repo).sort(), ["pkgs/evil/index.js", "pkgs/evil/package.json"]);
+  assert.deepEqual(changedPaths(repo).toSorted(), ["pkgs/evil/index.js", "pkgs/evil/package.json"]);
 });
 
 test("changedPaths keeps only the destination of a staged rename (-z ORIG_PATH dropped)", () => {
   const repo = tempRepo();
   execSync("git mv src.ts renamed.ts", { cwd: repo });
   writeFileSync(join(repo, "package.json"), '{"changed":1}\n');
-  assert.deepEqual(changedPaths(repo).sort(), ["package.json", "renamed.ts"]);
+  assert.deepEqual(changedPaths(repo).toSorted(), ["package.json", "renamed.ts"]);
 });
 
 test("commitPaths/commitAll split manifests from code fixes", () => {
@@ -113,7 +113,7 @@ test("commitPaths/commitAll split manifests from code fixes", () => {
   const bumpFiles = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
     .trim()
     .split("\n");
-  assert.deepEqual(bumpFiles.sort(), ["package-lock.json", "package.json"]);
+  assert.deepEqual(bumpFiles.toSorted(), ["package-lock.json", "package.json"]);
 
   const fix = commitAll(repo, "fix: adapt");
   assert.ok(fix);
@@ -160,11 +160,10 @@ test("manifestBumpPaths selects every package.json and lockfile by basename (wor
   writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
 
   // Nested workspace manifest is picked up; src.ts is not.
-  assert.deepEqual(manifestBumpPaths(repo, ["package-lock.json", "npm-shrinkwrap.json"]).sort(), [
-    "package-lock.json",
-    "package.json",
-    "packages/a/package.json",
-  ]);
+  assert.deepEqual(
+    manifestBumpPaths(repo, ["package-lock.json", "npm-shrinkwrap.json"]).toSorted(),
+    ["package-lock.json", "package.json", "packages/a/package.json"],
+  );
 
   const bump = commitPaths(
     repo,
@@ -175,7 +174,7 @@ test("manifestBumpPaths selects every package.json and lockfile by basename (wor
   const bumpFiles = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
     .trim()
     .split("\n");
-  assert.deepEqual(bumpFiles.sort(), [
+  assert.deepEqual(bumpFiles.toSorted(), [
     "package-lock.json",
     "package.json",
     "packages/a/package.json",
@@ -203,10 +202,10 @@ test("manifestBumpPaths includes extra root manifests exactly, not by basename",
   writeFileSync(join(repo, "packages/a/pnpm-workspace.yaml"), "x: 2\n");
   writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
 
-  assert.deepEqual(manifestBumpPaths(repo, ["pnpm-lock.yaml"], ["pnpm-workspace.yaml"]).sort(), [
-    "pnpm-lock.yaml",
-    "pnpm-workspace.yaml",
-  ]);
+  assert.deepEqual(
+    manifestBumpPaths(repo, ["pnpm-lock.yaml"], ["pnpm-workspace.yaml"]).toSorted(),
+    ["pnpm-lock.yaml", "pnpm-workspace.yaml"],
+  );
 });
 
 test("discardWorkPast drops commits, tracked edits, and untracked files", () => {
@@ -310,7 +309,7 @@ test("diffNumstat surfaces a test moved out of the test dir via its old path", (
 
   const paths = diffNumstat(repo, base, "HEAD")
     .map((e) => e.path)
-    .sort();
+    .toSorted();
   assert.deepEqual(paths, ["src/x.ts", "test/x.test.ts"]);
 });
 
@@ -380,7 +379,7 @@ test("snapshotRefs/refDrift detect moved, created, and deleted refs", () => {
   execSync("git -c user.email=t@t -c user.name=t commit -qam evil", { cwd: repo });
   execSync("git branch -f stable HEAD", { cwd: repo });
   execSync("git tag sneaky", { cwd: repo });
-  const drift = refDrift(repo, snapshot).sort();
+  const drift = refDrift(repo, snapshot).toSorted();
   // The checked-out branch moved with the commit, stable was forced, sneaky created.
   assert.ok(drift.includes("refs/heads/stable"));
   assert.ok(drift.includes("refs/tags/sneaky"));

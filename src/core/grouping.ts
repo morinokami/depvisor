@@ -162,5 +162,5 @@ export function groupCandidates(
     add(`prod/${c.name}`, "production dependency updated individually", c);
   }
 
-  return [...groups.values()].sort((a, b) => a.key.localeCompare(b.key));
+  return [...groups.values()].toSorted((a, b) => a.key.localeCompare(b.key));
 }

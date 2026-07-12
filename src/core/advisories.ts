@@ -201,7 +201,7 @@ async function osvPost(
   try {
     const res = await doFetch(`${OSV_API}${path}`, requestInit(body, signal));
     if (!res.ok) return null;
-    return (await res.json()) as unknown;
+    return await res.json();
   } catch {
     return null;
   }
@@ -291,7 +291,7 @@ export async function fetchAdvisories(
         // Count and display in GHSA terms; raw is guarded field-by-field inside
         // resolvesAdvisory.
         const ghsa = extractGhsa(raw);
-        if (ghsa && resolvesAdvisory(c.name, current, c.latest, raw as unknown as OsvVuln)) {
+        if (ghsa && resolvesAdvisory(c.name, current, c.latest, raw)) {
           ids.push(ghsa);
         }
       }
@@ -309,7 +309,7 @@ export async function fetchAdvisories(
     for (const id of r.ids) set.add(id);
     idsByPackage.set(r.name, set);
   }
-  for (const [name, set] of idsByPackage) resolvedByPackage.set(name, [...set].sort());
+  for (const [name, set] of idsByPackage) resolvedByPackage.set(name, [...set].toSorted());
   return { resolvedByPackage, ok: true };
 }
 
@@ -326,7 +326,7 @@ export function prioritizeGroups(
 ): Group[] {
   const resolvesAny = (g: Group): boolean =>
     g.members.some((m) => (resolvedByPackage.get(m.name)?.length ?? 0) > 0);
-  return [...groups].sort((a, b) => Number(resolvesAny(b)) - Number(resolvesAny(a)));
+  return [...groups].toSorted((a, b) => Number(resolvesAny(b)) - Number(resolvesAny(a)));
 }
 
 /**
@@ -348,7 +348,7 @@ export const ADVISORIES_UNAVAILABLE_NOTE =
 export function describeAdvisories(resolvedByPackage: ReadonlyMap<string, string[]>): string {
   if (resolvedByPackage.size === 0) return "";
   const parts = [...resolvedByPackage.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
+    .toSorted((a, b) => a[0].localeCompare(b[0]))
     .map(([name, ids]) => `${name} (${ids.join(", ")})`);
   const n = parts.length;
   return `security: prioritized ${n} update${n === 1 ? "" : "s"} resolving known advisories: ${parts.join("; ")}.`;

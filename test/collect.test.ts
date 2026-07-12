@@ -130,6 +130,10 @@ test("parseOutdated: dev in every workspace → dev", () => {
   assert.deepEqual(out[0]!.locations, ["packages/a", "packages/b"]);
 });
 
+test("parseOutdated fails closed on a malformed package entry", () => {
+  assert.throws(() => parseOutdated({ broken: null }), /malformed npm outdated entry for broken/);
+});
+
 // A single-package repo under `-r`: every row's Workspace is the repo's own
 // name, which resolves to the root "".
 const ROOT_WS = new Map([["app", ""]]);
@@ -355,6 +359,13 @@ test("parsePnpmOutdated defaults to the root location when no dependents are lis
     "/repo",
   );
   assert.deepEqual(out[0]!.locations, [""]);
+});
+
+test("parsePnpmOutdated fails closed on a malformed package entry", () => {
+  assert.throws(
+    () => parsePnpmOutdated({ broken: null }, "/repo"),
+    /malformed pnpm outdated entry for broken/,
+  );
 });
 
 test("collectCandidates fails closed on npm's --json error object (registry outage)", () => {

@@ -54,10 +54,17 @@ const PR_OUT_DIR = fileURLToPath(new URL("../../pr-preview", import.meta.url));
 function readOpenPrs(file: string | undefined): { headRefName?: string; body?: string }[] {
   if (!file) return [];
   try {
-    return JSON.parse(readFileSync(file, "utf8")) as {
-      headRefName?: string;
-      body?: string;
-    }[];
+    const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const pr: { headRefName?: string; body?: string } = {};
+      if ("headRefName" in entry && typeof entry.headRefName === "string") {
+        pr.headRefName = entry.headRefName;
+      }
+      if ("body" in entry && typeof entry.body === "string") pr.body = entry.body;
+      return [pr];
+    });
   } catch {
     return [];
   }
