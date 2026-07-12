@@ -23,12 +23,6 @@ jobs:
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
-          # Audited over two runs (PR #72): github.com, registry.npmjs.org,
-          # npm.flatt.tech (Takumi Guard's registry proxy). The rest is the
-          # cold-toolcache download path — .node-version pins an exact node
-          # version, so when the runner image drops it, setup-node fetches the
-          # manifest (api.github.com) and the build (GitHub release CDNs,
-          # nodejs.org as fallback) — which warm-cache audit runs never show.
           allowed-endpoints: >
             github.com:443
             api.github.com:443
@@ -149,9 +143,6 @@ jobs:
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
-          # Same set as the ci job: the fixture installs (all six variants)
-          # talk to the same registries through Takumi Guard's proxy, and
-          # setup-bun downloads the bun binary from GitHub releases.
           allowed-endpoints: >
             github.com:443
             api.github.com:443
@@ -212,8 +203,6 @@ jobs:
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: block
-          # zizmor-action pulls the zizmor binary from ghcr.io; no node/npm
-          # toolchain in this job, so no registry endpoints.
           allowed-endpoints: >
             github.com:443
             api.github.com:443
