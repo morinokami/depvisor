@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0](https://github.com/morinokami/depvisor/compare/v1.3.0...v1.4.0) (2026-07-12)
+
+
+### Features
+
+* group related packages into one PR via the groups input ([#68](https://github.com/morinokami/depvisor/issues/68)) ([9513ed4](https://github.com/morinokami/depvisor/commit/9513ed424e1cc6f3012694917d07ea76db5784f0))
+* write the PR narrative in a configurable language (language input) ([#61](https://github.com/morinokami/depvisor/issues/61)) ([3cac0a0](https://github.com/morinokami/depvisor/commit/3cac0a07f019fd14a8c8c3881ca4e30e85ab1cb9))
+
+
+### Bug Fixes
+
+* deny unsupported PMs' lockfiles (yarn.lock, nub.lock) in the fixer gate ([#59](https://github.com/morinokami/depvisor/issues/59)) ([14b75bb](https://github.com/morinokami/depvisor/commit/14b75bba09327731ceb20f58aa8d337cd850c27e))
+
 ## [1.3.0](https://github.com/morinokami/depvisor/compare/v1.2.2...v1.3.0) (2026-07-10)
 
 
