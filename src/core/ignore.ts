@@ -153,21 +153,36 @@ export function applyIgnore(
  * One-line note for the run log and summary — ignoring is a deliberate config
  * choice (green), but echoing what it dropped confirms the rules took effect.
  * A candidate dropped by a prefix glob is attributed to its rule (`via
- * @types/*`): a glob's matches drift as the repo's dependencies do, so unlike
- * an exact rule the user cannot know them from the config alone. "" when
- * nothing was ignored.
+ * @types/*`), and a glob that matched NOTHING this run is reported too: a
+ * glob's matches drift as the repo's dependencies do, so unlike an exact rule
+ * the user cannot know them from the config alone, and a zero count is how a
+ * typo'd stem (`@nope/*`) surfaces — the glob counterpart of the documented
+ * "misspelled exact name excludes nothing" trap. "" only when the rules
+ * include no glob and nothing was ignored.
  */
 export function describeIgnore(
   ignored: readonly Candidate[],
   rules: readonly IgnoreRule[],
 ): string {
-  if (ignored.length === 0) return "";
-  const list = ignored
-    .map((c) => {
-      const rule = matchedRule(c, rules);
-      const via = rule && "namePrefix" in rule ? ` (via ${rule.namePrefix}*)` : "";
-      return `${c.name} ${c.current} -> ${c.latest}${via}`;
-    })
-    .join(", ");
-  return `ignore: skipped ${list}.`;
+  const parts: string[] = [];
+  if (ignored.length > 0) {
+    const list = ignored
+      .map((c) => {
+        const rule = matchedRule(c, rules);
+        const via = rule && "namePrefix" in rule ? ` (via ${rule.namePrefix}*)` : "";
+        return `${c.name} ${c.current} -> ${c.latest}${via}`;
+      })
+      .join(", ");
+    parts.push(`skipped ${list}`);
+  }
+  const unmatched: string[] = [];
+  for (const rule of rules) {
+    if ("namePrefix" in rule && !ignored.some((c) => c.name.startsWith(rule.namePrefix))) {
+      unmatched.push(`${rule.namePrefix}*`);
+    }
+  }
+  if (unmatched.length > 0) {
+    parts.push(`${unmatched.join(", ")} matched no outdated candidate`);
+  }
+  return parts.length === 0 ? "" : `ignore: ${parts.join("; ")}.`;
 }

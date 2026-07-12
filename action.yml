@@ -42,15 +42,15 @@ inputs:
     required: false
     default: "1"
   minimum_release_age_exclude:
-    description: Newline-separated package names exempted from the minimum_release_age check — for private-registry packages the public npm registry cannot vouch for. Exact names only (full-line "#" comments are allowed); globs, version ranges, and majors are not supported.
+    description: Newline-separated package names exempted from the minimum_release_age check — for private-registry packages the public npm registry cannot vouch for. Exact names or trailing-"*" prefix globs like "@acme/*" (full-line "#" comments are allowed); version ranges, majors, and other pattern forms are not supported.
     required: false
     default: ""
   ignore:
-    description: Newline-separated packages to never update; use "name" to skip a package entirely or "name@<major>" to skip only a specific major. Full-line "#" comments are allowed.
+    description: Newline-separated packages to never update; use "name" to skip a package entirely, "name@<major>" to skip only a specific major, or a trailing-"*" prefix glob like "@acme-forks/*" to skip every matching package (no major suffix on globs). Full-line "#" comments are allowed.
     required: false
     default: ""
   groups:
-    description: 'Newline-separated package groups updated together in one PR, each line "<group-name>: <package> <package> ..." (members separated by spaces or commas). Exact package names only; each package may belong to at most one group; full-line "#" comments are allowed. Ungrouped packages keep getting their own PR.'
+    description: 'Newline-separated package groups updated together in one PR, each line "<group-name>: <package> <package> ..." (members separated by spaces or commas). Exact package names or trailing-"*" prefix globs like "@acme/*"; each package may belong to at most one group; full-line "#" comments are allowed. Ungrouped packages keep getting their own PR.'
     required: false
     default: ""
   suggest_features:

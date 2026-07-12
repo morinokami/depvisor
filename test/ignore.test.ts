@@ -187,4 +187,21 @@ test("describeIgnore attributes glob-dropped candidates to their rule", () => {
   );
   assert.match(note, /@types\/react 17\.0\.0 -> 18\.0\.0 \(via @types\/\*\)/);
   assert.match(note, /left-pad 1\.0\.0 -> 1\.3\.0(,|\.)/);
+  // The glob matched, so no zero-match report rides along.
+  assert.ok(!note.includes("matched no outdated candidate"));
+});
+
+test("describeIgnore reports a glob that matched nothing this run", () => {
+  // Nothing ignored at all: a typo'd stem must still surface.
+  const nothing = describeIgnore([], [{ name: "left-pad", major: null }, { namePrefix: "@nope/" }]);
+  assert.equal(nothing, "ignore: @nope/* matched no outdated candidate.");
+  // Mixed: one glob matched, the other did not; exact zero-matches stay
+  // unreported (the config already names them verbatim).
+  const mixed = describeIgnore(
+    [cand({ name: "@types/react", current: "17.0.0", latest: "18.0.0" })],
+    [{ namePrefix: "@types/" }, { namePrefix: "@nope/" }, { name: "misspelled-name", major: null }],
+  );
+  assert.match(mixed, /skipped @types\/react 17\.0\.0 -> 18\.0\.0 \(via @types\/\*\)/);
+  assert.match(mixed, /; @nope\/\* matched no outdated candidate\.$/);
+  assert.ok(!mixed.includes("misspelled-name"));
 });

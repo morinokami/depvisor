@@ -195,7 +195,10 @@ Details worth knowing:
   starts with the stem, including packages added to the repo after the rule was
   written. Because ignoring is where over-matching hurts most (updates just
   stop, silently), every candidate a glob dropped is attributed to its rule in
-  the run summary (`@types/react 17.0.0 -> 18.0.0 (via @types/*)`). A glob
+  the run summary (`@types/react 17.0.0 -> 18.0.0 (via @types/*)`), and a glob
+  that matched nothing this run is reported too (`@nope/* matched no outdated
+candidate`) — matching zero is normal, but it is also how a typo'd stem
+  surfaces, the glob counterpart of the misspelled-exact-name trap. A glob
   cannot take a major suffix — `@acme/*@3` fails with `bad-ignore`.
 - **Ordering vs the cooldown**: `name@<major>` matches the registry's latest
   major. If `minimum_release_age` would clamp that major down to an older one
