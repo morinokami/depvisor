@@ -597,7 +597,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
       err instanceof ResultUnavailableError ||
       err instanceof v.ValiError
     ) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = Error.isError(err) ? err.message : String(err);
       log.warn(
         "The digest agent failed; preparing the PR with a deterministic summary and no " +
           `narrative digest. (${detail})`,

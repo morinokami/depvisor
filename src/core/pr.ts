@@ -56,7 +56,7 @@ export function parsePrPayload(raw: unknown): PrPayload | null {
 
 export function slugify(s: string): string {
   return s
-    .replace(/@/g, "")
+    .replaceAll("@", "")
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
@@ -163,8 +163,8 @@ function sanitizeText(s: string): string {
   return (
     s
       .replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/</g, "&lt;")
-      .replace(/!\[/g, "!\\[")
+      .replaceAll("<", "&lt;")
+      .replaceAll("![", "!\\[")
       // Lookahead excludes name chars too, so backtracking can't shorten
       // "@types" into a match for "@type" just because "/" follows.
       .replace(/@([A-Za-z0-9-]+)(?![A-Za-z0-9/-])/g, "@\u200b$1")
