@@ -137,7 +137,57 @@ export type ActionOutputs = {
   failed: string;
   prepared_count: string;
   pr_urls: string;
+  total_tokens: string;
+  est_cost_usd: string;
 };
+
+const ZERO_USAGE_OUTPUTS = { total_tokens: "0", est_cost_usd: "0.000000" } as const;
+const UNAVAILABLE_USAGE_OUTPUTS = { total_tokens: "0", est_cost_usd: "" } as const;
+
+/**
+ * Project the already-recorded per-operation usage into numeric-only action
+ * outputs. The status file is untrusted at read-back, so validate every value
+ * again at this exit boundary: tokens must be non-negative safe integers and
+ * costs non-negative finite numbers. Invalid tokens fail toward zero; an
+ * invalid cost leaves only the estimate empty, preserving an independently
+ * valid token total. Neither can become a free-form value in `${{ }}`
+ * interpolation.
+ *
+ * Flue represents an unpriced model with zero cost rather than a separate
+ * "price unavailable" bit. A token-bearing zero-cost operation therefore makes
+ * the WHOLE run estimate unavailable — emitting the sum of only priced
+ * operations would understate the total. This also conservatively treats a
+ * genuinely free model as unavailable; the current Flue response cannot
+ * distinguish those cases. A valid run with no agent operation has a known
+ * zero cost instead.
+ */
+function usageActionOutputs(
+  groups: GroupResult[],
+): Pick<ActionOutputs, "total_tokens" | "est_cost_usd"> {
+  const entries = groups.flatMap((g) => g.usage ?? []);
+  if (entries.length === 0) return ZERO_USAGE_OUTPUTS;
+  if (entries.some((u) => !Number.isSafeInteger(u.totalTokens) || u.totalTokens < 0)) {
+    return UNAVAILABLE_USAGE_OUTPUTS;
+  }
+  const usage = sumGroupUsage(groups);
+  if (!usage || !Number.isSafeInteger(usage.totalTokens) || usage.totalTokens < 0) {
+    return UNAVAILABLE_USAGE_OUTPUTS;
+  }
+  const costUnavailable =
+    !Number.isFinite(usage.costUsd) ||
+    usage.costUsd < 0 ||
+    entries.some(
+      (u) =>
+        !Number.isFinite(u.costUsd) ||
+        u.costUsd < 0 ||
+        (u.totalTokens === 0 && u.costUsd !== 0) ||
+        (u.totalTokens > 0 && u.costUsd === 0),
+    );
+  return {
+    total_tokens: String(usage.totalTokens),
+    est_cost_usd: costUnavailable ? "" : usage.costUsd.toFixed(6),
+  };
+}
 
 /**
  * The action-outputs projection of a run: the bridge that lets consumer
@@ -148,9 +198,19 @@ export type ActionOutputs = {
  * `prepared_count` counts `pr-prepared` groups as patched by the open-pr step,
  * i.e. groups whose PR was opened or refreshed (a blocked/failed open-pr has
  * already left that status); `pr_urls` is those PRs' URLs, newline-separated.
+ * `total_tokens`/`est_cost_usd` reuse the same per-operation records as the step
+ * summary; no second accounting path or provider call is introduced.
  */
 export function toActionOutputs(run: RunStatus | null): ActionOutputs {
-  if (!run) return { status: "", failed: "true", prepared_count: "0", pr_urls: "" };
+  if (!run) {
+    return {
+      status: "",
+      failed: "true",
+      prepared_count: "0",
+      pr_urls: "",
+      ...UNAVAILABLE_USAGE_OUTPUTS,
+    };
+  }
   const urls = run.groups
     .map((g) => g.prUrl)
     .filter((url): url is string => url !== null && OUTPUT_PR_URL_RE.test(url));
@@ -162,6 +222,7 @@ export function toActionOutputs(run: RunStatus | null): ActionOutputs {
     failed: runFailsJob(run) ? "true" : "false",
     prepared_count: String(run.groups.filter((g) => g.status === "pr-prepared").length),
     pr_urls: urls.join("\n"),
+    ...usageActionOutputs(run.groups),
   };
 }
 

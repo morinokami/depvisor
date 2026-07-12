@@ -137,11 +137,11 @@ inputs (`llm_api_key_env`, `github_token`, `base_branch`, `install_command`,
 ### Outputs
 
 The action exposes the run's result to the following steps of your workflow —
-`status`, `failed`, `prepared_count`, and `pr_urls` — so you can branch and
-notify on it. All values are deliberately machine-shaped (fixed-vocabulary
-statuses, numbers, and strictly validated URLs, never the agent's free text),
-so they are safe to consume. The output table, a consumption example, and the
-full status vocabulary are in
+`status`, `failed`, `prepared_count`, `pr_urls`, `total_tokens`, and
+`est_cost_usd` — so you can branch and notify on it. All values are deliberately
+machine-shaped (fixed-vocabulary statuses, numbers, and strictly validated
+URLs, never the agent's free text), so they are safe to consume. The output
+table, a consumption example, and the full status vocabulary are in
 [docs/results.md](./docs/results.md#action-outputs).
 
 ## Versioning

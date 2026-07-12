@@ -43,6 +43,16 @@ so they are safe to consume:
 | `failed`         | `"true"` / `"false"` — whether the run fails the job. A `completed` run with one failed group is `"true"`, and so is a crash that never wrote a status     |
 | `prepared_count` | Number of dependency groups whose PR this run prepared (newly opened and refreshed alike)                                                                  |
 | `pr_urls`        | Newline-separated URLs of the PRs this run opened or refreshed                                                                                             |
+| `total_tokens`   | Total LLM tokens used by every fixer and digest operation. `"0"` when no usage was recorded or the run crashed before reporting                            |
+| `est_cost_usd`   | Provider-priced run-cost estimate in USD, as a six-decimal string. `"0.000000"` when no agent ran; empty when unavailable                                  |
+
+`est_cost_usd` is an estimate, not an invoice. Flue derives it from the active
+model's pricing metadata; a model with no known price reports zero cost even
+when it used tokens, so depvisor leaves this output empty rather than presenting
+a partial or unknown estimate as `$0`. If one run mixes priced and unpriced
+operations, the whole estimate is empty. A genuinely free model is
+conservatively indistinguishable from an unpriced one with the current Flue
+response and is empty for the same reason.
 
 A red run fails the job, so steps that read the outputs need `if: always()` (or
 `!cancelled()`). Take values into `run:` scripts through `env:` rather than
@@ -61,6 +71,15 @@ indirection is the habit that keeps a workflow injection-safe as it grows:
   env:
     PR_URLS: ${{ steps.depvisor.outputs.pr_urls }}
   run: ./scripts/notify.sh "$PR_URLS"
+
+- name: Warn when estimated LLM spend exceeds $1
+  if: >-
+    always() &&
+    steps.depvisor.outputs.est_cost_usd != '' &&
+    fromJSON(steps.depvisor.outputs.est_cost_usd) > 1
+  env:
+    EST_COST_USD: ${{ steps.depvisor.outputs.est_cost_usd }}
+  run: echo "::warning::depvisor estimated LLM cost was \$$EST_COST_USD"
 ```
 
 One caveat: a known GitHub runner bug
