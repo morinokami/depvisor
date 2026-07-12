@@ -370,7 +370,7 @@ export function collectCandidates(repoPath: string, pm: PmToolchain): Candidate[
       return parseBunOutdated(raw, workspaces);
     } catch (err) {
       const stderr = (res.stderr ?? "").trim();
-      const message = err instanceof Error ? err.message : String(err);
+      const message = Error.isError(err) ? err.message : String(err);
       throw new Error(
         `bun outdated output was not parseable (exit ${res.status}): ${message}` +
           (stderr ? ` — stderr: ${stderr.slice(0, 200)}` : ""),

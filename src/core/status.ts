@@ -398,7 +398,7 @@ export function groupLogLine(group: GroupResult): string {
 function mdCell(value: string | number | null | undefined): string {
   return sanitizeSummary(String(value ?? ""))
     .replace(/\s*\r?\n\s*/g, " ")
-    .replace(/\|/g, "\\|");
+    .replaceAll("|", "\\|");
 }
 
 function fmtTokens(n: number): string {
