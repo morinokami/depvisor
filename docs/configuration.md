@@ -370,11 +370,16 @@ lease-protected push all run again. A mergeability result that remains
 `UNKNOWN` after bounded polling fails soft; an up-to-date PR is skipped with a
 summary note and reconsidered next run.
 
-Set `conflict_refresh_only: true` only on dependency-state `push` runs. In this
-mode depvisor processes explicitly conflicted existing PRs only: target-drifted
-but non-conflicted PRs wait, groups with no open PR are suppressed before
-advisory lookup and per-group work, and no empty `open_pull_requests_limit` slot
-is replenished. The run therefore cannot increase the set of open PRs.
+`conflict_refresh_only` defaults to `true` on `push` events and `false` on
+every other trigger, so adding a dependency-state `push` trigger is all the
+configuration this mode needs. In this mode depvisor processes explicitly
+conflicted existing PRs only: target-drifted but non-conflicted PRs wait,
+groups with no open PR are suppressed before advisory lookup and per-group
+work, and no empty `open_pull_requests_limit` slot is replenished. The run
+therefore cannot increase the set of open PRs. Merging one depvisor PR then
+repairs its conflicted siblings without spawning a PR you never scheduled; set
+`conflict_refresh_only: false` explicitly if a push-triggered run should
+instead behave like a normal (scheduled) run and may open new PRs.
 
 ```yaml
 on:
@@ -382,6 +387,8 @@ on:
     - cron: "0 3 * * 1"
   workflow_dispatch: {}
   # Optional: repair conflicted depvisor PRs shortly after a dependency merge.
+  # conflict_refresh_only defaults to true on push events, so this trigger
+  # never opens a new PR.
   push:
     branches: [main]
     paths:
@@ -394,7 +401,6 @@ on:
 # ...
 - uses: morinokami/depvisor@v1
   with:
-    conflict_refresh_only: ${{ github.event_name == 'push' }}
     llm_api_key: ${{ secrets.LLM_API_KEY }}
     llm_model: openai/gpt-5.5
 ```

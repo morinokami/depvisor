@@ -20,9 +20,9 @@ inputs:
     required: false
     default: "false"
   conflict_refresh_only:
-    description: When "true", refresh only explicitly conflicted existing depvisor PRs and never open a new PR; intended for dependency-state push triggers.
+    description: When "true", refresh only explicitly conflicted existing depvisor PRs and never open a new PR. Defaults to "true" on push events and "false" otherwise, so a dependency-state push trigger repairs conflicts without replenishing the open-PR queue; set it explicitly to override.
     required: false
-    default: "false"
+    default: ${{ github.event_name == 'push' }}
   install_command:
     description: Dependency install command; use "auto" for npm/pnpm/bun lockfile installs or "skip" if already installed.
     required: false

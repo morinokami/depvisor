@@ -105,9 +105,11 @@ made a choice in the conversation, treat it as binding.
 4. **Optional inputs** — keep the defaults unless the user asks:
    `dry_run` (default false — a manual plan-only run needs no LLM credentials,
    commit, push, or PR),
-   `conflict_refresh_only` (default false — intended only for a dependency-state
-   `push` trigger; it rebuilds explicitly conflicted existing depvisor PRs and
-   can never open a new PR),
+   `conflict_refresh_only` (defaults to true on `push` events, false on every
+   other trigger — a dependency-state `push` trigger therefore rebuilds
+   explicitly conflicted existing depvisor PRs and can never open a new PR,
+   with no input to write; set `"false"` explicitly only if the user wants a
+   push-triggered run to open new PRs),
    `open_pull_requests_limit` (default: at most 5 open depvisor PRs; every PR updates
    exactly one package or one declared group), `minimum_release_age`
    (default: 1-day supply-chain cooldown — keep it enabled), `ignore`
@@ -148,7 +150,8 @@ on:
         type: boolean
         default: false
   # Optional: uncomment to repair conflicted existing depvisor PRs after a
-  # dependency-state merge. conflict_refresh_only below prevents new PRs.
+  # dependency-state merge. This trigger never opens a new PR
+  # (conflict_refresh_only defaults to true on push events).
   # push:
   #   branches: [main]
   #   paths:
@@ -192,7 +195,6 @@ jobs:
       - uses: morinokami/depvisor@v1 # or pin a commit SHA for production (immutable; the recommended pin)
         with:
           dry_run: ${{ inputs.dry_run }}
-          conflict_refresh_only: ${{ github.event_name == 'push' }}
           llm_api_key: ${{ secrets.LLM_API_KEY }} # ← the Step 2 secret name
           llm_model: openai/gpt-5.5 # ← the user's chosen model
 ```
@@ -201,12 +203,13 @@ Tailor it per the Step 2 contract:
 
 - **Conflict repair trigger** (optional): uncomment the `push` block and change
   `main` to the chosen base branch. These paths cover committed lockfiles,
-  lockfileless npm/pnpm repositories, and workspace manifests. The expression
-  sets `conflict_refresh_only` only for push runs: they regenerate explicitly
-  conflicted existing branches from the current base and run every normal gate,
-  but suppress non-conflicted and new groups before advisory/agent work. Thus a
-  merge cannot refill the newly freed `open_pull_requests_limit` slot. Scheduled
-  and manual runs remain normal and may open new PRs. Recommend `groups` for
+  lockfileless npm/pnpm repositories, and workspace manifests. No extra input
+  is needed: `conflict_refresh_only` defaults to `true` on push events, so push
+  runs regenerate explicitly conflicted existing branches from the current base
+  and run every normal gate, but suppress non-conflicted and new groups before
+  advisory/agent work. Thus a merge cannot refill the newly freed
+  `open_pull_requests_limit` slot. Scheduled and manual runs remain normal and
+  may open new PRs. Recommend `groups` for
   related packages or `open_pull_requests_limit: 1` when the user would rather
   prevent shared-lockfile conflicts than repair them.
 
