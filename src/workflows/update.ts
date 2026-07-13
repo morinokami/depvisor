@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineWorkflow } from "@flue/runtime";
 import depvisor from "../agents/depvisor.ts";
@@ -9,7 +8,12 @@ import {
   prioritizeGroups,
   type AdvisoryResult,
 } from "../core/advisories.ts";
-import { classifyGroup, countOpenDepvisorPrs } from "../core/budget.ts";
+import {
+  classifyGroup,
+  countOpenDepvisorPrs,
+  selectedForConflictRefreshOnly,
+  type RefreshReason,
+} from "../core/budget.ts";
 import { collectCandidates } from "../core/collect.ts";
 import { parseRunConfig } from "../core/config.ts";
 import {
@@ -22,6 +26,7 @@ import { isClean, tryCheckout } from "../core/git.ts";
 import { groupCandidates } from "../core/grouping.ts";
 import { applyIgnore, describeIgnore, matchedIgnoreRule } from "../core/ignore.ts";
 import { expandPatterns } from "../core/name-pattern.ts";
+import { readOpenPrSnapshot, type OpenPrMetadata } from "../core/open-pr-snapshot.ts";
 import { preflight, resolveResetCommand } from "../core/preflight.ts";
 import {
   branchNameForGroup,
@@ -54,34 +59,6 @@ import { REPO } from "../shared/target.ts";
 import { processGroup } from "./update/process-group.ts";
 
 const PR_OUT_DIR = fileURLToPath(new URL("../../pr-preview", import.meta.url));
-
-/**
- * Open-PR snapshot, or [] when absent. Skip-if-up-to-date degrades gracefully
- * without it (a missed skip just re-runs the agent), but the
- * open_pull_requests_limit ceiling counts from it, so its accuracy matters: in
- * CI the snapshot step fails the job if `gh pr list` fails, but a truncated
- * snapshot (more open PRs than its --limit) or an absent/unreadable one (local
- * runs) fails open toward opening more PRs — the ceiling can be exceeded, never
- * the reverse.
- */
-function readOpenPrs(file: string | undefined): { headRefName?: string; body?: string }[] {
-  if (!file) return [];
-  try {
-    const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((entry) => {
-      if (!entry || typeof entry !== "object") return [];
-      const pr: { headRefName?: string; body?: string } = {};
-      if ("headRefName" in entry && typeof entry.headRefName === "string") {
-        pr.headRefName = entry.headRefName;
-      }
-      if ("body" in entry && typeof entry.body === "string") pr.body = entry.body;
-      return [pr];
-    });
-  } catch {
-    return [];
-  }
-}
 
 function describeVerifySteps(steps: VerifyStep[]): string {
   return steps.map((step) => step.name).join(", ");
@@ -146,7 +123,14 @@ export default defineWorkflow({
       });
     }
     const config = parsedConfig.config;
-    const { dryRun, minimumReleaseAge, openPullRequestsLimit, suggestFeatures, language } = config;
+    const {
+      dryRun,
+      conflictRefreshOnly,
+      minimumReleaseAge,
+      openPullRequestsLimit,
+      suggestFeatures,
+      language,
+    } = config;
 
     const pre = preflight(REPO, {
       baseBranch: config.baseBranch,
@@ -161,6 +145,7 @@ export default defineWorkflow({
     log.info(
       `preflight ok: pm=${pm.name}, base=${base}, open_pull_requests_limit=${openPullRequestsLimit}, ` +
         `minimum_release_age=${minimumReleaseAge}, dry_run=${dryRun}, ` +
+        `conflict_refresh_only=${conflictRefreshOnly}, ` +
         `suggest_features=${suggestFeatures}, ` +
         `verify steps: ${describeVerifySteps(verifySteps)}`,
     );
@@ -209,7 +194,58 @@ export default defineWorkflow({
       if (releaseAgeNote) log.info(releaseAgeNote);
     }
     let groups = groupCandidates(candidates, config.groupRules);
-    if (!dryRun && groups.length === 0 && releaseAgeUnavailable.length === 0) {
+
+    // Snapshot metadata is read before advisory lookup and budgeting because a
+    // conflict-only push run is closed-world: only groups whose existing PR is
+    // explicitly conflicted may reach any per-group work or display lookup.
+    const openPrByBranch = new Map<string, OpenPrMetadata>();
+    for (const pr of readOpenPrSnapshot(config.openPrsFile)) {
+      openPrByBranch.set(pr.headRefName, pr);
+    }
+    const openDepvisorCount = countOpenDepvisorPrs(openPrByBranch.keys());
+    const unknownDepvisorCount = [...openPrByBranch.values()].filter(
+      (pr) => pr.headRefName.startsWith("depvisor/") && pr.mergeabilityUnknown,
+    ).length;
+    let suppressedGroupCount = 0;
+    if (conflictRefreshOnly) {
+      const selected = groups.filter((group) => {
+        const openPr = openPrByBranch.get(branchNameForGroup(group.key));
+        return selectedForConflictRefreshOnly({
+          conflictRefreshOnly: true,
+          hasOpenPr: openPr !== undefined,
+          conflicted: openPr?.conflicted ?? false,
+        });
+      });
+      suppressedGroupCount = groups.length - selected.length;
+      groups = selected;
+
+      // Cooldown failures normally become red entries. In this closed-world
+      // mode, retain only failures that map to a conflicted existing branch;
+      // unrelated candidates must not leak into this run's outcome.
+      const selectedUnavailableNames = new Set(
+        groupCandidates(releaseAgeUnavailable, config.groupRules)
+          .filter((group) => openPrByBranch.get(branchNameForGroup(group.key))?.conflicted)
+          .flatMap((group) => group.members.map((member) => member.name)),
+      );
+      releaseAgeUnavailable = releaseAgeUnavailable.filter((candidate) =>
+        selectedUnavailableNames.has(candidate.name),
+      );
+      candidates = groups.flatMap((group) => group.members);
+    }
+
+    const conflictModeNote = conflictRefreshOnly
+      ? `Conflict-refresh-only mode suppressed ${suppressedGroupCount} non-conflicted/new group(s). ` +
+        (unknownDepvisorCount > 0
+          ? `${unknownDepvisorCount} depvisor PR(s) still had unknown mergeability after polling.`
+          : "No depvisor PR had unresolved mergeability.")
+      : "";
+
+    if (
+      !dryRun &&
+      !conflictRefreshOnly &&
+      groups.length === 0 &&
+      releaseAgeUnavailable.length === 0
+    ) {
       const notes = [ignoreNote, releaseAgeNote].filter(Boolean).join(" ");
       return finish({
         status: "no-updates",
@@ -217,6 +253,19 @@ export default defineWorkflow({
         summary: notes
           ? `No update groups to process. ${notes}`
           : "No outdated dependencies found.",
+        groups: [],
+      });
+    }
+    if (
+      !dryRun &&
+      conflictRefreshOnly &&
+      groups.length === 0 &&
+      releaseAgeUnavailable.length === 0
+    ) {
+      return finish({
+        status: "completed",
+        base,
+        summary: `No conflicted existing depvisor PRs matched current update groups. ${conflictModeNote}`,
         groups: [],
       });
     }
@@ -246,24 +295,15 @@ export default defineWorkflow({
       }
     }
 
-    // Budget (open_pull_requests_limit = ceiling on open depvisor PRs): map each open PR's
-    // branch to its body — the keys count toward the ceiling, the bodies feed
-    // skip-if-up-to-date. Only a newly opened PR consumes a slot; refreshing an
-    // existing PR does not.
-    const bodyByBranch = new Map<string, string>();
-    for (const p of readOpenPrs(config.openPrsFile)) {
-      if (typeof p.headRefName === "string" && p.headRefName) {
-        bodyByBranch.set(p.headRefName, p.body ?? "");
-      }
-    }
-    const openDepvisorCount = countOpenDepvisorPrs(bodyByBranch.keys());
+    // Budget (open_pull_requests_limit = ceiling on open depvisor PRs). Only a
+    // newly opened PR consumes a slot; refreshing an existing PR does not.
     let newSlots = Math.max(0, openPullRequestsLimit - openDepvisorCount);
     log.info(
       `${candidates.length} candidates -> ${groups.length} groups; ${openDepvisorCount} open depvisor PR(s), ${newSlots} new-PR slot(s) (open_pull_requests_limit=${openPullRequestsLimit})`,
     );
 
     if (dryRun) {
-      const plannedGroups = planDryRunGroups(groups, bodyByBranch, newSlots);
+      const plannedGroups = planDryRunGroups(groups, openPrByBranch, newSlots, conflictRefreshOnly);
       const dryRunGroups = releaseAgeUnavailable.map(releaseAgeUnavailableResult);
       for (const group of plannedGroups) {
         if (group.disposition !== "branch-collision") continue;
@@ -281,6 +321,8 @@ export default defineWorkflow({
       }
 
       const plan: DryRunPlan = {
+        mode: conflictRefreshOnly ? "conflict-refresh-only" : "normal",
+        suppressedGroupCount,
         collected: statusPackages(collected),
         ignored: ignored.map((candidate) => {
           const rule = matchedIgnoreRule(candidate, config.ignoreRules);
@@ -317,7 +359,7 @@ export default defineWorkflow({
       return finish({
         status: "dry-run-completed",
         base,
-        summary: summarizeDryRunGroups(plannedGroups),
+        summary: [summarizeDryRunGroups(plannedGroups), conflictModeNote].filter(Boolean).join(" "),
         groups: dryRunGroups,
       });
     }
@@ -389,21 +431,29 @@ export default defineWorkflow({
         }
         seenBranches.add(branch);
 
-        const hasOpenPr = bodyByBranch.has(branch);
+        const openPr = openPrByBranch.get(branch);
+        const hasOpenPr = openPr !== undefined;
         // Compare only the body's TRAILING marker (where buildPrPayload writes
         // it), never a substring search: a marker-shaped string can survive
         // sanitizing inside a code span mid-body, and an includes() over the
         // whole body would let such narrative pin this group as up to date.
-        const upToDate =
-          extractVersionsMarker(bodyByBranch.get(branch) ?? "") === versionsMarker(members);
-        const disposition = classifyGroup({ hasOpenPr, upToDate, newSlots });
+        const upToDate = extractVersionsMarker(openPr?.body ?? "") === versionsMarker(members);
+        const disposition = classifyGroup({
+          hasOpenPr,
+          upToDate,
+          conflicted: openPr?.conflicted ?? false,
+          newSlots,
+        });
 
         if (disposition === "skip-up-to-date") {
           // An open PR on this branch already covers exactly these target
           // versions. It occupies a slot but needs no work.
           record(
             "pr-up-to-date",
-            `Open PR on ${branch} already covers ${pkgList} at the current target versions; skipped.`,
+            `Open PR on ${branch} already covers ${pkgList} at the current target versions; skipped.` +
+              (openPr?.mergeabilityUnknown
+                ? " GitHub had not yet computed this PR's mergeability; if it shows conflicts on GitHub, it will be refreshed on the next run."
+                : ""),
           );
           continue;
         }
@@ -416,6 +466,14 @@ export default defineWorkflow({
           );
           continue;
         }
+
+        const refreshReason: RefreshReason | null =
+          disposition === "refresh"
+            ? (conflictRefreshOnly || upToDate) && openPr?.conflicted
+              ? "base-conflict"
+              : "target-drift"
+            : null;
+        if (refreshReason) log.info(`Refreshing ${branch}: ${refreshReason}`);
 
         const outcome = await processGroup({
           repo: REPO,
@@ -430,6 +488,7 @@ export default defineWorkflow({
           suggestFeatures,
           language,
           disposition,
+          refreshReason,
           packuments,
           advisories,
           harness,
@@ -470,7 +529,13 @@ export default defineWorkflow({
     // visible in the summary rather than silent.
     if (run.status === "in-progress") {
       run.status = "completed";
-      run.summary = [summarizeRun(run), ignoreNote, releaseAgeNote, osvUnavailableNote]
+      run.summary = [
+        summarizeRun(run),
+        conflictModeNote,
+        conflictRefreshOnly ? "" : ignoreNote,
+        conflictRefreshOnly ? "" : releaseAgeNote,
+        osvUnavailableNote,
+      ]
         .filter(Boolean)
         .join(" ");
     }

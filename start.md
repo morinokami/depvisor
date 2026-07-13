@@ -105,6 +105,11 @@ made a choice in the conversation, treat it as binding.
 4. **Optional inputs** — keep the defaults unless the user asks:
    `dry_run` (default false — a manual plan-only run needs no LLM credentials,
    commit, push, or PR),
+   `conflict_refresh_only` (defaults to true on `push` events, false on every
+   other trigger — a dependency-state `push` trigger therefore rebuilds
+   explicitly conflicted existing depvisor PRs and can never open a new PR,
+   with no input to write; set `"false"` explicitly only if the user wants a
+   push-triggered run to open new PRs),
    `open_pull_requests_limit` (default: at most 5 open depvisor PRs; every PR updates
    exactly one package or one declared group), `minimum_release_age`
    (default: 1-day supply-chain cooldown — keep it enabled), `ignore`
@@ -144,6 +149,17 @@ on:
         description: Preview candidates, groups, and PR actions without changing anything
         type: boolean
         default: false
+  # Optional: uncomment to repair conflicted existing depvisor PRs after a
+  # dependency-state merge. This trigger never opens a new PR
+  # (conflict_refresh_only defaults to true on push events).
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "**/package.json"
+  #     - package-lock.json
+  #     - pnpm-lock.yaml
+  #     - "bun.lock*"
+  #     - pnpm-workspace.yaml
 
 permissions:
   contents: write # push the update branch
@@ -184,6 +200,18 @@ jobs:
 ```
 
 Tailor it per the Step 2 contract:
+
+- **Conflict repair trigger** (optional): uncomment the `push` block and change
+  `main` to the chosen base branch. These paths cover committed lockfiles,
+  lockfileless npm/pnpm repositories, and workspace manifests. No extra input
+  is needed: `conflict_refresh_only` defaults to `true` on push events, so push
+  runs regenerate explicitly conflicted existing branches from the current base
+  and run every normal gate, but suppress non-conflicted and new groups before
+  advisory/agent work. Thus a merge cannot refill the newly freed
+  `open_pull_requests_limit` slot. Scheduled and manual runs remain normal and
+  may open new PRs. Recommend `groups` for
+  related packages or `open_pull_requests_limit: 1` when the user would rather
+  prevent shared-lockfile conflicts than repair them.
 
 - **Egress allowlist**: replace `api.openai.com:443` with the chosen
   provider's host, and add any private package registries the repository
@@ -283,7 +311,8 @@ into the chat** — `gh secret set` prompts for the value directly:
    A successful preview ends with `dry-run-completed`; `prepared_count` is 0.
    It may still be red for a real deterministic finding such as
    `release-age-unavailable` or `branch-collision`. Input typos fail before the
-   target install (`bad-dry-run`, `bad-groups`, and the other `bad-*` statuses).
+   target install (`bad-dry-run`, `bad-conflict-refresh-only`, `bad-groups`, and
+   the other `bad-*` statuses).
 
 4. Once the user confirms the secret and the repository setting, trigger the
    workflow (on the default branch, or via the user's usual PR flow), then

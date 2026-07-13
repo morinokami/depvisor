@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseConflictRefreshOnly } from "./core/conflict-refresh-only.ts";
 import { openPrWithGh, type OpenPrResult } from "./core/github.ts";
 import { parsePrPayload, PR_PAYLOADS_DIR, type PrPayload } from "./core/pr.ts";
 import { recordGroupOutcome, RUN_STATUS_FILE } from "./core/status.ts";
@@ -35,6 +36,16 @@ function main(): void {
   const args = process.argv.slice(2);
   const files = payloadFiles(args.find((a) => !a.startsWith("--")));
   const statusFile = fileURLToPath(new URL(`../pr-preview/${RUN_STATUS_FILE}`, import.meta.url));
+  // The closed-world mode must reach this token-holding boundary through the
+  // trusted workflow env, never through the payloads (they are untrusted
+  // read-backs here). check-config already failed the run on an invalid value,
+  // so null is unreachable — but if it ever happens, land on the side that
+  // cannot create a PR.
+  const conflictRefreshOnly =
+    parseConflictRefreshOnly(process.env.DEPVISOR_CONFLICT_REFRESH_ONLY || "") !== false;
+  if (conflictRefreshOnly) {
+    console.log("conflict-refresh-only: will refresh still-open conflicted PRs, never create one.");
+  }
 
   if (files.length === 0) {
     console.log(`No PR payloads under pr-preview/${PR_PAYLOADS_DIR} — nothing to open.`);
@@ -80,7 +91,12 @@ function main(): void {
     // the group instead of a branchless synthetic one.
     let result: OpenPrResult;
     try {
-      result = openPrWithGh(REPO, payload, process.env.DEPVISOR_REMOTE_URL || undefined);
+      result = openPrWithGh(
+        REPO,
+        payload,
+        process.env.DEPVISOR_REMOTE_URL || undefined,
+        conflictRefreshOnly,
+      );
     } catch (err) {
       const message = errorMessage(err);
       console.error(`  failed: ${message}`);

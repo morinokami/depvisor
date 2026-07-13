@@ -6,6 +6,7 @@
     "src/install-target.ts!",
     "src/check-credentials.ts!",
     "src/check-config.ts!",
+    "src/snapshot-open-prs.ts!",
     "src/agents/*.ts!",
     "src/workflows/*.ts!",
     "src/dev/*.ts",

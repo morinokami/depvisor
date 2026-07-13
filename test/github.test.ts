@@ -41,8 +41,9 @@ test("describePrCreateError passes unrecognized errors through unchanged", () =>
 });
 
 test("push-boundary policy refusals are failed (red), not blocked (green)", () => {
-  // `blocked` is reserved for the one expected policy stop — a human took over
-  // the PR branch — because open-pr records it as the green `open-pr-blocked`.
+  // `blocked` is reserved for the expected human-intervention stops (a human
+  // took over the PR branch; the refresh-only target PR was merged/closed
+  // mid-run) because open-pr records it as the green `open-pr-blocked`.
   // A tampered payload must not ride that green path: it would end the whole
   // job green with no PR opened (a silent no-PR outcome). Both checks below
   // fire before any git/network work, so they are unit-testable as-is.
@@ -112,6 +113,45 @@ test("depvisor-committed commits pass the committer guard in both the split and 
   // not the committer refusal) is the assertion.
   assert.equal(res.ok, false);
   assert.match(res.error ?? "", /cannot resolve a remote URL/);
+});
+
+test("conflict-refresh-only re-verifies the PR before pushing and fails closed when it cannot", () => {
+  const { repo, base, sh } = tempTargetRepo();
+  sh("git checkout -qb depvisor/prod-x");
+  writeFileSync(join(repo, "src.ts"), "export const a = 1;\n");
+  assert.ok(commitAll(repo, "deps: bump"));
+  const payload = {
+    branch: "depvisor/prod-x",
+    base,
+    title: "t",
+    body: "b",
+    labels: [],
+    advisoriesOk: true,
+  };
+  // The remote is unreachable/nonexistent, so `gh pr list` cannot vouch that
+  // the target PR is still open. Refresh-only must stop AT ITS OWN GATE —
+  // before the fetch/push — because an unverifiable PR state in the
+  // closed-world mode is a red gate failure, not a skippable hiccup.
+  const refreshOnly = openPrWithGh(
+    repo,
+    payload,
+    "https://github.com/depvisor-test/definitely-nonexistent-repo",
+    true,
+  );
+  assert.equal(refreshOnly.ok, false);
+  assert.equal(refreshOnly.action, "failed");
+  assert.match(refreshOnly.error ?? "", /conflict-refresh-only: could not re-verify/);
+
+  // The same call in normal mode proceeds past that gate (and fails later, at
+  // the push against the unreachable remote), pinning the gate to the mode.
+  const normal = openPrWithGh(
+    repo,
+    payload,
+    "https://github.com/depvisor-test/definitely-nonexistent-repo",
+  );
+  assert.equal(normal.ok, false);
+  assert.equal(normal.action, "failed");
+  assert.match(normal.error ?? "", /git push failed/);
 });
 
 test("isNetworkRemote accepts network remotes", () => {

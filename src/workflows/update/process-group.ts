@@ -28,6 +28,7 @@ import {
   wantsSuggestions,
 } from "../../agents/shared/tasks.ts";
 import type { AdvisoryResult } from "../../core/advisories.ts";
+import type { RefreshReason } from "../../core/budget.ts";
 import { applyUpdatePlan } from "../../core/bump.ts";
 import { parseGithubSlug } from "../../core/changelog.ts";
 import {
@@ -103,6 +104,7 @@ export interface ProcessGroupOptions {
   suggestFeatures: boolean;
   language: string;
   disposition: "refresh" | "open-new";
+  refreshReason: RefreshReason | null;
   packuments: Map<string, Packument | null>;
   advisories: AdvisoryResult;
   harness: FlueHarness;
@@ -179,6 +181,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     suggestFeatures,
     language,
     disposition,
+    refreshReason,
     packuments,
     advisories,
     harness,
@@ -632,6 +635,12 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
   // Compose the sanitized payload; the caller assigns deterministic payload
   // order, writes it, and records status incrementally.
   const narrative = composeNarrative(digestReport, fixerReport, members);
+  const refreshSummary =
+    refreshReason === "base-conflict"
+      ? "Regenerated from the current base because the existing PR conflicted. "
+      : refreshReason === "target-drift"
+        ? "Refreshed because the target versions changed. "
+        : "";
   const payload = buildPrPayload({
     branch,
     base,
@@ -648,7 +657,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
   });
   return {
     kind: "prepared",
-    result: result("pr-prepared", narrative.summary, {
+    result: result("pr-prepared", `${refreshSummary}${narrative.summary}`, {
       verification,
       ...(testChanges.length > 0 ? { testChanges } : {}),
     }),

@@ -14,8 +14,9 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
-import { classifyGroup } from "./budget.ts";
+import { classifyGroup, selectedForConflictRefreshOnly } from "./budget.ts";
 import { DRY_RUN_PLAN_FILE } from "./dry-run-plan-file.ts";
+import type { OpenPrMetadata } from "./open-pr-snapshot.ts";
 import {
   branchNameForGroup,
   extractVersionsMarker,
@@ -46,9 +47,12 @@ export interface DryRunGroupPlan {
   branch: string;
   packages: StatusPackage[];
   disposition: DryRunDisposition;
+  refreshReason?: "target-drift" | "base-conflict" | undefined;
 }
 
 export interface DryRunPlan {
+  mode: "normal" | "conflict-refresh-only";
+  suppressedGroupCount: number;
   collected: StatusPackage[];
   ignored: { package: StatusPackage; rule: string }[];
   cooldown: {
@@ -79,8 +83,9 @@ export interface DryRunPlan {
  */
 export function planDryRunGroups(
   groups: readonly Group[],
-  bodyByBranch: ReadonlyMap<string, string>,
+  openPrByBranch: ReadonlyMap<string, OpenPrMetadata>,
   initialNewSlots: number,
+  conflictRefreshOnly = false,
 ): DryRunGroupPlan[] {
   const planned: DryRunGroupPlan[] = [];
   const seenBranches = new Set<string>();
@@ -88,6 +93,16 @@ export function planDryRunGroups(
 
   for (const group of groups) {
     const branch = branchNameForGroup(group.key);
+    const openPr = openPrByBranch.get(branch);
+    if (
+      !selectedForConflictRefreshOnly({
+        conflictRefreshOnly,
+        hasOpenPr: openPr !== undefined,
+        conflicted: openPr?.conflicted ?? false,
+      })
+    ) {
+      continue;
+    }
     if (seenBranches.has(branch)) {
       planned.push({
         key: group.key,
@@ -99,10 +114,14 @@ export function planDryRunGroups(
     }
     seenBranches.add(branch);
 
-    const hasOpenPr = bodyByBranch.has(branch);
-    const upToDate =
-      extractVersionsMarker(bodyByBranch.get(branch) ?? "") === versionsMarker(group.members);
-    const disposition = classifyGroup({ hasOpenPr, upToDate, newSlots });
+    const hasOpenPr = openPr !== undefined;
+    const upToDate = extractVersionsMarker(openPr?.body ?? "") === versionsMarker(group.members);
+    const disposition = classifyGroup({
+      hasOpenPr,
+      upToDate,
+      conflicted: openPr?.conflicted ?? false,
+      newSlots,
+    });
     let plannedDisposition: DryRunDisposition;
     if (disposition === "open-new") {
       plannedDisposition = "open-new-provisional";
@@ -112,11 +131,18 @@ export function planDryRunGroups(
     } else {
       plannedDisposition = disposition;
     }
+    const refreshReason =
+      disposition === "refresh"
+        ? (conflictRefreshOnly || upToDate) && openPr?.conflicted
+          ? "base-conflict"
+          : "target-drift"
+        : undefined;
     planned.push({
       key: group.key,
       branch,
       packages: statusPackages(group.members),
       disposition: plannedDisposition,
+      ...(refreshReason ? { refreshReason } : {}),
     });
   }
   return planned;
@@ -143,6 +169,8 @@ const statusPackageSchema = v.object({
 });
 
 const planSchema = v.object({
+  mode: v.picklist(["normal", "conflict-refresh-only"]),
+  suppressedGroupCount: v.number(),
   collected: v.array(statusPackageSchema),
   ignored: v.array(v.object({ package: statusPackageSchema, rule: v.string() })),
   cooldown: v.object({
@@ -164,6 +192,7 @@ const planSchema = v.object({
         "held-back-provisional",
         "branch-collision",
       ]),
+      refreshReason: v.optional(v.picklist(["target-drift", "base-conflict"])),
     }),
   ),
   budget: v.object({
@@ -273,7 +302,9 @@ function groupTable(plan: DryRunPlan): string {
       ? ["| Group | Branch | Disposition | Packages |", "|---|---|---|---|", ...rows]
       : ["No update groups are currently planned."]),
     "",
-    "_Provisional dispositions assume every earlier `open-new-provisional` group succeeds. A failed bump or verification leaves its slot available, so later new-PR dispositions can change in the real run._",
+    plan.mode === "conflict-refresh-only"
+      ? `_Conflict-refresh-only mode suppressed ${mdCell(plan.suppressedGroupCount)} non-conflicted/new group(s). It never plans a new PR._`
+      : "_Provisional dispositions assume every earlier `open-new-provisional` group succeeds. A failed bump or verification leaves its slot available, so later new-PR dispositions can change in the real run._",
     "",
   ].join("\n");
 }
@@ -289,6 +320,8 @@ export function renderDryRunPlan(plan: DryRunPlan): string {
     "|---|---|",
     `| Detected candidates | ${plan.collected.length} |`,
     `| Planned groups | ${plan.groups.length} |`,
+    `| Mode | ${mdCell(plan.mode)} |`,
+    `| Groups suppressed by mode | ${mdCell(plan.suppressedGroupCount)} |`,
     `| Open depvisor PRs | ${mdCell(plan.budget.openDepvisorPrCount)} |`,
     `| New-PR slots | ${mdCell(plan.budget.initialNewSlots)} / ${mdCell(plan.budget.openPullRequestsLimit)} |`,
     "",

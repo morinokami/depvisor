@@ -19,6 +19,10 @@ inputs:
     description: When "true", show the deterministic candidate/group/PR plan without applying updates, calling an LLM, pushing, or opening PRs.
     required: false
     default: "false"
+  conflict_refresh_only:
+    description: When "true", refresh only explicitly conflicted existing depvisor PRs and never open a new PR. Defaults to "true" on push events and "false" otherwise, so a dependency-state push trigger repairs conflicts without replenishing the open-PR queue; set it explicitly to override.
+    required: false
+    default: ${{ github.event_name == 'push' }}
   install_command:
     description: Dependency install command; use "auto" for npm/pnpm/bun lockfile installs or "skip" if already installed.
     required: false
@@ -169,6 +173,7 @@ runs:
       working-directory: ${{ env.DEPVISOR_HOME }}
       env:
         DEPVISOR_DRY_RUN: ${{ inputs.dry_run }}
+        DEPVISOR_CONFLICT_REFRESH_ONLY: ${{ inputs.conflict_refresh_only }}
         DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
         DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
         DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: ${{ inputs.open_pull_requests_limit }}
@@ -180,6 +185,22 @@ runs:
         DEPVISOR_LANGUAGE: ${{ inputs.language }}
         DEPVISOR_INSTALL_COMMAND: ${{ inputs.install_command }}
       run: node "$DEPVISOR_HOME/src/check-config.ts"
+
+    # Deterministic, token-holding, and intentionally before target install:
+    # lifecycle scripts can taint runner files and inherited config for later
+    # steps. The entrypoint uses a trusted repository identifier, scrubbed gh
+    # environment, and bounded REST polling so lazily-computed mergeability can
+    # still repair a conflicted PR in this run. The initial list is fail-closed;
+    # individual poll failures remain UNKNOWN and fail soft.
+    - name: Snapshot open PRs
+      shell: bash
+      working-directory: ${{ env.DEPVISOR_HOME }}
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        DEPVISOR_REPOSITORY: ${{ github.repository }}
+        DEPVISOR_API_URL: ${{ github.api_url }}
+        DEPVISOR_OPEN_PRS_FILE: ${{ runner.temp }}/depvisor-open-prs.json
+      run: node "$DEPVISOR_HOME/src/snapshot-open-prs.ts"
 
     # Keep the install command in an env var so shell metacharacters cannot
     # break out while GitHub generates the run script. `eval` then runs the
@@ -197,17 +218,6 @@ runs:
           eval "$DEPVISOR_INSTALL_COMMAND"
         fi
 
-    # Deterministic, token-holding: snapshot open PRs so the later token-free
-    # step can skip groups whose PR is already up to date AND count open
-    # depvisor PRs against the open_pull_requests_limit ceiling. The ceiling fails open if the
-    # snapshot is truncated, hence the generous --limit (gh paginates; only
-    # repos with more open PRs than this can undercount).
-    - name: Snapshot open PRs
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.github_token }}
-      run: gh pr list --state open --limit 1000 --json headRefName,body > "$RUNNER_TEMP/depvisor-open-prs.json"
-
     # Token-free update step: a normal run performs the deterministic
     # bump/install/verification and uses the LLM only for the bounded
     # fixer/digest roles; dry-run stops before all of those operations. Their
@@ -224,6 +234,7 @@ runs:
         LLM_API_KEY_ENV: ${{ steps.config.outputs.dry_run != 'true' && inputs.llm_api_key_env || '' }}
         DEPVISOR_LLM_MODEL: ${{ steps.config.outputs.dry_run != 'true' && inputs.llm_model || '' }}
         DEPVISOR_DRY_RUN: ${{ steps.config.outputs.dry_run }}
+        DEPVISOR_CONFLICT_REFRESH_ONLY: ${{ inputs.conflict_refresh_only }}
         DEPVISOR_TARGET_REPO: ${{ github.workspace }}
         DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
         DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
@@ -282,6 +293,10 @@ runs:
         # commands can rewrite that to a local bare repo whose server-side hooks
         # would run here with GH_TOKEN.
         DEPVISOR_REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}
+        # The closed-world mode is re-enforced at this boundary (a snapshot-time
+        # selection cannot see a PR merged/closed mid-run); it must come from
+        # this trusted input, never from the agent-adjacent payload files.
+        DEPVISOR_CONFLICT_REFRESH_ONLY: ${{ inputs.conflict_refresh_only }}
       run: node "$DEPVISOR_HOME/src/open-pr.ts"
 
     - name: Report depvisor result
