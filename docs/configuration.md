@@ -376,7 +376,12 @@ configuration this mode needs. In this mode depvisor processes explicitly
 conflicted existing PRs only: target-drifted but non-conflicted PRs wait,
 groups with no open PR are suppressed before advisory lookup and per-group
 work, and no empty `open_pull_requests_limit` slot is replenished. The run
-therefore cannot increase the set of open PRs. Merging one depvisor PR then
+therefore cannot increase the set of open PRs — enforced twice: once when
+conflicted PRs are selected from the run-start snapshot, and again in the
+token-holding push step, which re-verifies each target PR is still open and
+never issues a PR-create in this mode. A PR merged or closed while the run was
+in flight is reported as the green `open-pr-blocked` instead of being pushed
+or re-opened. Merging one depvisor PR then
 repairs its conflicted siblings without spawning a PR you never scheduled; set
 `conflict_refresh_only: false` explicitly if a push-triggered run should
 instead behave like a normal (scheduled) run and may open new PRs.

@@ -293,6 +293,10 @@ runs:
         # commands can rewrite that to a local bare repo whose server-side hooks
         # would run here with GH_TOKEN.
         DEPVISOR_REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}
+        # The closed-world mode is re-enforced at this boundary (a snapshot-time
+        # selection cannot see a PR merged/closed mid-run); it must come from
+        # this trusted input, never from the agent-adjacent payload files.
+        DEPVISOR_CONFLICT_REFRESH_ONLY: ${{ inputs.conflict_refresh_only }}
       run: node "$DEPVISOR_HOME/src/open-pr.ts"
 
     - name: Report depvisor result

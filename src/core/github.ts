@@ -13,17 +13,19 @@ import {
 
 export interface OpenPrResult {
   ok: boolean;
-  /** created: new PR; updated: existing PR refreshed; blocked: human takeover. */
+  /** created: new PR; updated: existing PR refreshed; blocked: expected human intervention. */
   action: "created" | "updated" | "blocked" | "failed";
   url: string | null;
   error: string | null;
 }
 
 /**
- * Reserved for the ONE expected policy stop: a human took over the PR branch
- * (the remote tip carries their commits), which open-pr records as the green
- * `open-pr-blocked` — exactly what the status reference (docs/results.md)
- * documents that status to mean.
+ * Reserved for the expected policy stops caused by ordinary human action on
+ * the PR, which open-pr records as the green `open-pr-blocked` — exactly what
+ * the status reference (docs/results.md) documents that status to mean:
+ *   - a human took over the PR branch (the remote tip carries their commits),
+ *   - in conflict-refresh-only mode, the target PR was merged/closed while the
+ *     run was in flight, so there is nothing left to refresh.
  * Every other push-boundary refusal (non-depvisor branch or base, a foreign
  * committer in the local range, non-network remote) signals payload/config
  * tampering or misconfiguration and must go through failed(): a green
@@ -372,8 +374,23 @@ function reconcileLabels(
  * In CI, `remoteUrl` must come from a trusted source such as Actions context,
  * not from the target checkout. When omitted for trusted local dev, it falls
  * back to `remote.origin.url`. Either way, non-network remotes are refused.
+ *
+ * `conflictRefreshOnly` re-enforces the closed-world mode at this exit
+ * boundary: the tokenless step selected conflicted PRs from a snapshot taken
+ * before install/verification/LLM work, so the target PR can be merged or
+ * closed while the run is in flight. In that mode the still-open PR is
+ * re-verified before anything is pushed (a merge can auto-delete the branch,
+ * which the push would otherwise resurrect), and `gh pr create` is never
+ * called — a vanished PR is a green `blocked`, never a new PR. The flag must
+ * come from trusted workflow env, NOT the payload: the payload is an untrusted
+ * read-back at this boundary, so a mode bit inside it could be forged off.
  */
-export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: string): OpenPrResult {
+export function openPrWithGh(
+  repo: string,
+  payload: PrPayload,
+  remoteUrl?: string,
+  conflictRefreshOnly = false,
+): OpenPrResult {
   const prepared = prepareCleanPush(repo, payload);
   if (!("clone" in prepared)) return prepared;
   const { clone, workDir, env, branchSha } = prepared;
@@ -415,6 +432,39 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
     // ambient credentials from being picked up.
     gh(env, clone, ["auth", "setup-git"]);
 
+    // Closed-world re-check: the snapshot that selected this group is minutes
+    // old by now. Refresh-only may only touch a PR that is STILL open — if it
+    // was merged/closed mid-run there is nothing to refresh, and pushing would
+    // resurrect an auto-deleted branch. An unverifiable state fails closed
+    // (red): this is a gate in this mode, and a green skip on an API outage
+    // would be a silent no-PR outcome.
+    let refreshUrl = "";
+    if (conflictRefreshOnly) {
+      const open = gh(env, clone, [
+        "pr",
+        "list",
+        "--head",
+        payload.branch,
+        "--state",
+        "open",
+        "--json",
+        "url",
+        "--jq",
+        ".[0].url",
+      ]);
+      if (open.code !== 0) {
+        return failed(
+          `conflict-refresh-only: could not re-verify that the ${payload.branch} PR is still open: ${open.err}`,
+        );
+      }
+      if (!open.out) {
+        return blocked(
+          `conflict-refresh-only: the PR for ${payload.branch} is no longer open (merged or closed while the run was in flight); refusing to push or open a new PR`,
+        );
+      }
+      refreshUrl = open.out;
+    }
+
     // Human-commit guard: a non-depvisor committer at the remote tip means a
     // force-push would overwrite human work. %ce for the same reason as the
     // local-range check above — the resolvable author proves nothing.
@@ -438,6 +488,23 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
     ]);
     if (push.code !== 0) {
       return failed(`git push failed: ${push.err}`);
+    }
+
+    // Refresh-only never reaches `gh pr create`: the push above refreshed the
+    // still-open PR verified before it, so go straight to the edit/reconcile
+    // path. If the PR closed in the seconds since that check, the worst case
+    // is a pushed branch — the open-PR set still cannot grow in this mode.
+    if (conflictRefreshOnly) {
+      return refreshExistingPr(
+        env,
+        clone,
+        payload,
+        title,
+        body,
+        labels,
+        preserveLabels,
+        refreshUrl,
+      );
     }
 
     const create = gh(env, clone, [
@@ -472,31 +539,47 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       ".[0].url",
     ]);
     if (existing.code === 0 && existing.out) {
-      // Keep title/body in sync with the fresh payload, then reconcile labels
-      // (fail-soft, separate from the title/body edit so a label hiccup cannot
-      // undo it). Reconciliation removes obsolete depvisor-owned review signals
-      // while preserving every label outside that vocabulary.
-      // A failed edit stays fail-soft (the push above already refreshed the
-      // commits, and the stale marker makes the next run retry the refresh) but
-      // must not be silent.
-      const edited = gh(env, clone, [
-        "pr",
-        "edit",
-        payload.branch,
-        "--title",
+      return refreshExistingPr(
+        env,
+        clone,
+        payload,
         title,
-        "--body",
         body,
-      ]);
-      if (edited.code !== 0) {
-        console.warn(`note: could not refresh title/body of ${payload.branch}: ${edited.err}`);
-      }
-      reconcileLabels(env, clone, payload.branch, labels, preserveLabels);
-      return { ok: true, action: "updated", url: existing.out, error: null };
+        labels,
+        preserveLabels,
+        existing.out,
+      );
     }
 
     return failed(describePrCreateError(create.err));
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Sync an already-pushed, already-open PR with the fresh payload. Keep
+ * title/body in sync, then reconcile labels (fail-soft, separate from the
+ * title/body edit so a label hiccup cannot undo it). Reconciliation removes
+ * obsolete depvisor-owned review signals while preserving every label outside
+ * that vocabulary. A failed edit stays fail-soft (the push already refreshed
+ * the commits, and the stale marker makes the next run retry the refresh) but
+ * must not be silent.
+ */
+function refreshExistingPr(
+  env: NodeJS.ProcessEnv,
+  clone: string,
+  payload: PrPayload,
+  title: string,
+  body: string,
+  labels: string[],
+  preserveLabels: string[],
+  url: string,
+): OpenPrResult {
+  const edited = gh(env, clone, ["pr", "edit", payload.branch, "--title", title, "--body", body]);
+  if (edited.code !== 0) {
+    console.warn(`note: could not refresh title/body of ${payload.branch}: ${edited.err}`);
+  }
+  reconcileLabels(env, clone, payload.branch, labels, preserveLabels);
+  return { ok: true, action: "updated", url, error: null };
 }
