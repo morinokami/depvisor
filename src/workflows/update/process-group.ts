@@ -416,6 +416,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
   // One independent session per group; fixer and digest are named subagents.
   const session = await harness.session(`group-${slugify(group.key)}`);
   let fixerReport: FixerReport | null = null;
+  let fixerApplied = false;
   let verification: VerifyResult[];
 
   if (postBump.every((r) => r.ok)) {
@@ -519,12 +520,18 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
         `The final fix contains paths outside source and tests: ${finalScope.violations.join(", ")}. Nothing was committed.`,
       );
     }
-    // The fixer's validated source changes become the second commit.
-    commitAll(repo, `fix: adapt code to ${pkgList} update`);
+    // The fixer's validated source changes become the second commit. Preserve
+    // the trusted commit result as PR provenance: a fixer can be invoked yet
+    // leave no accepted diff, which is still `fixer:none` rather than an agent
+    // self-reported `fixer:applied`.
+    fixerApplied = commitAll(repo, `fix: adapt code to ${pkgList} update`) !== null;
     verification = stripVerifyTails(postFix);
     fixerReport = {
       summary: fixerResult.summary,
-      fixesApplied: fixerResult.fixes_applied,
+      // Without an accepted commit there is no fix to describe: the agent's
+      // claimed fixes must not appear in a PR labeled fixer:none, which carries
+      // no fix commit. Residual risks stay — they warn, not claim.
+      fixesApplied: fixerApplied ? fixerResult.fixes_applied : [],
       residualRisks: fixerResult.residual_risks,
     };
   }
@@ -634,6 +641,8 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     testChanges,
     licenseChanges,
     newFeatures,
+    fixerApplied,
+    advisoriesOk: advisories.ok,
     narrative,
     verification,
   });

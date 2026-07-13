@@ -36,7 +36,7 @@ Tool modules are not auto-discovered — `depvisor.ts` attaches them explicitly.
 | `dev/scan.ts`                             | dev tool + CI `fixture-e2e` gate, **not** the action  | none                              |
 | `dev/assert-dry-run.ts`                   | CI assertion over emitted plan/status + target state  | none                              |
 
-`open-pr.ts` is the only command that needs `GH_TOKEN`. `openPrWithGh` is per-payload self-contained (fresh clone, authorization checks, deterministic label application), so multi-PR is just calling it N times — **do not add cross-payload state to it**. One payload's failure never stops the rest.
+`open-pr.ts` is the only command that needs `GH_TOKEN`. `openPrWithGh` is per-payload self-contained (fresh clone, authorization checks, best-effort reconciliation of the fixed depvisor label vocabulary), so multi-PR is just calling it N times — **do not add cross-payload state to it**. One payload's failure never stops the rest.
 
 `report-status.ts` writes `$GITHUB_OUTPUT` on both the normal and the missing/corrupt-status-file path, **before** any `exit(1)`, which is what makes the composite action's outputs usable from `if: always()` consumer steps. A `dry-run-completed` status additionally requires a schema-valid `dry-run-plan.json`; report-status alone renders that plan into `$GITHUB_STEP_SUMMARY`.
 

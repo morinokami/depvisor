@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_EMAIL, NO_HOOKS } from "./git.ts";
-import { type PrPayload, sanitizeLabels, sanitizePrBody, sanitizeSummary } from "./pr.ts";
+import {
+  isDepvisorManagedLabel,
+  type PrPayload,
+  sanitizeLabels,
+  sanitizePrBody,
+  sanitizeSummary,
+} from "./pr.ts";
 
 export interface OpenPrResult {
   ok: boolean;
@@ -245,8 +251,41 @@ function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | Open
   return { clone, workDir, env, branchSha };
 }
 
+export interface LabelReconciliation {
+  add: string[];
+  remove: string[];
+}
+
 /**
- * Apply depvisor's deterministic labels to the PR, entirely fail-soft.
+ * Compute the exact best-effort reconciliation for depvisor-owned labels.
+ * Labels outside that vocabulary are never removed. `preserve` exempts labels
+ * from removal this run because the input behind them was unavailable rather
+ * than negative (today: `security` when the fail-open advisory lookup failed —
+ * its absence from `desired` is then missing data, not evidence). Inputs may
+ * come back in arbitrary API order, so both outputs are deduplicated and
+ * sorted for deterministic `gh` calls.
+ */
+export function labelReconciliation(
+  current: readonly string[],
+  desired: readonly string[],
+  preserve: readonly string[] = [],
+): LabelReconciliation {
+  const currentSet = new Set(current);
+  const desiredSet = new Set(desired);
+  const preserveSet = new Set(preserve);
+  return {
+    add: [...desiredSet].filter((label) => !currentSet.has(label)).toSorted(),
+    remove: [...currentSet]
+      .filter(
+        (label) =>
+          isDepvisorManagedLabel(label) && !desiredSet.has(label) && !preserveSet.has(label),
+      )
+      .toSorted(),
+  };
+}
+
+/**
+ * Reconcile depvisor's deterministic labels on the PR, entirely fail-soft.
  *
  * The main objective is the PR itself, so nothing here may fail it — that is why
  * labels are applied AFTER `gh pr create`, never passed to it: `gh pr create
@@ -257,25 +296,54 @@ function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | Open
  * `issues` or `pull-requests` write, verified empirically against the standard
  * `GITHUB_TOKEN` — no `issues: write` is required.
  *
- * Each label is ensured (`gh label create`, no `--force` so a user's existing
- * same-named label keeps its color/description; "already exists" is the expected
- * idempotent case) and then added ON ITS OWN. Per-label edits are deliberate:
- * `gh pr edit --add-label` resolves every requested name up front and, like
- * create, errors on ANY unknown one — so a single edit batching several labels
- * is all-or-nothing, and one label a transient `gh label create` failure left
- * missing would drop even the labels that do exist. All `gh` calls go through the
- * scrubbed-env helper. A label that still cannot be applied is logged (gh's error
- * carries no secret — just "label not found"/auth) and skipped, never fatal.
+ * Existing labels are read first. Obsolete labels within depvisor's fixed
+ * vocabulary are removed (except `preserve`, see `labelReconciliation`),
+ * desired missing labels are ensured (`gh label create`, no `--force`) and
+ * added, and labels outside the vocabulary are untouched. Per-label edits keep
+ * a single API failure isolated. A read/remove/create/add failure is logged
+ * and skipped, never fatal: these labels describe review provenance but are
+ * not a security gate or merge authorization. All calls use the scrubbed
+ * environment.
  */
-function applyLabels(
+function reconcileLabels(
   env: NodeJS.ProcessEnv,
   clone: string,
   branch: string,
   labels: string[],
+  preserve: readonly string[],
 ): void {
-  for (const label of labels) {
-    // Ensure first; a failure here (e.g. it already exists, or a transient
-    // registry hiccup) is fine — the add below is what decides the outcome.
+  const viewed = gh(env, clone, [
+    "pr",
+    "view",
+    branch,
+    "--json",
+    "labels",
+    "--jq",
+    ".labels[].name",
+  ]);
+  const current =
+    viewed.code === 0
+      ? viewed.out
+          .split("\n")
+          .map((label) => label.trim())
+          .filter(Boolean)
+      : [];
+  if (viewed.code !== 0) {
+    console.warn(
+      `note: could not inspect labels on ${branch}; adding the desired set without removals: ${viewed.err}`,
+    );
+  }
+
+  const reconciliation = labelReconciliation(current, labels, preserve);
+  for (const label of reconciliation.remove) {
+    const removed = gh(env, clone, ["pr", "edit", branch, "--remove-label", label]);
+    if (removed.code !== 0) {
+      console.warn(`note: could not remove stale label '${label}' from ${branch}: ${removed.err}`);
+    }
+  }
+  for (const label of reconciliation.add) {
+    // Ensure first; a failure here is fine — the add below decides whether the
+    // desired label reached the PR.
     gh(env, clone, ["label", "create", label]);
     const added = gh(env, clone, ["pr", "edit", branch, "--add-label", label]);
     if (added.code !== 0) {
@@ -306,6 +374,11 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
   const title = sanitizeSummary(payload.title);
   const body = sanitizePrBody(payload.body);
   const labels = sanitizeLabels(payload.labels);
+  // `security` rides the one fail-open input (the advisory lookup); when that
+  // lookup failed this run, an existing label must survive the reconcile. A
+  // tampered/mistyped payload field lands on the fail-safe (preserving) side:
+  // parsePrPayload already coerced anything but `true` to false.
+  const preserveLabels = payload.advisoriesOk ? [] : ["security"];
 
   try {
     // Prefer the trusted URL; only fall back to target config for local dev.
@@ -371,7 +444,7 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       body,
     ]);
     if (create.code === 0) {
-      applyLabels(env, clone, payload.branch, labels);
+      reconcileLabels(env, clone, payload.branch, labels, preserveLabels);
       return { ok: true, action: "created", url: create.out, error: null };
     }
 
@@ -392,8 +465,8 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
     if (existing.code === 0 && existing.out) {
       // Keep title/body in sync with the fresh payload, then reconcile labels
       // (fail-soft, separate from the title/body edit so a label hiccup cannot
-      // undo it). --add-label only adds, so a group whose top semver level rose
-      // between runs may briefly carry both the old and new semver:* label.
+      // undo it). Reconciliation removes obsolete depvisor-owned review signals
+      // while preserving every label outside that vocabulary.
       // A failed edit stays fail-soft (the push above already refreshed the
       // commits, and the stale marker makes the next run retry the refresh) but
       // must not be silent.
@@ -409,7 +482,7 @@ export function openPrWithGh(repo: string, payload: PrPayload, remoteUrl?: strin
       if (edited.code !== 0) {
         console.warn(`note: could not refresh title/body of ${payload.branch}: ${edited.err}`);
       }
-      applyLabels(env, clone, payload.branch, labels);
+      reconcileLabels(env, clone, payload.branch, labels, preserveLabels);
       return { ok: true, action: "updated", url: existing.out, error: null };
     }
 

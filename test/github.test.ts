@@ -9,6 +9,7 @@ import {
   buildSecureEnv,
   describePrCreateError,
   isNetworkRemote,
+  labelReconciliation,
   openPrWithGh,
   SAFE_PATH_DIRS,
 } from "../src/core/github.ts";
@@ -45,7 +46,7 @@ test("push-boundary policy refusals are failed (red), not blocked (green)", () =
   // A tampered payload must not ride that green path: it would end the whole
   // job green with no PR opened (a silent no-PR outcome). Both checks below
   // fire before any git/network work, so they are unit-testable as-is.
-  const payload = { base: "main", title: "t", body: "b", labels: [] };
+  const payload = { base: "main", title: "t", body: "b", labels: [], advisoriesOk: true };
   const foreignBranch = openPrWithGh("/nonexistent", { ...payload, branch: "not-depvisor" });
   assert.equal(foreignBranch.ok, false);
   assert.equal(foreignBranch.action, "failed");
@@ -77,6 +78,7 @@ test("push is refused when a base..branch commit has a foreign committer, even w
     title: "t",
     body: "b",
     labels: [],
+    advisoriesOk: true,
   });
   assert.equal(res.ok, false);
   assert.equal(res.action, "failed");
@@ -103,6 +105,7 @@ test("depvisor-committed commits pass the committer guard in both the split and 
     title: "t",
     body: "b",
     labels: [],
+    advisoriesOk: true,
   });
   // The committer guard let both commits through; the run then stops at remote
   // resolution because this fixture has no origin — reaching that point (and
@@ -145,6 +148,49 @@ test("isNetworkRemote rejects local, file, and helper remotes", () => {
   ]) {
     assert.equal(isNetworkRemote(url), false, url);
   }
+});
+
+test("labelReconciliation replaces stale depvisor signals and preserves outside labels", () => {
+  assert.deepEqual(
+    labelReconciliation(
+      ["depvisor", "semver:patch", "fixer:none", "security", "team:platform"],
+      ["depvisor", "semver:minor", "fixer:applied", "dev-dependencies"],
+    ),
+    {
+      add: ["dev-dependencies", "fixer:applied", "semver:minor"],
+      remove: ["fixer:none", "security", "semver:patch"],
+    },
+  );
+});
+
+test("labelReconciliation never removes preserved labels (fail-open advisory input)", () => {
+  // A failed advisory lookup leaves `security` out of the desired set as
+  // missing data, not evidence — preserving it must not block other removals
+  // or the adds.
+  assert.deepEqual(
+    labelReconciliation(
+      ["depvisor", "security", "semver:patch", "fixer:none"],
+      ["depvisor", "semver:minor", "fixer:none"],
+      ["security"],
+    ),
+    {
+      add: ["semver:minor"],
+      remove: ["semver:patch"],
+    },
+  );
+});
+
+test("labelReconciliation deduplicates and stabilizes API-order inputs", () => {
+  assert.deepEqual(
+    labelReconciliation(
+      ["security", "depvisor", "security", "user-label"],
+      ["fixer:none", "depvisor", "fixer:none"],
+    ),
+    {
+      add: ["fixer:none"],
+      remove: ["security"],
+    },
+  );
 });
 
 test("binary resolution prefers root-owned system dirs over user-writable prefixes", () => {

@@ -45,6 +45,7 @@ test("parsePrPayload accepts a well-shaped payload and drops extra keys", () => 
     title: "deps: update",
     body: "body",
     labels: ["depvisor"],
+    advisoriesOk: true,
     extra: "dropped",
   });
   assert.deepEqual(parsed, {
@@ -53,10 +54,22 @@ test("parsePrPayload accepts a well-shaped payload and drops extra keys", () => 
     title: "deps: update",
     body: "body",
     labels: ["depvisor"],
+    advisoriesOk: true,
   });
   // Label ENTRIES are deliberately not type-checked here; sanitizeLabels
   // re-validates each against the allowlist at the exit boundary.
   assert.ok(parsePrPayload({ branch: "b", base: "m", title: "t", body: "", labels: [42] }));
+});
+
+test("parsePrPayload reads anything but a true advisoriesOk as false (fail-safe)", () => {
+  // advisoriesOk only gates label reconciliation (fail-soft), so a missing or
+  // mistyped value must not cost the PR; it degrades to the preserving side.
+  const valid = { branch: "b", base: "m", title: "t", body: "", labels: [] };
+  for (const bad of [undefined, "true", 1, null]) {
+    const parsed = parsePrPayload({ ...valid, advisoriesOk: bad });
+    assert.ok(parsed, `advisoriesOk ${JSON.stringify(bad)} must not reject the payload`);
+    assert.equal(parsed.advisoriesOk, false);
+  }
 });
 
 test("parsePrPayload rejects JSON-parseable non-payloads (untrusted read-back)", () => {
@@ -760,14 +773,33 @@ test("deriveLabels tags depvisor plus the group's highest semver level", () => {
   // A group mixing patch and minor takes the higher level.
   assert.deepEqual(deriveLabels([mk({ updateType: "patch" }), mk({ name: "b" })]), [
     "depvisor",
+    "fixer:none",
     "semver:minor",
   ]);
-  assert.deepEqual(deriveLabels([mk({ updateType: "major" })]), ["depvisor", "semver:major"]);
-  assert.deepEqual(deriveLabels([mk({ updateType: "patch" })]), ["depvisor", "semver:patch"]);
+  assert.deepEqual(deriveLabels([mk({ updateType: "major" })]), [
+    "depvisor",
+    "fixer:none",
+    "semver:major",
+  ]);
+  assert.deepEqual(deriveLabels([mk({ updateType: "patch" })]), [
+    "depvisor",
+    "fixer:none",
+    "semver:patch",
+  ]);
 });
 
 test("deriveLabels omits semver when the only update type is unknown", () => {
-  assert.deepEqual(deriveLabels([mk({ updateType: "unknown" })]), ["depvisor"]);
+  assert.deepEqual(deriveLabels([mk({ updateType: "unknown" })]), ["depvisor", "fixer:none"]);
+});
+
+test("deriveLabels records trusted fixer commit provenance as exactly one label", () => {
+  const withoutFix = deriveLabels([mk()], undefined, false);
+  assert.ok(withoutFix.includes("fixer:none"));
+  assert.ok(!withoutFix.includes("fixer:applied"));
+
+  const withFix = deriveLabels([mk()], undefined, true);
+  assert.ok(withFix.includes("fixer:applied"));
+  assert.ok(!withFix.includes("fixer:none"));
 });
 
 test("deriveLabels adds dev-dependencies only when every member is a dev dep", () => {
@@ -794,7 +826,8 @@ test("deriveLabels adds security only for a member that resolves a real advisory
 });
 
 test("buildPrPayload attaches the deterministic label set to the payload", () => {
-  // cand() is a dev/major candidate; with a resolved advisory it earns all four.
+  // cand() is a dev/major candidate; with a resolved advisory and no accepted
+  // fixer commit it earns all existing signals plus fixer:none.
   const candidates = [cand("lodash", "4.17.15", "4.17.21")];
   const p = buildPrPayload({
     branch: "depvisor/major-lodash",
@@ -807,15 +840,48 @@ test("buildPrPayload attaches the deterministic label set to the payload", () =>
   assert.deepEqual(p.labels.toSorted(), [
     "depvisor",
     "dev-dependencies",
+    "fixer:none",
     "security",
     "semver:major",
   ]);
 });
 
+test("buildPrPayload carries fixer:applied only from the trusted commit fact", () => {
+  const p = buildPrPayload({
+    branch: "depvisor/major-lodash",
+    base: "main",
+    candidates: [cand("lodash", "4.17.15", "4.17.21")],
+    fixerApplied: true,
+    narrative: narrative("Bump lodash."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
+  assert.ok(p.labels.includes("fixer:applied"));
+  assert.ok(!p.labels.includes("fixer:none"));
+});
+
+test("buildPrPayload records advisory availability, defaulting to the fail-safe false", () => {
+  const args = {
+    branch: "depvisor/major-lodash",
+    base: "main",
+    candidates: [cand("lodash", "4.17.15", "4.17.21")],
+    narrative: narrative("Bump lodash."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  };
+  assert.equal(buildPrPayload(args).advisoriesOk, false);
+  assert.equal(buildPrPayload({ ...args, advisoriesOk: true }).advisoriesOk, true);
+});
+
 test("sanitizeLabels keeps only the fixed vocabulary, deduping and stabilizing", () => {
   assert.deepEqual(
-    sanitizeLabels(["semver:minor", "depvisor", "semver:minor", "security", "dev-dependencies"]),
-    ["depvisor", "dev-dependencies", "security", "semver:minor"],
+    sanitizeLabels([
+      "semver:minor",
+      "depvisor",
+      "semver:minor",
+      "security",
+      "dev-dependencies",
+      "fixer:applied",
+    ]),
+    ["depvisor", "dev-dependencies", "fixer:applied", "security", "semver:minor"],
   );
 });
 
@@ -826,6 +892,7 @@ test("sanitizeLabels drops anything outside the allowlist (injection-safe)", () 
     sanitizeLabels([
       "evil",
       "semver:huge",
+      "fixer:unknown",
       "--add-label",
       "-X",
       "depvisor; rm -rf /",
