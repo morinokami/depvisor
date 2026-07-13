@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/morinokami/depvisor/compare/v1.4.0...v1.5.0) (2026-07-13)
+
+
+### Features
+
+* accept trailing-* prefix globs in ignore, minimum_release_age_exclude, and groups ([#75](https://github.com/morinokami/depvisor/issues/75)) ([a04c9e0](https://github.com/morinokami/depvisor/commit/a04c9e0de2d0aaa65c137681f97cfe9a96c3bfa3))
+* add dry-run planning mode ([#78](https://github.com/morinokami/depvisor/issues/78)) ([e0a2c15](https://github.com/morinokami/depvisor/commit/e0a2c159b9868f85ef24baac62e6f23aab1e8f68))
+* add fixer provenance labels ([#79](https://github.com/morinokami/depvisor/issues/79)) ([86f15df](https://github.com/morinokami/depvisor/commit/86f15dfdb9ca47848190d1f6e0ef2d0c49f720d4))
+* comment when human commits block PR updates ([#82](https://github.com/morinokami/depvisor/issues/82)) ([5791dcc](https://github.com/morinokami/depvisor/commit/5791dcc8b5c4df8396ce33d57b03df86fe989a56))
+* expose LLM usage as action outputs ([#77](https://github.com/morinokami/depvisor/issues/77)) ([e9df99e](https://github.com/morinokami/depvisor/commit/e9df99e46d6d3a54b304883976441294c3de1fed))
+* refresh conflicted dependency PRs ([#81](https://github.com/morinokami/depvisor/issues/81)) ([f3e3781](https://github.com/morinokami/depvisor/commit/f3e37818abb1b11fd41f5c58c09537e534540e7a))
+
 ## [1.4.0](https://github.com/morinokami/depvisor/compare/v1.3.0...v1.4.0) (2026-07-12)
 
 
