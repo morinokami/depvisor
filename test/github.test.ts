@@ -10,6 +10,9 @@ import {
   describePrCreateError,
   isNetworkRemote,
   labelReconciliation,
+  notifyHumanTakeoverComment,
+  OPEN_PR_BLOCKED_COMMENT,
+  OPEN_PR_BLOCKED_MARKER,
   openPrWithGh,
   SAFE_PATH_DIRS,
 } from "../src/core/github.ts";
@@ -230,6 +233,118 @@ test("labelReconciliation deduplicates and stabilizes API-order inputs", () => {
       add: ["fixer:none"],
       remove: ["security"],
     },
+  );
+});
+
+test("human-takeover notice is posted once with a fixed hidden marker", () => {
+  const calls: string[][] = [];
+  const outcome = notifyHumanTakeoverComment("depvisor/prod-x", (args) => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      return { code: 0, out: "17", err: "" };
+    }
+    if (args[0] === "api") {
+      return { code: 0, out: JSON.stringify([{ body: "ordinary comment" }]), err: "" };
+    }
+    return { code: 0, out: "https://github.com/acme/repo/pull/17#issuecomment-1", err: "" };
+  });
+
+  assert.equal(outcome, "posted");
+  assert.ok(OPEN_PR_BLOCKED_COMMENT.endsWith(OPEN_PR_BLOCKED_MARKER));
+  assert.deepEqual(calls.at(-1), ["pr", "comment", "17", "--body", OPEN_PR_BLOCKED_COMMENT]);
+});
+
+test("human-takeover notice is not duplicated when any comment carries the marker", () => {
+  const calls: string[][] = [];
+  const outcome = notifyHumanTakeoverComment("depvisor/prod-x", (args) => {
+    calls.push(args);
+    if (args[0] === "pr") return { code: 0, out: "17", err: "" };
+    return {
+      code: 0,
+      out: JSON.stringify([{ body: `already notified\n\n${OPEN_PR_BLOCKED_MARKER}` }]),
+      err: "",
+    };
+  });
+
+  assert.equal(outcome, "already-present");
+  assert.equal(
+    calls.some((args) => args[0] === "pr" && args[1] === "comment"),
+    false,
+  );
+});
+
+test("human-takeover notice paginates comments before deciding the marker is absent", () => {
+  const calls: string[][] = [];
+  const fullPage = Array.from({ length: 100 }, (_, i) => ({ body: `comment ${i}` }));
+  const outcome = notifyHumanTakeoverComment("depvisor/prod-x", (args) => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      return { code: 0, out: "17", err: "" };
+    }
+    if (args[0] === "api" && args.includes("page=1")) {
+      return { code: 0, out: JSON.stringify(fullPage), err: "" };
+    }
+    if (args[0] === "api") {
+      return { code: 0, out: JSON.stringify([{ body: OPEN_PR_BLOCKED_MARKER }]), err: "" };
+    }
+    return { code: 0, out: "", err: "" };
+  });
+
+  assert.equal(outcome, "already-present");
+  assert.equal(
+    calls.some((args) => args[0] === "pr" && args[1] === "comment"),
+    false,
+  );
+  assert.equal(calls.filter((args) => args[0] === "api").length, 2);
+});
+
+test("human-takeover notice skips posting when the bounded scan cannot prove absence", () => {
+  const fullPage = JSON.stringify(Array.from({ length: 100 }, () => ({ body: "comment" })));
+  let apiCalls = 0;
+  const outcome = notifyHumanTakeoverComment("depvisor/prod-x", (args) => {
+    if (args[0] === "pr" && args[1] === "list") {
+      return { code: 0, out: "17", err: "" };
+    }
+    if (args[0] === "api") {
+      apiCalls += 1;
+      return { code: 0, out: fullPage, err: "" };
+    }
+    throw new Error("comment must not be posted after an inconclusive scan");
+  });
+
+  assert.equal(outcome, "unavailable");
+  assert.equal(apiCalls, 10);
+});
+
+test("human-takeover notice failures and a vanished PR stay fail-soft", () => {
+  assert.equal(
+    notifyHumanTakeoverComment("depvisor/prod-x", () => ({
+      code: 1,
+      out: "",
+      err: "API unavailable",
+    })),
+    "unavailable",
+  );
+  assert.equal(
+    notifyHumanTakeoverComment("depvisor/prod-x", () => ({ code: 0, out: "", err: "" })),
+    "no-open-pr",
+  );
+  assert.equal(
+    notifyHumanTakeoverComment("depvisor/prod-x", () => {
+      throw new Error("spawn failed unexpectedly");
+    }),
+    "unavailable",
+  );
+
+  let call = 0;
+  assert.equal(
+    notifyHumanTakeoverComment("depvisor/prod-x", () => {
+      call += 1;
+      if (call === 1) return { code: 0, out: "17", err: "" };
+      if (call === 2) return { code: 0, out: "[]", err: "" };
+      return { code: 1, out: "", err: "comment rejected" };
+    }),
+    "unavailable",
   );
 });
 

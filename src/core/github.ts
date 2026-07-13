@@ -19,6 +19,20 @@ export interface OpenPrResult {
   error: string | null;
 }
 
+export type HumanTakeoverCommentOutcome =
+  | "posted"
+  | "already-present"
+  | "no-open-pr"
+  | "unavailable";
+
+export const OPEN_PR_BLOCKED_MARKER = "<!-- depvisor:open-pr-blocked -->";
+
+export const OPEN_PR_BLOCKED_COMMENT = `depvisor stopped updating this PR because its head branch contains a commit that was not committed by depvisor. This avoids overwriting work on the branch with a force-push.
+
+To let depvisor manage this dependency update again, merge or close this PR and delete its head branch. If the update is still needed, depvisor may prepare it again on a future run.
+
+${OPEN_PR_BLOCKED_MARKER}`;
+
 /**
  * Reserved for the expected policy stops caused by ordinary human action on
  * the PR, which open-pr records as the green `open-pr-blocked` — exactly what
@@ -158,6 +172,121 @@ function gh(
   args: string[],
 ): { code: number; out: string; err: string } {
   return sh(env, repo, GH_BIN, args);
+}
+
+type GhRunner = (args: string[]) => { code: number; out: string; err: string };
+
+const COMMENTS_PER_PAGE = 100;
+const MAX_COMMENT_PAGES = 10;
+
+/**
+ * Leave one deterministic, best-effort notice when the human-commit guard takes
+ * ownership away from depvisor. This helper runs only after the branch has
+ * passed prepareCleanPush's validation, and production supplies a GhRunner
+ * closed over the fresh clone and scrubbed environment.
+ *
+ * The hidden marker makes sequential runs idempotent. Comment reads are bounded
+ * to 1,000 entries; if the read fails, returns an unexpected shape, or reaches
+ * that bound without proving the list is exhausted, the safe fail-soft choice
+ * is to skip posting rather than risk a duplicate. The workflow's documented
+ * concurrency closes the ordinary read-then-create race, though this is not a
+ * globally atomic uniqueness guarantee.
+ */
+export function notifyHumanTakeoverComment(
+  branch: string,
+  runGh: GhRunner,
+): HumanTakeoverCommentOutcome {
+  try {
+    const viewed = runGh([
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--state",
+      "open",
+      "--json",
+      "number",
+      "--jq",
+      ".[0].number",
+    ]);
+    if (viewed.code !== 0) {
+      console.warn(`note: could not find the open PR for blocked branch ${branch}: ${viewed.err}`);
+      return "unavailable";
+    }
+    const numberText = viewed.out.trim();
+    if (!/^[1-9]\d*$/.test(numberText)) {
+      console.warn(`note: blocked branch ${branch} no longer has an open PR to comment on`);
+      return "no-open-pr";
+    }
+    const number = Number(numberText);
+    if (!Number.isSafeInteger(number)) {
+      console.warn(`note: open PR number for blocked branch ${branch} was not a safe integer`);
+      return "unavailable";
+    }
+
+    for (let page = 1; page <= MAX_COMMENT_PAGES; page += 1) {
+      const listed = runGh([
+        "api",
+        "--method",
+        "GET",
+        `repos/{owner}/{repo}/issues/${number}/comments`,
+        "-F",
+        `per_page=${COMMENTS_PER_PAGE}`,
+        "-F",
+        `page=${page}`,
+      ]);
+      if (listed.code !== 0) {
+        console.warn(`note: could not inspect comments on PR #${number}: ${listed.err}`);
+        return "unavailable";
+      }
+
+      let comments: unknown;
+      try {
+        comments = JSON.parse(listed.out);
+      } catch {
+        console.warn(
+          `note: could not inspect comments on PR #${number}: GitHub returned invalid JSON`,
+        );
+        return "unavailable";
+      }
+      if (!Array.isArray(comments)) {
+        console.warn(
+          `note: could not inspect comments on PR #${number}: GitHub returned a non-array`,
+        );
+        return "unavailable";
+      }
+      if (
+        comments.some(
+          (comment) =>
+            comment !== null &&
+            typeof comment === "object" &&
+            "body" in comment &&
+            typeof comment.body === "string" &&
+            comment.body.includes(OPEN_PR_BLOCKED_MARKER),
+        )
+      ) {
+        return "already-present";
+      }
+      if (comments.length < COMMENTS_PER_PAGE) {
+        const posted = runGh(["pr", "comment", String(number), "--body", OPEN_PR_BLOCKED_COMMENT]);
+        if (posted.code !== 0) {
+          console.warn(`note: could not comment on blocked PR #${number}: ${posted.err}`);
+          return "unavailable";
+        }
+        console.log(`  commented on PR #${number}: depvisor will not overwrite the human commit`);
+        return "posted";
+      }
+    }
+
+    console.warn(
+      `note: skipped commenting on blocked PR #${number}: could not prove the marker was absent within ${COMMENTS_PER_PAGE * MAX_COMMENT_PAGES} comments`,
+    );
+    return "unavailable";
+  } catch (err) {
+    const message = Error.isError(err) ? err.message : String(err);
+    console.warn(`note: could not notify the open PR for blocked branch ${branch}: ${message}`);
+    return "unavailable";
+  }
 }
 
 /** gh (by absolute path) for other token-holding entrypoints using the same scrubbed env. */
@@ -473,6 +602,7 @@ export function openPrWithGh(
     if (fetched.code === 0) {
       const tipCommitter = git(env, clone, ["log", "-1", "--format=%ce", "FETCH_HEAD"]).out;
       if (tipCommitter !== AGENT_EMAIL) {
+        notifyHumanTakeoverComment(payload.branch, (args) => gh(env, clone, args));
         return blocked(
           `remote ${payload.branch} tip was committed by ${tipCommitter}; refusing to force-push over human commits`,
         );
