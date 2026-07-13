@@ -16,6 +16,7 @@ depvisor itself uses **pnpm** (the default fixture is an npm project; a pnpm var
 pnpm test                                    # unit tests (node --test), no API key
 node --test test/grouping.test.ts            # single test file
 pnpm run check                               # all CI gates in one: typecheck + lint + fmt:check + knip + test
+actionlint                                   # GitHub Actions workflow semantics + embedded shell checks
 zizmor --persona=auditor --min-confidence=high .
                                              # GitHub Actions/composite-action security gate
 node src/dev/scan.ts fixtures/sample-app --verify   # deterministic core E2E, no API key (CI's fixture-e2e job runs this per variant)
