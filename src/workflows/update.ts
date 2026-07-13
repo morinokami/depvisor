@@ -12,7 +12,12 @@ import {
 import { classifyGroup, countOpenDepvisorPrs } from "../core/budget.ts";
 import { collectCandidates } from "../core/collect.ts";
 import { parseRunConfig } from "../core/config.ts";
-import { emitDryRunPlan, planDryRunGroups, type DryRunPlan } from "../core/dry-run.ts";
+import {
+  emitDryRunPlan,
+  planDryRunGroups,
+  summarizeDryRunGroups,
+  type DryRunPlan,
+} from "../core/dry-run.ts";
 import { isClean, tryCheckout } from "../core/git.ts";
 import { groupCandidates } from "../core/grouping.ts";
 import { applyIgnore, describeIgnore, matchedIgnoreRule } from "../core/ignore.ts";
@@ -43,6 +48,7 @@ import {
   type GroupResult,
   type RunStatus,
 } from "../core/status.ts";
+import type { Candidate } from "../core/types.ts";
 import type { VerifyStep } from "../core/verify.ts";
 import { REPO } from "../shared/target.ts";
 import { processGroup } from "./update/process-group.ts";
@@ -88,6 +94,24 @@ function summarizeRun(run: RunStatus): string {
   const held = count("held-back-by-limit");
   if (held > 0) parts.push(`${held} group(s) held back by the open_pull_requests_limit ceiling.`);
   return parts.join(" ");
+}
+
+function releaseAgeUnavailableResult(candidate: Candidate): GroupResult {
+  return {
+    status: "release-age-unavailable",
+    branch: null,
+    group: null,
+    summary:
+      `Could not verify the release age of ${candidate.name}@${candidate.latest} against the npm ` +
+      "registry (fetch failed or package not found), so this update was dropped " +
+      "for the run (fail-closed). A transient registry failure heals on the next " +
+      `run; if ${candidate.name} lives on a private registry, add it to the ` +
+      "minimum_release_age_exclude input (minimum_release_age: 0 disables the " +
+      "cooldown entirely).",
+    packages: statusPackages([candidate]),
+    verification: [],
+    prUrl: null,
+  };
 }
 
 export default defineWorkflow({
@@ -240,17 +264,7 @@ export default defineWorkflow({
 
     if (dryRun) {
       const plannedGroups = planDryRunGroups(groups, bodyByBranch, newSlots);
-      const dryRunGroups: GroupResult[] = releaseAgeUnavailable.map((c) => ({
-        status: "release-age-unavailable",
-        branch: null,
-        group: null,
-        summary:
-          `Could not verify the release age of ${c.name}@${c.latest} against the npm ` +
-          "registry, so this update would be dropped from a real run (fail-closed).",
-        packages: statusPackages([c]),
-        verification: [],
-        prUrl: null,
-      }));
+      const dryRunGroups = releaseAgeUnavailable.map(releaseAgeUnavailableResult);
       for (const group of plannedGroups) {
         if (group.disposition !== "branch-collision") continue;
         dryRunGroups.push({
@@ -300,16 +314,10 @@ export default defineWorkflow({
       };
       const path = emitDryRunPlan(PR_OUT_DIR, plan);
       log.info(`Dry-run plan emitted: ${path}`);
-      const count = (disposition: string) =>
-        plannedGroups.filter((g) => g.disposition === disposition).length;
       return finish({
         status: "dry-run-completed",
         base,
-        summary:
-          `Planned ${plannedGroups.length} group(s): ${count("refresh")} refresh, ` +
-          `${count("skip-up-to-date")} skip-up-to-date, ` +
-          `${count("open-new-provisional")} open-new (provisional), ` +
-          `${count("held-back-provisional")} held-back (provisional).`,
+        summary: summarizeDryRunGroups(plannedGroups),
         groups: dryRunGroups,
       });
     }
@@ -341,21 +349,7 @@ export default defineWorkflow({
     // and group are null — no branch was ever formed) so runFailsJob turns the
     // job red while the remaining groups still run.
     for (const c of releaseAgeUnavailable) {
-      recordGroup({
-        status: "release-age-unavailable",
-        branch: null,
-        group: null,
-        summary:
-          `Could not verify the release age of ${c.name}@${c.latest} against the npm ` +
-          "registry (fetch failed or package not found), so this update was dropped " +
-          "for the run (fail-closed). A transient registry failure heals on the next " +
-          `run; if ${c.name} lives on a private registry, add it to the ` +
-          "minimum_release_age_exclude input (minimum_release_age: 0 disables the " +
-          "cooldown entirely).",
-        packages: statusPackages([c]),
-        verification: [],
-        prUrl: null,
-      });
+      recordGroup(releaseAgeUnavailableResult(c));
     }
 
     let requiresReset = false;

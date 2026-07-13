@@ -11,6 +11,7 @@ import {
   planDryRunGroups,
   readDryRunPlan,
   renderDryRunPlan,
+  summarizeDryRunGroups,
   type DryRunPlan,
 } from "../src/core/dry-run.ts";
 import { versionsMarker } from "../src/core/pr.ts";
@@ -64,6 +65,10 @@ test("dry-run planning fixes existing-PR outcomes and projects new slots optimis
     ],
   );
   assert.equal(planned[4]?.branch, planned[5]?.branch);
+  assert.equal(
+    summarizeDryRunGroups(planned),
+    "Planned 6 group(s): 1 refresh, 1 skip-up-to-date, 1 open-new (provisional), 2 held-back (provisional), 1 branch-collision.",
+  );
 });
 
 function plan(): DryRunPlan {

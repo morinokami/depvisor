@@ -122,6 +122,18 @@ export function planDryRunGroups(
   return planned;
 }
 
+export function summarizeDryRunGroups(groups: readonly DryRunGroupPlan[]): string {
+  const count = (disposition: DryRunDisposition) =>
+    groups.filter((group) => group.disposition === disposition).length;
+  return (
+    `Planned ${groups.length} group(s): ${count("refresh")} refresh, ` +
+    `${count("skip-up-to-date")} skip-up-to-date, ` +
+    `${count("open-new-provisional")} open-new (provisional), ` +
+    `${count("held-back-provisional")} held-back (provisional), ` +
+    `${count("branch-collision")} branch-collision.`
+  );
+}
+
 const statusPackageSchema = v.object({
   name: v.string(),
   current: v.string(),

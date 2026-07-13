@@ -34,6 +34,7 @@ Tool modules are not auto-discovered — `depvisor.ts` attaches them explicitly.
 | `open-pr.ts`                              | push + `gh pr create`, one call per emitted payload   | `GH_TOKEN`                        |
 | `report-status.ts`                        | annotations, step summary, action outputs             | none                              |
 | `dev/scan.ts`                             | dev tool + CI `fixture-e2e` gate, **not** the action  | none                              |
+| `dev/assert-dry-run.ts`                   | CI assertion over emitted plan/status + target state  | none                              |
 
 `open-pr.ts` is the only command that needs `GH_TOKEN`. `openPrWithGh` is per-payload self-contained (fresh clone, authorization checks, deterministic label application), so multi-PR is just calling it N times — **do not add cross-payload state to it**. One payload's failure never stops the rest.
 

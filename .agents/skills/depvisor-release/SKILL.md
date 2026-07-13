@@ -27,6 +27,11 @@ One platform caveat worth remembering: nesting the action inside another composi
 
 It runs the composite action from the checkout via `uses: ./`, matching a consumer workflow except for that `uses: ./` and `install_command: skip` — the target is depvisor itself, a pnpm repo, and the action's own `pnpm install` covers it.
 
+The separate `fixture-e2e` matrix in `.github/workflows/ci.yml` runs both the
+plain deterministic scanner and the real Flue workflow's credential-free
+dry-run path for every npm/pnpm/bun fixture variant. Keep the latter free of
+model credentials and assert its emitted plan/status plus clean target state.
+
 ## The release workflow (`.github/workflows/release.yml`)
 
 **release-please** (manifest mode, `release-type: node`, config in `release-please-config.json` + `.release-please-manifest.json`) reads Conventional Commits on `main` and keeps one **Release PR** open that computes the next version, regenerates `CHANGELOG.md`, and bumps `package.json` `version`.
