@@ -62,6 +62,7 @@ const run = (patch: Partial<RunStatus> = {}): RunStatus => ({
 test("status failure policy keeps benign outcomes green and fail-closed stops red", () => {
   for (const status of [
     "completed",
+    "dry-run-completed",
     "no-updates",
     "pr-prepared",
     "pr-up-to-date",
@@ -257,6 +258,20 @@ test("runFailsJob fails a completed run when any group failed", () => {
     false,
     "held-back-by-limit is a benign outcome",
   );
+});
+
+test("dry-run-completed stays green unless its deterministic findings include a red group", () => {
+  const green = run({ status: "dry-run-completed", groups: [] });
+  assert.equal(runFailsJob(green), false);
+  assert.equal(toActionOutputs(green).prepared_count, "0");
+  assert.equal(toActionOutputs(green).pr_urls, "");
+
+  const red = run({
+    status: "dry-run-completed",
+    groups: [group({ status: "branch-collision" })],
+  });
+  assert.equal(runFailsJob(red), true);
+  assert.equal(toActionOutputs(red).failed, "true");
 });
 
 test("run status is emitted, read, and patched per group by branch", () => {

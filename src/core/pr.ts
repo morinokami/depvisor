@@ -4,6 +4,7 @@ import { isValidNpmName } from "./changelog.ts";
 import type { NumstatEntry } from "./git.ts";
 import type { LicenseChange } from "./license.ts";
 import { RUN_STATUS_FILE } from "./status-file.ts";
+import { DRY_RUN_PLAN_FILE } from "./dry-run-plan-file.ts";
 import { formatNumstatLines } from "./test-changes.ts";
 import type { Candidate, NotableChange, RelevantNewFeature, UpdateNarrative } from "./types.ts";
 import type { VerifyResult } from "./verify.ts";
@@ -662,4 +663,5 @@ export function emitPrPayload(outDir: string, payload: PrPayload, index: number)
 export function clearPrPreview(outDir: string): void {
   rmSync(join(outDir, PR_PAYLOADS_DIR), { recursive: true, force: true });
   rmSync(join(outDir, RUN_STATUS_FILE), { force: true });
+  rmSync(join(outDir, DRY_RUN_PLAN_FILE), { force: true });
 }

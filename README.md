@@ -32,7 +32,12 @@ name: depvisor
 on:
   schedule:
     - cron: "0 3 * * 1" # the schedule lives in YOUR workflow
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview candidates, groups, and PR actions without changing anything
+        type: boolean
+        default: false
 
 permissions:
   contents: write # push the update branch
@@ -68,6 +73,7 @@ jobs:
 
       - uses: morinokami/depvisor@v1 # or pin a commit SHA for production; see Versioning below
         with:
+          dry_run: ${{ inputs.dry_run }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
           llm_model: openai/gpt-5.5 # or anthropic/claude-sonnet-5, ... (BYOK)
 ```
@@ -101,8 +107,9 @@ committed lockfile (npm/pnpm only) are all supported with caveats — see
 
 | Input                         | Purpose                                                                                                                                                                                                                                                                         |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `llm_api_key`                 | (required) Provider API key — reaches **only** the agent step                                                                                                                                                                                                                   |
-| `llm_model`                   | (required) Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`                                                                                                                                                                               |
+| `llm_api_key`                 | Provider API key — reaches **only** a non-dry-run agent step; required unless `dry_run: true`                                                                                                                                                                                   |
+| `llm_model`                   | Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`; required unless `dry_run: true`                                                                                                                                                         |
+| `dry_run`                     | `true` to preview deterministic candidate filtering, grouping, and PR dispositions without applying updates, calling an LLM, pushing, or opening PRs (default `false`)                                                                                                          |
 | `verify_commands`             | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                                                      |
 | `open_pull_requests_limit`    | Ceiling on the number of open depvisor PRs (default `5`, matching Dependabot's `open-pull-requests-limit`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                  |
 | `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                                                  |
@@ -127,6 +134,16 @@ ignore: |
 groups: |
   react: react react-dom @types/react
 ```
+
+To validate a new or edited configuration, open the workflow's **Run workflow**
+dialog, check `dry_run`, and inspect the step summary. The plan shows every
+detected and ignored candidate, cooldown clamp/hold-back, prioritized group,
+branch collision, and existing-PR decision. New-PR decisions are explicitly
+provisional: they assume every earlier planned new PR succeeds, while a real
+run gives a failed group's unused slot to a later group. Dry-run still installs
+the target (npm/pnpm collection reads the installed tree) and reads the open-PR
+snapshot, but it does not run the baseline/update checks or require
+`llm_api_key` / `llm_model`. See [Dry-run planning](./docs/configuration.md#dry-run-planning-dry_run).
 
 Every input above is documented in depth — behavior, edge cases, and failure
 modes — in [docs/configuration.md](./docs/configuration.md). The remaining
@@ -213,7 +230,8 @@ source fixes the AI made — present only when the update actually needed them.
 - [docs/configuration.md](./docs/configuration.md) — repository requirements in
   detail, and every behavior-shaping input: verification commands, the
   supply-chain cooldown (`minimum_release_age`), `ignore`, package grouping
-  (`groups`), the PR ceiling (`open_pull_requests_limit`), security
+  (`groups`), dry-run planning (`dry_run`), the PR ceiling
+  (`open_pull_requests_limit`), security
   prioritization, opt-in feature suggestions, and the PR narrative's output
   language (`language`).
 - [docs/results.md](./docs/results.md) — the job summary and annotations, the

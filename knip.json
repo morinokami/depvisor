@@ -5,6 +5,7 @@
     "src/report-status.ts!",
     "src/install-target.ts!",
     "src/check-credentials.ts!",
+    "src/check-config.ts!",
     "src/agents/*.ts!",
     "src/workflows/*.ts!",
     "src/dev/*.ts",

@@ -9,6 +9,11 @@ Both workflows below touch no target checkout beyond what the composite action a
 
 ## The composite action (`action.yml`)
 
+The Action parses all behavior inputs through `check-config.ts` after installing
+depvisor itself but before installing the target. Its canonical `dry_run` output
+drives both credential omission from the Flue step and structural skipping of
+the push/open-PR step; do not branch on the raw, whitespace-tolerant input.
+
 Two documented GitHub-runner quirks — **read the comments in `action.yml` before touching it**:
 
 1. A nested `uses:` does not evaluate `github.action_path`.
@@ -21,6 +26,11 @@ One platform caveat worth remembering: nesting the action inside another composi
 ## The development workflow (`.github/workflows/depvisor.yml`)
 
 It runs the composite action from the checkout via `uses: ./`, matching a consumer workflow except for that `uses: ./` and `install_command: skip` — the target is depvisor itself, a pnpm repo, and the action's own `pnpm install` covers it.
+
+The separate `fixture-e2e` matrix in `.github/workflows/ci.yml` runs both the
+plain deterministic scanner and the real Flue workflow's credential-free
+dry-run path for every npm/pnpm/bun fixture variant. Keep the latter free of
+model credentials and assert its emitted plan/status plus clean target state.
 
 ## The release workflow (`.github/workflows/release.yml`)
 

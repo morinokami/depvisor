@@ -2,9 +2,9 @@
  * The run's configuration surface: every `DEPVISOR_*` knob the update workflow
  * reads, parsed and validated in one place.
  *
- * Each knob's own parser (`budget.ts`, `release-age.ts`, `ignore.ts`,
- * `grouping.ts`, `suggest-features.ts`, `language.ts`) owns its default and its
- * grammar — see those headers.
+ * Each knob's own parser (`dry-run.ts`, `budget.ts`, `release-age.ts`,
+ * `ignore.ts`, `grouping.ts`, `suggest-features.ts`, `language.ts`) owns its
+ * default and its grammar — see those headers.
  * This module only sequences them and turns the first rejection into the
  * run-level `bad-*` status the workflow reports. That sequencing is why it
  * lives in the core rather than inline in the workflow: the summaries a user
@@ -26,6 +26,7 @@
  */
 
 import { parseOpenPullRequestsLimit } from "./budget.ts";
+import { parseDryRun } from "./dry-run.ts";
 import { type GroupRule, parseGroups } from "./grouping.ts";
 import { type IgnoreRule, parseIgnore } from "./ignore.ts";
 import { parseLanguage } from "./language.ts";
@@ -37,6 +38,8 @@ import { parseSuggestFeatures } from "./suggest-features.ts";
 export type ConfigEnv = Record<string, string | undefined>;
 
 interface RunConfig {
+  /** Plan selection and PR disposition without modifying the target or calling an LLM. */
+  dryRun: boolean;
   /**
    * CI passes the default branch explicitly; local runs leave this unset and
    * fall back to the current branch after preflight rejects HEAD or depvisor/*.
@@ -126,6 +129,18 @@ function read(env: ConfigEnv, name: string): string {
  * the first, which is enough to send the user to their workflow file.
  */
 export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
+  const dryRunRaw = read(env, "DEPVISOR_DRY_RUN");
+  const dryRun = parseDryRun(dryRunRaw);
+  if (dryRun === null) {
+    return {
+      ok: false,
+      status: "bad-dry-run",
+      summary:
+        "The dry_run input must be 'true' or 'false' (empty means false); " +
+        `got '${dryRunRaw.trim()}'.`,
+    };
+  }
+
   const openPullRequestsLimitRaw = read(env, "DEPVISOR_OPEN_PULL_REQUESTS_LIMIT");
   const openPullRequestsLimit = parseOpenPullRequestsLimit(openPullRequestsLimitRaw);
   if (openPullRequestsLimit === null) {
@@ -223,6 +238,7 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
   return {
     ok: true,
     config: {
+      dryRun,
       baseBranch: env.DEPVISOR_BASE_BRANCH || undefined,
       openPrsFile: env.DEPVISOR_OPEN_PRS_FILE || undefined,
       verifyCommands: read(env, "DEPVISOR_VERIFY_COMMANDS"),

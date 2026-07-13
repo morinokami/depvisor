@@ -70,12 +70,12 @@ jobs:
       - name: Run knip
         run: pnpm run knip
 
-  # Deterministic-core E2E against real package managers: generate each fixture
-  # variant, then run collect → group → verify (src/dev/scan.ts) on its green
-  # baseline. No LLM, no API key, no bump — the agent path stays under
-  # .github/workflows/depvisor.yml. Talks to the live npm registry (fixture
-  # installs + `<pm> outdated`), so registry hiccups fail one variant, not all
-  # (fail-fast: false).
+  # E2E against real package managers: generate each fixture, run the
+  # deterministic scan, then execute the real Flue workflow through its
+  # credential-free dry-run branch and assert its plan/status/no-mutation
+  # contracts. Talks to the live npm registry (fixture installs + PM outdated)
+  # and OSV prioritization, so upstream hiccups fail one variant,
+  # not all (fail-fast: false; OSV itself remains product-level fail-soft).
   fixture-e2e:
     name: Fixture E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -150,6 +150,7 @@ jobs:
             release-assets.githubusercontent.com:443
             *.actions.githubusercontent.com:443
             registry.npmjs.org:443
+            api.osv.dev:443
             npm.flatt.tech:443
             nodejs.org:443
 
@@ -193,6 +194,20 @@ jobs:
           DEST: ${{ matrix.dest }}
           EXPECT: ${{ matrix.expect }}
         run: node src/dev/scan.ts "$DEST" --verify --expect-updates="$EXPECT"
+
+      - name: Run credential-free dry-run workflow
+        env:
+          DEPVISOR_DRY_RUN: "true"
+          DEPVISOR_LLM_MODEL: ""
+          DEPVISOR_MINIMUM_RELEASE_AGE: "0"
+          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/${{ matrix.dest }}
+          EXPECT: ${{ matrix.expect }}
+          OPENAI_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+          OPENROUTER_API_KEY: ""
+        run: |
+          pnpm exec flue run update --target node
+          node src/dev/assert-dry-run.ts "$DEPVISOR_TARGET_REPO" "$EXPECT"
 
   zizmor:
     name: GitHub Actions security audit

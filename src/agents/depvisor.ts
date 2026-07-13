@@ -1,27 +1,13 @@
 import { defineAgent, defineAgentProfile } from "@flue/runtime";
 import digestInstructions from "./digest.md" with { type: "markdown" };
 import fixerInstructions from "./fixer.md" with { type: "markdown" };
+import { requireModel } from "./shared/model.ts";
 import { releaseNotesTool } from "../tools/release-notes.ts";
 import { repoReadTools, repoWriteTools } from "../tools/repo-files.ts";
 
 export const description =
   "Prepares dependency-update PRs. The bump, install, and verification are deterministic; " +
   "an LLM is used only to fix source breakage (fixer) and to write the PR digest (digest).";
-
-// The model is injected instead of defaulted so consumers choose the provider.
-// Composite actions forward unset inputs as "", so falsy means "not set".
-// Throw from the factory so importing this module stays side-effect-free.
-function requireModel(): string {
-  const model = process.env.DEPVISOR_LLM_MODEL;
-  if (!model) {
-    throw new Error(
-      "DEPVISOR_LLM_MODEL is not set. Set it to a model specifier such as " +
-        "openai/gpt-5.5 or anthropic/claude-sonnet-5 (the llm_model input " +
-        "in CI; .env for local runs).",
-    );
-  }
-  return model;
-}
 
 /**
  * The fixer runs ONLY when the deterministic post-bump verification fails. The
@@ -73,7 +59,7 @@ const digest = defineAgentProfile({
  * is the workflow that runs it between deterministic gates.
  */
 export default defineAgent(() => ({
-  model: requireModel(),
+  model: requireModel(process.env),
   cwd: "/workspace",
   subagents: [fixer, digest],
 }));
