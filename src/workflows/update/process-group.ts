@@ -416,6 +416,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
   // One independent session per group; fixer and digest are named subagents.
   const session = await harness.session(`group-${slugify(group.key)}`);
   let fixerReport: FixerReport | null = null;
+  let fixerApplied = false;
   let verification: VerifyResult[];
 
   if (postBump.every((r) => r.ok)) {
@@ -519,8 +520,11 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
         `The final fix contains paths outside source and tests: ${finalScope.violations.join(", ")}. Nothing was committed.`,
       );
     }
-    // The fixer's validated source changes become the second commit.
-    commitAll(repo, `fix: adapt code to ${pkgList} update`);
+    // The fixer's validated source changes become the second commit. Preserve
+    // the trusted commit result as PR provenance: a fixer can be invoked yet
+    // leave no accepted diff, which is still `fixer:none` rather than an agent
+    // self-reported `fixer:applied`.
+    fixerApplied = commitAll(repo, `fix: adapt code to ${pkgList} update`) !== null;
     verification = stripVerifyTails(postFix);
     fixerReport = {
       summary: fixerResult.summary,
@@ -634,6 +638,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     testChanges,
     licenseChanges,
     newFeatures,
+    fixerApplied,
     narrative,
     verification,
   });

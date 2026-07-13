@@ -95,17 +95,26 @@ action — consume these outputs from workflow steps directly.
 
 ## PR labels
 
-Every PR depvisor opens is labeled so you can build automation on top of it —
-auto-merge rulesets, merge queues, notification filters, dashboards. depvisor
-never merges anything itself (the final decision stays with you); it just hands
-you structured signal. The labels are derived deterministically from the same
-data the PR body shows:
+Every PR depvisor opens is labeled with deterministic review signals. Use them
+to route reviews, notifications, and dashboards — for example, to put PRs whose
+source was adapted by the fixer at the front of a review queue. depvisor never
+merges anything itself (the final decision stays with you). The labels are
+derived from trusted workflow facts and the same package data the PR body shows:
 
 - `depvisor` — on every PR, to select depvisor's PRs as a set.
 - `semver:patch` / `semver:minor` / `semver:major` — the update's semver level.
 - `security` — the update resolves at least one known advisory (see
   [Security prioritization](./configuration.md#security-prioritization)).
 - `dev-dependencies` — every package in the PR is a dev dependency.
+- `fixer:none` — the PR has no accepted fixer commit. The deterministic bump
+  passed verification without a source/test adaptation, or the fixer was
+  invoked but produced no change that was committed.
+- `fixer:applied` — the PR contains a `fix: adapt code to …` second commit whose
+  source/test changes passed both fixer scope gates and post-fix verification.
+
+`fixer:none` and `fixer:applied` are mutually exclusive. They come from whether
+trusted workflow code actually created the second commit, never from the
+agent's verdict or self-report.
 
 Labeling needs no permission beyond the `pull-requests: write` you already grant
 to open the PR — GitHub's label API accepts either `issues` or `pull-requests`
@@ -113,8 +122,21 @@ write, so depvisor creates any missing label (without overwriting a same-named
 label you already have) and applies it with that scope alone. It is also
 **fail-soft**: labeling happens after the PR is opened and never blocks it, and a
 label that somehow cannot be applied is logged and skipped rather than failing
-the run. Label names are a fixed set today; a configurable/opt-out input may come
-later.
+the run. On refresh, depvisor also removes obsolete labels from its own fixed
+vocabulary (for example, an old `semver:patch` or `fixer:none`) while preserving
+all labels outside that vocabulary. Reconciliation is best-effort for the same reason.
+Label names are a fixed set today; a configurable/opt-out input may come later.
+
+These labels describe **how depvisor prepared the PR**. They do not establish
+the integrity or provenance of the package release: passing your configured
+checks and carrying `fixer:none` show compatibility and the absence of an
+accepted LLM-written source/test diff, not that dependency code is benign.
+Patch releases and dev dependencies can still execute during install, build, or
+test, and lockfile updates can bring transitive changes. Treat the labels as
+review metadata, not a security attestation or, by themselves, a sufficient
+basis for automatic merge. Dependency review, install-script policy, artifact
+provenance, release age, secret isolation, and human review remain separate
+controls.
 
 ## When tests change in an update
 

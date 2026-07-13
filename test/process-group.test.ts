@@ -101,6 +101,47 @@ function digestHarness(repo: string, dirtyDuringDigest = false): ProcessGroupOpt
   } as unknown as ProcessGroupOptions["harness"];
 }
 
+function fixerHarness(repo: string, writesFix = true): ProcessGroupOptions["harness"] {
+  return {
+    async session() {
+      return {
+        async task(_prompt: string, taskOptions: { agent: string }) {
+          const usage = {
+            input: 10,
+            output: 5,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 15,
+            cost: { total: 0.001 },
+          };
+          if (taskOptions.agent === "fixer") {
+            if (writesFix) writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
+            return {
+              data: {
+                summary: "Adapted source for the new dependency.",
+                fixes_applied: ["updated the compatibility shim"],
+                residual_risks: [],
+                verdict: "fixed",
+              },
+              usage,
+              model: { provider: "test", id: "fixer" },
+            };
+          }
+          return {
+            data: {
+              summary: "digest-after-fix",
+              upstream_changes: [],
+              review_notes: [],
+            },
+            usage,
+            model: { provider: "test", id: "digest" },
+          };
+        },
+      };
+    },
+  } as unknown as ProcessGroupOptions["harness"];
+}
+
 function options(repo: string): ProcessGroupOptions {
   return {
     repo,
@@ -197,6 +238,8 @@ test("the fast path returns a sealed prepared payload and consumes a new-PR slot
   assert.equal(outcome.consumedSlot, true);
   assert.equal(outcome.requiresResetNext, true);
   assert.match(outcome.payload.body, /digest-only-summary/);
+  assert.ok(outcome.payload.labels.includes("fixer:none"));
+  assert.ok(!outcome.payload.labels.includes("fixer:applied"));
   assert.equal(execSync("git status --porcelain", { cwd: repo, encoding: "utf8" }).trim(), "");
 });
 
@@ -208,5 +251,66 @@ test("the digest seal restores tree-only drift and discards the display report",
   if (outcome.kind !== "prepared") return;
   assert.equal(existsSync(join(repo, "digest-leftover.txt")), false);
   assert.doesNotMatch(outcome.payload.body, /digest-only-summary/);
+  assert.equal(execSync("git status --porcelain", { cwd: repo, encoding: "utf8" }).trim(), "");
+});
+
+test("a validated fixer commit produces fixer:applied provenance", async () => {
+  const repo = tempRepo();
+  const opts = preparedOptions(repo);
+  const gateScript =
+    "const fs=require('node:fs');" +
+    "const p=JSON.parse(fs.readFileSync('package.json','utf8'));" +
+    "const source=fs.existsSync('src.ts')?fs.readFileSync('src.ts','utf8'):'';" +
+    "process.exit(p.dependencies['left-pad']==='^1.1.0'&&!source.includes('fixed')?1:0);";
+  opts.verifySteps = [
+    {
+      name: "compatibility",
+      run: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(gateScript)}`,
+    },
+  ];
+  opts.harness = fixerHarness(repo);
+
+  const outcome = await processGroup(opts);
+
+  assert.equal(outcome.kind, "prepared");
+  if (outcome.kind !== "prepared") return;
+  assert.ok(outcome.payload.labels.includes("fixer:applied"));
+  assert.ok(!outcome.payload.labels.includes("fixer:none"));
+  assert.equal(
+    execSync("git rev-list --count main..HEAD", { cwd: repo, encoding: "utf8" }).trim(),
+    "2",
+  );
+  assert.equal(execSync("git status --porcelain", { cwd: repo, encoding: "utf8" }).trim(), "");
+});
+
+test("an invoked fixer with no accepted commit remains fixer:none", async () => {
+  const repo = tempRepo();
+  const opts = preparedOptions(repo);
+  const counter = join(mkdtempSync(join(tmpdir(), "depvisor-verify-counter-")), "count");
+  writeFileSync(counter, "0");
+  const gateScript =
+    "const fs=require('node:fs');" +
+    `const path=${JSON.stringify(counter)};` +
+    "const count=Number(fs.readFileSync(path,'utf8'))+1;" +
+    "fs.writeFileSync(path,String(count));" +
+    "process.exit(count===2?1:0);";
+  opts.verifySteps = [
+    {
+      name: "transient compatibility",
+      run: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(gateScript)}`,
+    },
+  ];
+  opts.harness = fixerHarness(repo, false);
+
+  const outcome = await processGroup(opts);
+
+  assert.equal(outcome.kind, "prepared");
+  if (outcome.kind !== "prepared") return;
+  assert.ok(outcome.payload.labels.includes("fixer:none"));
+  assert.ok(!outcome.payload.labels.includes("fixer:applied"));
+  assert.equal(
+    execSync("git rev-list --count main..HEAD", { cwd: repo, encoding: "utf8" }).trim(),
+    "1",
+  );
   assert.equal(execSync("git status --porcelain", { cwd: repo, encoding: "utf8" }).trim(), "");
 });

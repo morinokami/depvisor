@@ -28,6 +28,13 @@ Do not unify it. The question is always "is this module a defense, a gate, or a 
 
 `bump.ts` returns every failure as a value (`bump-failed`) rather than throwing.
 
+PR labels are review metadata, not gates. `pr.ts` derives their fixed vocabulary
+from deterministic inputs (including the trusted fixer-commit result), and
+`github.ts` best-effort reconciles only that vocabulary while preserving labels
+outside it. Label read/create/add/remove failures stay fail-soft and must never
+cost an otherwise verified PR; consequently, labels must not be described as a
+security attestation or merge authorization.
+
 ## Display-only modules never gate
 
 `advisories.ts` (order), `test-changes.ts` (⚠️ section), `license.ts` (⚠️ section), and `status.ts`'s `GroupUsage` all add **no failing status**. They must never change which version installs, the group key, or membership.

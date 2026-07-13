@@ -9,6 +9,7 @@ import {
   buildSecureEnv,
   describePrCreateError,
   isNetworkRemote,
+  labelReconciliation,
   openPrWithGh,
   SAFE_PATH_DIRS,
 } from "../src/core/github.ts";
@@ -145,6 +146,32 @@ test("isNetworkRemote rejects local, file, and helper remotes", () => {
   ]) {
     assert.equal(isNetworkRemote(url), false, url);
   }
+});
+
+test("labelReconciliation replaces stale depvisor signals and preserves outside labels", () => {
+  assert.deepEqual(
+    labelReconciliation(
+      ["depvisor", "semver:patch", "fixer:none", "security", "team:platform"],
+      ["depvisor", "semver:minor", "fixer:applied", "dev-dependencies"],
+    ),
+    {
+      add: ["dev-dependencies", "fixer:applied", "semver:minor"],
+      remove: ["fixer:none", "security", "semver:patch"],
+    },
+  );
+});
+
+test("labelReconciliation deduplicates and stabilizes API-order inputs", () => {
+  assert.deepEqual(
+    labelReconciliation(
+      ["security", "depvisor", "security", "user-label"],
+      ["fixer:none", "depvisor", "fixer:none"],
+    ),
+    {
+      add: ["fixer:none"],
+      remove: ["security"],
+    },
+  );
 });
 
 test("binary resolution prefers root-owned system dirs over user-writable prefixes", () => {

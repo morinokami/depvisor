@@ -16,10 +16,11 @@ export interface PrPayload {
   body: string;
   /**
    * Deterministic labels applied to the PR by the token-holding open-pr step
-   * (`depvisor`, `semver:*`, `security`, `dev-dependencies`). Derived from the
-   * group members here, in the tokenless step; the exit boundary re-validates
-   * every entry against a fixed allowlist (`sanitizeLabels`) because the payload
-   * file is untrusted when open-pr reads it back.
+   * (`depvisor`, `semver:*`, `security`, `dev-dependencies`, `fixer:*`). Derived
+   * from deterministic group data plus the trusted fix-commit result in the
+   * tokenless step; the exit boundary re-validates every entry against a fixed
+   * allowlist (`sanitizeLabels`) because the payload file is untrusted when
+   * open-pr reads it back.
    */
   labels: string[];
 }
@@ -223,7 +224,13 @@ export function sanitizePrBody(body: string): string {
  * `gh`, so an arbitrary agent-supplied string must never reach that command.
  * Any label not on this allowlist is dropped at the exit boundary.
  */
-const LABEL_RE = /^(?:depvisor|security|dev-dependencies|semver:(?:patch|minor|major))$/;
+const LABEL_RE =
+  /^(?:depvisor|security|dev-dependencies|semver:(?:patch|minor|major)|fixer:(?:none|applied))$/;
+
+/** Whether a label belongs to depvisor's fixed, reconciled vocabulary. */
+export function isDepvisorManagedLabel(label: string): boolean {
+  return LABEL_RE.test(label);
+}
 
 /**
  * Exit-boundary validation for PR labels, mirroring sanitizePrBody: the tokenless
@@ -236,7 +243,7 @@ export function sanitizeLabels(labels: unknown): string[] {
   if (!Array.isArray(labels)) return [];
   const kept = new Set<string>();
   for (const label of labels) {
-    if (typeof label === "string" && LABEL_RE.test(label)) kept.add(label);
+    if (typeof label === "string" && isDepvisorManagedLabel(label)) kept.add(label);
   }
   return [...kept].toSorted();
 }
@@ -250,16 +257,18 @@ const SEMVER_RANK = { patch: 0, minor: 1, major: 2 } as const;
 /**
  * Derive the deterministic label set for a group: `depvisor` always, the
  * update's `semver:<level>`, `security` when any member resolves an advisory,
- * and `dev-dependencies` when every member is a dev dependency. LLM-free and
- * keyed only on the same inputs the version table uses, so labels can never
- * drift from what the PR shows. Ordering-only advisory data feeds `security`,
- * so a promoted security group and its label stay in lockstep.
+ * `dev-dependencies` when every member is a dev dependency, and exactly one
+ * `fixer:*` provenance label. LLM-free: fixer provenance comes from whether
+ * trusted workflow code actually created the validated second commit, never
+ * from the agent's verdict. Ordering-only advisory data feeds `security`, so a
+ * promoted security group and its label stay in lockstep.
  */
 export function deriveLabels(
   candidates: readonly Candidate[],
   advisories?: ReadonlyMap<string, string[]>,
+  fixerApplied = false,
 ): string[] {
-  const labels = ["depvisor"];
+  const labels = ["depvisor", fixerApplied ? "fixer:applied" : "fixer:none"];
 
   let top: keyof typeof SEMVER_RANK | null = null;
   for (const c of candidates) {
@@ -559,6 +568,8 @@ export function buildPrPayload(args: {
    * section. The workflow passes these only when the flag is on.
    */
   newFeatures?: readonly RelevantNewFeature[];
+  /** Whether trusted workflow code created the validated fixer commit. */
+  fixerApplied?: boolean;
   narrative: UpdateNarrative;
   verification: VerifyResult[];
 }): PrPayload {
@@ -571,6 +582,7 @@ export function buildPrPayload(args: {
     testChanges,
     licenseChanges,
     newFeatures,
+    fixerApplied,
     narrative,
     verification,
   } = args;
@@ -633,7 +645,13 @@ export function buildPrPayload(args: {
     versionsMarker(candidates),
   ].join("\n");
 
-  return { branch, base, title, body, labels: deriveLabels(candidates, advisories) };
+  return {
+    branch,
+    base,
+    title,
+    body,
+    labels: deriveLabels(candidates, advisories, fixerApplied),
+  };
 }
 
 /**
