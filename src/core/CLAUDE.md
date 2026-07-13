@@ -6,7 +6,7 @@ Each module's own rationale lives in its file header — read that first. This f
 
 ## Pipeline
 
-`config` (parse the knobs) → `preflight` (starting-point gates; pins `pm` — detect + per-PM command table + `updatePlan`) → `collect` (outdated) → `ignore` → `release-age` (cooldown clamp) → `grouping` (stable keys) → `open-pr-snapshot` (validated conflict/UNKNOWN observation and optional closed-world filtering) → `advisories` (ordering) → `bump` (execute the `UpdatePlan`) → `verify` → `scope` (`checkBumpScope` pre-commit, `checkFixScope` post-fixer) → `git` (two-commit split, ref/worktree snapshots) → `test-changes` + `license` (display) → `pr` (payload/sanitize/narrative/labels) → `github` (push, `gh pr create`, labels).
+`config` (parse the knobs) → `preflight` (starting-point gates; pins `pm` — detect + per-PM command table + `updatePlan`) → `collect` (outdated) → `ignore` → `release-age` (cooldown clamp) → `grouping` (stable keys) → `open-pr-snapshot` (validated conflict/UNKNOWN observation and optional closed-world filtering) → `advisories` (ordering) → `bump` (execute the `UpdatePlan`) → `verify` → `scope` (`checkBumpScope` pre-commit, `checkFixScope` post-fixer) → `git` (two-commit split, ref/worktree snapshots) → `test-changes` + `license` (display) → `pr` (payload/sanitize/narrative/labels) → `github` (push, PR create/refresh, labels, human-takeover notice).
 
 Three ordering constraints are not free to change:
 
@@ -37,6 +37,12 @@ failed lookup (`advisoriesOk: false` in the payload) blocks its removal — abse
 is then missing data, not evidence. Label read/create/add/remove failures stay
 fail-soft and must never cost an otherwise verified PR; consequently, labels must
 not be described as a security attestation or merge authorization.
+
+The fixed human-takeover comment is display metadata too. `github.ts` posts it
+only from the token-holding human-committer refusal, through the same scrubbed
+`gh` environment, and marker-deduplicates it with a bounded comment read. A
+read/post failure stays fail-soft and never changes the green `open-pr-blocked`;
+the refresh-only case where the PR already closed has no comment target.
 
 ## Display-only modules never gate
 

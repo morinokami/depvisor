@@ -32,12 +32,12 @@ Tool modules are not auto-discovered — `depvisor.ts` attaches them explicitly.
 | `snapshot-open-prs.ts`                    | open-PR list + bounded mergeability poll, before target install | `GH_TOKEN`                        |
 | `install-target.ts`                       | the `install_command: auto` step                                | none                              |
 | `workflows/update.ts` (`flue run update`) | update step (plan-only when `dry_run`)                          | LLM key normally; none in dry-run |
-| `open-pr.ts`                              | push + `gh pr create`, one call per emitted payload             | `GH_TOKEN`                        |
+| `open-pr.ts`                              | push + PR create/refresh + human-takeover notice per payload    | `GH_TOKEN`                        |
 | `report-status.ts`                        | annotations, step summary, action outputs                       | none                              |
 | `dev/scan.ts`                             | dev tool + CI `fixture-e2e` gate, **not** the action            | none                              |
 | `dev/assert-dry-run.ts`                   | CI assertion over emitted plan/status + target state            | none                              |
 
-`snapshot-open-prs.ts` and `open-pr.ts` are the only commands that need `GH_TOKEN`. The snapshot entrypoint runs before target lifecycle code and writes validated read-only metadata; it performs no target Git operation. `openPrWithGh` is per-payload self-contained (fresh clone, authorization checks, best-effort reconciliation of the fixed depvisor label vocabulary), so multi-PR is just calling it N times — **do not add cross-payload state to it**. One payload's failure never stops the rest.
+`snapshot-open-prs.ts` and `open-pr.ts` are the only commands that need `GH_TOKEN`. The snapshot entrypoint runs before target lifecycle code and writes validated read-only metadata; it performs no target Git operation. `openPrWithGh` is per-payload self-contained (fresh clone, authorization checks, best-effort reconciliation of the fixed depvisor label vocabulary, and the one-time fail-soft comment when a human owns the remote tip), so multi-PR is just calling it N times — **do not add cross-payload state to it**. One payload's failure never stops the rest.
 
 `report-status.ts` writes `$GITHUB_OUTPUT` on both the normal and the missing/corrupt-status-file path, **before** any `exit(1)`, which is what makes the composite action's outputs usable from `if: always()` consumer steps. A `dry-run-completed` status additionally requires a schema-valid `dry-run-plan.json`; report-status alone renders that plan into `$GITHUB_STEP_SUMMARY`.
 
