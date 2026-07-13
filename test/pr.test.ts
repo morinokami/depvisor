@@ -443,7 +443,7 @@ test("emitPrPayload names payloads by processing order and branch slug", () => {
   );
 });
 
-test("clearPrPreview removes stale payloads and the status file before a run", () => {
+test("clearPrPreview removes stale payloads, status, and dry-run plan before a run", () => {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-pr-"));
   const payload = buildPrPayload({
     branch: "depvisor/dev-knip",
@@ -454,11 +454,13 @@ test("clearPrPreview removes stale payloads and the status file before a run", (
   });
   emitPrPayload(dir, payload, 0);
   writeFileSync(join(dir, "status.json"), "{}");
+  writeFileSync(join(dir, "dry-run-plan.json"), "{}");
   assert.ok(existsSync(join(dir, PR_PAYLOADS_DIR)));
 
   clearPrPreview(dir);
   assert.ok(!existsSync(join(dir, PR_PAYLOADS_DIR)), "payloads dir must be gone");
   assert.ok(!existsSync(join(dir, "status.json")), "status file must be gone");
+  assert.ok(!existsSync(join(dir, "dry-run-plan.json")), "dry-run plan must be gone");
   // Safe to call when nothing exists.
   clearPrPreview(dir);
 });

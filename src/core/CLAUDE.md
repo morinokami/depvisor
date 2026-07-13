@@ -42,7 +42,7 @@ Duplicating one of these is the mistake; adding an obvious fifth helper to one i
 - `manifest.ts` — `DEPENDENCY_FIELDS` + `asPlainMap`, shared by `pm.ts`'s planner and `scope.ts`'s bump gate so the sections one classifies and the other allow-lists cannot drift apart.
 - `name-pattern.ts` — the exact-name / trailing-`*` prefix-glob grammar shared by the three list knobs (`ignore`, `minimum_release_age_exclude`, `groups`): parse, match, static overlap, and the post-collect expansion. Only this one glob form exists — do not add richer patterns per knob.
 - `text.ts` — `tail` (the one end-of-log budget) and `logSafeText`.
-- `status-file.ts` — `RUN_STATUS_FILE` alone, so `pr.ts` and `status.ts` avoid an import cycle.
+- `status-file.ts` / `dry-run-plan-file.ts` — output filenames alone, so cleanup can share them without importing the status/plan renderers.
 - `ref-guard.ts` — the per-group expected-ref state over `git.ts`'s snapshot/diff/restore leaves; policy stays in the workflow because target-script drift fails the group while post-digest drift is display-only.
 
 ## Untrusted text has exactly two exit boundaries
@@ -58,9 +58,9 @@ Registry data (licenses, release notes, packuments) and agent output are both un
 
 ## Config parsers share one shape
 
-`budget.ts`, `release-age.ts`, `ignore.ts`, `suggest-features.ts`, `language.ts`: an empty string means "not set" (falsy checks, never `??`), matching is exact-string — except the three list knobs, which also accept `name-pattern.ts`'s trailing-`*` prefix globs — and an unrecognized value is a **fail-closed run-level `bad-*` status**, never a silent default. Follow this shape for a new knob. Validate even when the feature is disabled, so a typo fails now rather than on re-enable.
+`dry-run.ts`, `budget.ts`, `release-age.ts`, `ignore.ts`, `suggest-features.ts`, `language.ts`: an empty string means "not set" (falsy checks, never `??`), matching is exact-string — except the three list knobs, which also accept `name-pattern.ts`'s trailing-`*` prefix globs — and an unrecognized value is a **fail-closed run-level `bad-*` status**, never a silent default. Follow this shape for a new knob. Validate even when the feature is disabled, so a typo fails now rather than on re-enable.
 
-`config.ts` sequences all of them into one `parseRunConfig(env)` and owns the rejection summaries; a new knob is a parser plus a field there. It runs **before** `preflight.ts`, so a mistyped knob is reported without touching the target repository (and its `bad-*` status carries no base branch). `DEPVISOR_LLM_MODEL` is deliberately not a `RunConfig` field — it belongs to the agent factory.
+`config.ts` sequences all of them into one `parseRunConfig(env)` and owns the rejection summaries; a new knob is a parser plus a field there. `check-config.ts` calls it in the Action before target install, and the workflow repeats it before `preflight.ts` for defense in depth/status ownership, so a mistyped knob is reported without touching the target repository (and its `bad-*` status carries no base branch). `DEPVISOR_LLM_MODEL` is deliberately not a `RunConfig` field — it belongs to the agent factory.
 
 ## pnpm is the awkward package manager
 

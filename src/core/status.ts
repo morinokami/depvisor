@@ -85,7 +85,8 @@ export interface GroupResult {
  * A run's aggregate status: run-level fields plus one entry per group the run
  * touched. A run can prepare several PRs (up to `open_pull_requests_limit` open depvisor PRs), so
  * the group array carries the per-PR detail while `status` describes the run as
- * a whole (`completed`, or a run-level stop like `no-updates`/`baseline-red`).
+ * a whole (`completed`/`dry-run-completed`, or a run-level stop like
+ * `no-updates`/`baseline-red`).
  */
 export interface RunStatus {
   status: string;
@@ -227,7 +228,7 @@ export function toActionOutputs(run: RunStatus | null): ActionOutputs {
 }
 
 // Benign outcomes that stay green. Covers both run-level (`completed`,
-// `no-updates`) and group-level statuses. `open-pr-blocked` is green because a
+// `dry-run-completed`, `no-updates`) and group-level statuses. `open-pr-blocked` is green because a
 // human having taken over the PR branch is expected (see open-pr.ts);
 // `held-back-by-limit` is green because the open_pull_requests_limit ceiling doing its job is
 // normal operation, not a failure. Everything else — including the
@@ -237,6 +238,7 @@ export function toActionOutputs(run: RunStatus | null): ActionOutputs {
 // red, per-group, the run continues) — fails the job.
 const OK_STATUSES = new Set([
   "completed",
+  "dry-run-completed",
   "no-updates",
   "pr-prepared",
   "pr-up-to-date",

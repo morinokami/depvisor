@@ -17,6 +17,7 @@ function rejection(env: ConfigEnv): { status: string; summary: string } | null {
 
 test("an empty env yields every documented default", () => {
   const config = defaults();
+  assert.equal(config.dryRun, false);
   assert.equal(config.openPullRequestsLimit, 5);
   assert.equal(config.minimumReleaseAge, 1);
   assert.equal(config.suggestFeatures, false);
@@ -48,6 +49,7 @@ test("empty strings mean 'not set', as the composite action forwards them", () =
 test("set knobs are carried through", () => {
   const parsed = parseRunConfig({
     DEPVISOR_BASE_BRANCH: "main",
+    DEPVISOR_DRY_RUN: "true",
     DEPVISOR_OPEN_PRS_FILE: "/tmp/open-prs.json",
     DEPVISOR_VERIFY_COMMANDS: "npm run ci",
     DEPVISOR_INSTALL_COMMAND: "npm ci",
@@ -61,6 +63,7 @@ test("set knobs are carried through", () => {
   });
   assert.ok(parsed.ok);
   const config = parsed.config;
+  assert.equal(config.dryRun, true);
   assert.equal(config.baseBranch, "main");
   assert.equal(config.openPrsFile, "/tmp/open-prs.json");
   assert.equal(config.verifyCommands, "npm run ci");
@@ -86,6 +89,7 @@ test("set knobs are carried through", () => {
 
 test("each knob fails closed with its own bad-* status and echoes the value", () => {
   const cases: [ConfigEnv, string, string][] = [
+    [{ DEPVISOR_DRY_RUN: "yes" }, "bad-dry-run", "'yes'"],
     [{ DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: " 0 " }, "bad-open-pull-requests-limit", "'0'"],
     [{ DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "many" }, "bad-open-pull-requests-limit", "'many'"],
     [{ DEPVISOR_MINIMUM_RELEASE_AGE: "-1" }, "bad-minimum-release-age", "'-1'"],

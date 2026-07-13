@@ -119,7 +119,10 @@ export function parseIgnore(raw: string): ParsedIgnore {
  * describeIgnore's attribution so the summary names the rule that actually
  * fired, not just any rule that could have.
  */
-function matchedRule(candidate: Candidate, rules: readonly IgnoreRule[]): IgnoreRule | null {
+export function matchedIgnoreRule(
+  candidate: Candidate,
+  rules: readonly IgnoreRule[],
+): IgnoreRule | null {
   const major = latestMajor(candidate.latest);
   for (const rule of rules) {
     if (!matchesPattern(candidate.name, rule)) continue;
@@ -144,7 +147,7 @@ export function applyIgnore(
   const kept: Candidate[] = [];
   const ignored: Candidate[] = [];
   for (const c of candidates) {
-    (matchedRule(c, rules) ? ignored : kept).push(c);
+    (matchedIgnoreRule(c, rules) ? ignored : kept).push(c);
   }
   return { kept, ignored };
 }
@@ -168,7 +171,7 @@ export function describeIgnore(
   if (ignored.length > 0) {
     const list = ignored
       .map((c) => {
-        const rule = matchedRule(c, rules);
+        const rule = matchedIgnoreRule(c, rules);
         const via = rule && "namePrefix" in rule ? ` (via ${rule.namePrefix}*)` : "";
         return `${c.name} ${c.current} -> ${c.latest}${via}`;
       })

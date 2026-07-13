@@ -65,6 +65,66 @@ finer points.
   one workspace but a plain version in another — depvisor cannot update it safely and
   stops that group with `bump-failed`; unify the declarations.)
 
+## Dry-run planning (`dry_run`)
+
+Set `dry_run: true` to check configuration and preview what depvisor currently
+sees without applying a dependency update, invoking either LLM role, creating a
+commit, pushing a branch, or opening/refreshing a PR. The run ends with the
+green `dry-run-completed` status (`prepared_count: 0`, no `pr_urls`) and writes a
+dedicated plan into the Actions step summary.
+
+The plan uses the production selection path through preflight, collect,
+`ignore`, cooldown, grouping, advisory prioritization, branch-collision
+detection, and the open-PR snapshot. It lists:
+
+- every detected candidate and every candidate removed by `ignore`;
+- cooldown clamps, exclusions, hold-backs, and unverifiable release ages;
+- group membership and security-prioritized order;
+- branch collisions;
+- `refresh` / `skip-up-to-date` for existing PRs, and provisional new-PR
+  decisions.
+
+`refresh` and `skip-up-to-date` are fixed by the current open-PR snapshot and
+its trailing versions marker. `open-new-provisional` and
+`held-back-provisional` are forecasts: dry-run assumes every earlier new group
+succeeds and consumes a slot. In a real run, a failed bump or verification does
+not consume its slot, so a later group shown as held back may be attempted.
+Registry/OSV responses, the installed tree, base tip, or open PRs can also drift
+between the preview and the next run.
+
+Expose it as a manual-dispatch checkbox while leaving scheduled runs live:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview depvisor's plan
+        type: boolean
+        default: false
+
+# ...
+- uses: morinokami/depvisor@v1
+  with:
+    dry_run: ${{ inputs.dry_run }}
+    llm_api_key: ${{ secrets.LLM_API_KEY }}
+    llm_model: openai/gpt-5.5
+```
+
+The LLM inputs may be empty when the dispatched action actually receives
+`dry_run: true`; normal runs still fail fast unless both are configured. The
+target install still runs because npm/pnpm's candidate collection reads the
+installed tree, and the GitHub token still performs the read-only open-PR
+snapshot. Preflight discovers the verification commands (so
+`no-verify-scripts` still fails), but dry-run does not execute baseline or
+post-update verification and therefore does not prove that an update can pass.
+
+All behavior inputs are parsed in an Action step before target installation,
+so `bad-dry-run`, `bad-groups`, and the other `bad-*` typos report immediately.
+The workflow repeats the same core parser for defense in depth.
+
 ## Verification commands (`verify_commands`)
 
 depvisor refuses to open a PR it cannot verify: when no verification gate can

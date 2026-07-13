@@ -103,6 +103,8 @@ made a choice in the conversation, treat it as binding.
    provide a GitHub App or PAT token via the `github_token` input; otherwise
    omit it.
 4. **Optional inputs** — keep the defaults unless the user asks:
+   `dry_run` (default false — a manual plan-only run needs no LLM credentials,
+   commit, push, or PR),
    `open_pull_requests_limit` (default: at most 5 open depvisor PRs; every PR updates
    exactly one package or one declared group), `minimum_release_age`
    (default: 1-day supply-chain cooldown — keep it enabled), `ignore`
@@ -136,7 +138,12 @@ name: depvisor
 on:
   schedule:
     - cron: "0 3 * * 1" # ← the user's chosen schedule
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview candidates, groups, and PR actions without changing anything
+        type: boolean
+        default: false
 
 permissions:
   contents: write # push the update branch
@@ -171,6 +178,7 @@ jobs:
 
       - uses: morinokami/depvisor@v1 # or pin a commit SHA for production (immutable; the recommended pin)
         with:
+          dry_run: ${{ inputs.dry_run }}
           llm_api_key: ${{ secrets.LLM_API_KEY }} # ← the Step 2 secret name
           llm_model: openai/gpt-5.5 # ← the user's chosen model
 ```
@@ -262,9 +270,24 @@ into the chat** — `gh secret set` prompts for the value directly:
 2. Re-check what you wrote: the checkout sets `persist-credentials: false`;
    the `permissions` block grants `contents: write` and
    `pull-requests: write`; the egress allowlist matches the chosen provider.
-3. Once the user confirms the secret and the repository setting, commit the
+3. After committing the workflow, run its plan mode first. It uses the same
+   candidate filtering, cooldown, grouping, advisory ordering, branch-collision,
+   and open-PR classification as production, but does not run baseline/update
+   verification, call an LLM, commit, push, or open a PR. New-PR dispositions
+   are provisional because they assume every earlier planned group succeeds:
+
+   ```sh
+   gh workflow run depvisor.yml -f dry_run=true && gh run watch
+   ```
+
+   A successful preview ends with `dry-run-completed`; `prepared_count` is 0.
+   It may still be red for a real deterministic finding such as
+   `release-age-unavailable` or `branch-collision`. Input typos fail before the
+   target install (`bad-dry-run`, `bad-groups`, and the other `bad-*` statuses).
+
+4. Once the user confirms the secret and the repository setting, trigger the
    workflow (on the default branch, or via the user's usual PR flow), then
-   trigger a first run and watch it:
+   watch the first real run:
 
    ```sh
    gh workflow run depvisor.yml && gh run watch

@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  dryRunPlanPath,
+  readDryRunPlan,
+  renderDryRunPlan,
+  type DryRunPlan,
+} from "./core/dry-run.ts";
 import {
   appendStepSummary,
   groupLogLine,
@@ -68,6 +75,20 @@ function main(): void {
     appendMissingSummary(message);
     process.exit(1);
   }
+  let dryRunPlan: DryRunPlan | null = null;
+  if (status.status === "dry-run-completed") {
+    const planFile = dryRunPlanPath(dirname(file));
+    dryRunPlan = readDryRunPlan(planFile);
+    if (!dryRunPlan) {
+      writeActionOutputs(toActionOutputs(null));
+      const message = existsSync(planFile)
+        ? "depvisor wrote an unreadable dry-run plan (corrupt or truncated); treating the run as failed."
+        : "depvisor reported dry-run-completed without emitting its plan; treating the run as failed.";
+      emitAnnotation("error", message);
+      appendMissingSummary(message);
+      process.exit(1);
+    }
+  }
   writeActionOutputs(toActionOutputs(status));
 
   // Run-level annotation reflects the overall job outcome (a completed run with
@@ -82,7 +103,10 @@ function main(): void {
   }
 
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
-  if (summaryFile) appendStepSummary(summaryFile, status);
+  if (summaryFile) {
+    appendStepSummary(summaryFile, status);
+    if (dryRunPlan) appendFileSync(summaryFile, `${renderDryRunPlan(dryRunPlan)}\n`);
+  }
 
   if (runFails) process.exit(1);
 }

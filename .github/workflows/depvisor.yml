@@ -4,7 +4,12 @@ on:
   # Keep the schedule disabled here; consumers enable it in their own workflow.
   # schedule:
   #   - cron: '0 3 * * 1'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview candidates, groups, and PR actions without changing anything
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -42,6 +47,7 @@ jobs:
       - uses: ./
         id: depvisor
         with:
+          dry_run: ${{ inputs.dry_run }}
           # A GitHub Environment would add consumer setup; the composite action
           # keeps this key in its structurally token-free step.
           llm_api_key: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] dedicated token-free step

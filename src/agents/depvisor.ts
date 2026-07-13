@@ -13,6 +13,13 @@ export const description =
 // Throw from the factory so importing this module stays side-effect-free.
 function requireModel(): string {
   const model = process.env.DEPVISOR_LLM_MODEL;
+  // Flue initializes the root harness before the workflow action runs. A dry
+  // run never opens a model session, but the harness still requires a valid
+  // model-shaped policy value. Keep the normal no-default invariant and use a
+  // fixed internal sentinel only for this zero-model-call path.
+  if (!model && process.env.DEPVISOR_DRY_RUN?.trim() === "true") {
+    return "openai/gpt-5.5";
+  }
   if (!model) {
     throw new Error(
       "DEPVISOR_LLM_MODEL is not set. Set it to a model specifier such as " +

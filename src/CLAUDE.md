@@ -25,17 +25,18 @@ Tool modules are not auto-discovered — `depvisor.ts` attaches them explicitly.
 
 ## Entrypoints
 
-| File                                      | Runs as                                               | Token it holds |
-| ----------------------------------------- | ----------------------------------------------------- | -------------- |
-| `check-credentials.ts`                    | first target-touching Action step, before the install | none           |
-| `install-target.ts`                       | the `install_command: auto` step                      | none           |
-| `workflows/update.ts` (`flue run update`) | the agent step                                        | LLM key only   |
-| `open-pr.ts`                              | push + `gh pr create`, one call per emitted payload   | `GH_TOKEN`     |
-| `report-status.ts`                        | annotations, step summary, action outputs             | none           |
-| `dev/scan.ts`                             | dev tool + CI `fixture-e2e` gate, **not** the action  | none           |
+| File                                      | Runs as                                               | Token it holds                    |
+| ----------------------------------------- | ----------------------------------------------------- | --------------------------------- |
+| `check-credentials.ts`                    | first target-touching Action step, before the install | none                              |
+| `check-config.ts`                         | config validation before the target install           | none                              |
+| `install-target.ts`                       | the `install_command: auto` step                      | none                              |
+| `workflows/update.ts` (`flue run update`) | update step (plan-only when `dry_run`)                | LLM key normally; none in dry-run |
+| `open-pr.ts`                              | push + `gh pr create`, one call per emitted payload   | `GH_TOKEN`                        |
+| `report-status.ts`                        | annotations, step summary, action outputs             | none                              |
+| `dev/scan.ts`                             | dev tool + CI `fixture-e2e` gate, **not** the action  | none                              |
 
 `open-pr.ts` is the only command that needs `GH_TOKEN`. `openPrWithGh` is per-payload self-contained (fresh clone, authorization checks, deterministic label application), so multi-PR is just calling it N times — **do not add cross-payload state to it**. One payload's failure never stops the rest.
 
-`report-status.ts` writes `$GITHUB_OUTPUT` on both the normal and the missing/corrupt-status-file path, **before** any `exit(1)`, which is what makes the composite action's outputs usable from `if: always()` consumer steps.
+`report-status.ts` writes `$GITHUB_OUTPUT` on both the normal and the missing/corrupt-status-file path, **before** any `exit(1)`, which is what makes the composite action's outputs usable from `if: always()` consumer steps. A `dry-run-completed` status additionally requires a schema-valid `dry-run-plan.json`; report-status alone renders that plan into `$GITHUB_STEP_SUMMARY`.
 
 `shared/target.ts` holds `REPO`, the target checkout (CI checkout, or the throwaway fixture locally). It is deliberately **not** the virtual agent sandbox cwd.

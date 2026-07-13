@@ -9,6 +9,11 @@ Both workflows below touch no target checkout beyond what the composite action a
 
 ## The composite action (`action.yml`)
 
+The Action parses all behavior inputs through `check-config.ts` after installing
+depvisor itself but before installing the target. Its canonical `dry_run` output
+drives both credential omission from the Flue step and structural skipping of
+the push/open-PR step; do not branch on the raw, whitespace-tolerant input.
+
 Two documented GitHub-runner quirks — **read the comments in `action.yml` before touching it**:
 
 1. A nested `uses:` does not evaluate `github.action_path`.

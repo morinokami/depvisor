@@ -12,9 +12,10 @@ import {
 import { classifyGroup, countOpenDepvisorPrs } from "../core/budget.ts";
 import { collectCandidates } from "../core/collect.ts";
 import { parseRunConfig } from "../core/config.ts";
+import { emitDryRunPlan, planDryRunGroups, type DryRunPlan } from "../core/dry-run.ts";
 import { isClean, tryCheckout } from "../core/git.ts";
 import { groupCandidates } from "../core/grouping.ts";
-import { applyIgnore, describeIgnore } from "../core/ignore.ts";
+import { applyIgnore, describeIgnore, matchedIgnoreRule } from "../core/ignore.ts";
 import { expandPatterns } from "../core/name-pattern.ts";
 import { preflight, resolveResetCommand } from "../core/preflight.ts";
 import {
@@ -24,7 +25,12 @@ import {
   extractVersionsMarker,
   versionsMarker,
 } from "../core/pr.ts";
-import { applyReleaseAge, describeReleaseAge, type Packument } from "../core/release-age.ts";
+import {
+  applyReleaseAge,
+  describeReleaseAge,
+  type Packument,
+  type ReleaseAgeResult,
+} from "../core/release-age.ts";
 import {
   emitRunStatus,
   groupLogLine,
@@ -116,7 +122,7 @@ export default defineWorkflow({
       });
     }
     const config = parsedConfig.config;
-    const { minimumReleaseAge, openPullRequestsLimit, suggestFeatures, language } = config;
+    const { dryRun, minimumReleaseAge, openPullRequestsLimit, suggestFeatures, language } = config;
 
     const pre = preflight(REPO, {
       baseBranch: config.baseBranch,
@@ -130,7 +136,8 @@ export default defineWorkflow({
     const resetCommand = resolveResetCommand(pm, REPO, config.installCommand);
     log.info(
       `preflight ok: pm=${pm.name}, base=${base}, open_pull_requests_limit=${openPullRequestsLimit}, ` +
-        `minimum_release_age=${minimumReleaseAge}, suggest_features=${suggestFeatures}, ` +
+        `minimum_release_age=${minimumReleaseAge}, dry_run=${dryRun}, ` +
+        `suggest_features=${suggestFeatures}, ` +
         `verify steps: ${describeVerifySteps(verifySteps)}`,
     );
 
@@ -152,6 +159,13 @@ export default defineWorkflow({
     let candidates = notIgnored;
     let releaseAgeNote = "";
     let releaseAgeUnavailable: typeof collected = [];
+    let releaseAgeResult: ReleaseAgeResult = {
+      kept: [...notIgnored],
+      clamped: [],
+      excluded: [],
+      heldBack: [],
+      unavailable: [],
+    };
     if (minimumReleaseAge > 0 && notIgnored.length > 0) {
       // The exclusion patterns expand here — post-collect, against this run's
       // candidate names only (a `@acme/*` glob can exempt only packages the
@@ -164,13 +178,14 @@ export default defineWorkflow({
           notIgnored.map((c) => c.name),
         ),
       });
+      releaseAgeResult = aged;
       candidates = aged.kept;
       releaseAgeUnavailable = aged.unavailable;
       releaseAgeNote = describeReleaseAge(aged, minimumReleaseAge);
       if (releaseAgeNote) log.info(releaseAgeNote);
     }
     let groups = groupCandidates(candidates, config.groupRules);
-    if (groups.length === 0 && releaseAgeUnavailable.length === 0) {
+    if (!dryRun && groups.length === 0 && releaseAgeUnavailable.length === 0) {
       const notes = [ignoreNote, releaseAgeNote].filter(Boolean).join(" ");
       return finish({
         status: "no-updates",
@@ -190,6 +205,7 @@ export default defineWorkflow({
     // than failing the run. The resolved-advisory map also feeds the PR body's
     // Security column below.
     let advisories: AdvisoryResult = { resolvedByPackage: new Map(), ok: true };
+    let advisoryNote = "";
     // Set on an OSV outage and appended to the completed run's summary below:
     // the run stays green (fail-soft), so the summary note is the only place a
     // user can notice the degradation without reading the raw step log.
@@ -198,7 +214,7 @@ export default defineWorkflow({
       advisories = await fetchAdvisories(candidates);
       if (advisories.ok) {
         groups = prioritizeGroups(groups, advisories.resolvedByPackage);
-        const advisoryNote = describeAdvisories(advisories.resolvedByPackage);
+        advisoryNote = describeAdvisories(advisories.resolvedByPackage);
         if (advisoryNote) log.info(advisoryNote);
       } else {
         osvUnavailableNote = ADVISORIES_UNAVAILABLE_NOTE;
@@ -221,6 +237,82 @@ export default defineWorkflow({
     log.info(
       `${candidates.length} candidates -> ${groups.length} groups; ${openDepvisorCount} open depvisor PR(s), ${newSlots} new-PR slot(s) (open_pull_requests_limit=${openPullRequestsLimit})`,
     );
+
+    if (dryRun) {
+      const plannedGroups = planDryRunGroups(groups, bodyByBranch, newSlots);
+      const dryRunGroups: GroupResult[] = releaseAgeUnavailable.map((c) => ({
+        status: "release-age-unavailable",
+        branch: null,
+        group: null,
+        summary:
+          `Could not verify the release age of ${c.name}@${c.latest} against the npm ` +
+          "registry, so this update would be dropped from a real run (fail-closed).",
+        packages: statusPackages([c]),
+        verification: [],
+        prUrl: null,
+      }));
+      for (const group of plannedGroups) {
+        if (group.disposition !== "branch-collision") continue;
+        dryRunGroups.push({
+          status: "branch-collision",
+          branch: group.branch,
+          group: group.key,
+          summary:
+            `Group '${group.key}' maps to branch '${group.branch}', which an earlier ` +
+            "group in this plan already uses. A real run would refuse to process it.",
+          packages: group.packages,
+          verification: [],
+          prUrl: null,
+        });
+      }
+
+      const plan: DryRunPlan = {
+        collected: statusPackages(collected),
+        ignored: ignored.map((candidate) => {
+          const rule = matchedIgnoreRule(candidate, config.ignoreRules);
+          const renderedRule = rule
+            ? "namePrefix" in rule
+              ? `${rule.namePrefix}*`
+              : rule.major === null
+                ? rule.name
+                : `${rule.name}@${rule.major}`
+            : "unknown";
+          return { package: statusPackages([candidate])[0]!, rule: renderedRule };
+        }),
+        cooldown: {
+          minimumReleaseAge,
+          clamped: releaseAgeResult.clamped,
+          excluded: statusPackages(releaseAgeResult.excluded),
+          heldBack: statusPackages(releaseAgeResult.heldBack),
+          unavailable: statusPackages(releaseAgeResult.unavailable),
+        },
+        groups: plannedGroups,
+        budget: {
+          openPullRequestsLimit,
+          openDepvisorPrCount: openDepvisorCount,
+          initialNewSlots: newSlots,
+        },
+        notes: {
+          ignore: ignoreNote,
+          releaseAge: releaseAgeNote,
+          advisories: advisoryNote || osvUnavailableNote,
+        },
+      };
+      const path = emitDryRunPlan(PR_OUT_DIR, plan);
+      log.info(`Dry-run plan emitted: ${path}`);
+      const count = (disposition: string) =>
+        plannedGroups.filter((g) => g.disposition === disposition).length;
+      return finish({
+        status: "dry-run-completed",
+        base,
+        summary:
+          `Planned ${plannedGroups.length} group(s): ${count("refresh")} refresh, ` +
+          `${count("skip-up-to-date")} skip-up-to-date, ` +
+          `${count("open-new-provisional")} open-new (provisional), ` +
+          `${count("held-back-provisional")} held-back (provisional).`,
+        groups: dryRunGroups,
+      });
+    }
 
     // The run starts as `in-progress` — a job-failing status — and only the
     // graceful finish below upgrades it to `completed`. If the process dies
