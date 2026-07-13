@@ -156,6 +156,7 @@ function options(repo: string): ProcessGroupOptions {
     suggestFeatures: false,
     language: "",
     disposition: "open-new",
+    refreshReason: null,
     packuments: new Map(),
     advisories: { ok: true, resolvedByPackage: new Map() },
     harness,
@@ -244,6 +245,20 @@ test("the fast path returns a sealed prepared payload and consumes a new-PR slot
   // open-pr step is allowed to reconcile `security` away on refresh.
   assert.equal(outcome.payload.advisoriesOk, true);
   assert.equal(execSync("git status --porcelain", { cwd: repo, encoding: "utf8" }).trim(), "");
+});
+
+test("a base-conflict refresh prefixes the deterministic reason without losing the digest", async () => {
+  const repo = tempRepo();
+  const opts = preparedOptions(repo);
+  opts.disposition = "refresh";
+  opts.refreshReason = "base-conflict";
+  const outcome = await processGroup(opts);
+
+  assert.equal(outcome.kind, "prepared");
+  if (outcome.kind !== "prepared") return;
+  assert.equal(outcome.consumedSlot, false);
+  assert.match(outcome.result.summary, /^Regenerated from the current base/);
+  assert.match(outcome.result.summary, /digest-only-summary/);
 });
 
 test("the digest seal restores tree-only drift and discards the display report", async () => {

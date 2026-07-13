@@ -38,6 +38,16 @@ on:
         description: Preview candidates, groups, and PR actions without changing anything
         type: boolean
         default: false
+  # Optional: uncomment to repair conflicted existing depvisor PRs after a
+  # dependency-state merge. This trigger never opens a new PR.
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "**/package.json"
+  #     - package-lock.json
+  #     - pnpm-lock.yaml
+  #     - "bun.lock*"
+  #     - pnpm-workspace.yaml
 
 permissions:
   contents: write # push the update branch
@@ -74,6 +84,7 @@ jobs:
       - uses: morinokami/depvisor@v1 # or pin a commit SHA for production; see Versioning below
         with:
           dry_run: ${{ inputs.dry_run }}
+          conflict_refresh_only: ${{ github.event_name == 'push' }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
           llm_model: openai/gpt-5.5 # or anthropic/claude-sonnet-5, ... (BYOK)
 ```
@@ -105,19 +116,20 @@ committed lockfile (npm/pnpm only) are all supported with caveats — see
 
 ### Inputs
 
-| Input                         | Purpose                                                                                                                                                                                                                                                                         |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `llm_api_key`                 | Provider API key — reaches **only** a non-dry-run agent step; required unless `dry_run: true`                                                                                                                                                                                   |
-| `llm_model`                   | Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`; required unless `dry_run: true`                                                                                                                                                         |
-| `dry_run`                     | `true` to preview deterministic candidate filtering, grouping, and PR dispositions without applying updates, calling an LLM, pushing, or opening PRs (default `false`)                                                                                                          |
-| `verify_commands`             | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                                                      |
-| `open_pull_requests_limit`    | Ceiling on the number of open depvisor PRs (default `5`, matching Dependabot's `open-pull-requests-limit`). A run opens new PRs up to this limit and always refreshes the ones it already opened; raising it multiplies LLM calls and CI time roughly linearly                  |
-| `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                                                  |
-| `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). Exact names or trailing-`*` prefix globs (`@acme/*`); full-line `#` comments allowed       |
-| `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; `prefix*` skips every matching package; full-line `#` comments are allowed                                                    |
-| `groups`                      | Newline-separated package groups updated together in one PR, each line `<group-name>: <package> <package> …` (members separated by spaces or commas). Exact names or trailing-`*` prefix globs, each package in at most one group; ungrouped packages keep getting their own PR |
-| `suggest_features`            | `true` to also surface newly added capabilities relevant to your code as a display-only PR-body section (default `false`). Opt-in because it costs extra tokens and widens the agent's engagement with untrusted release notes                                                  |
-| `language`                    | Restricted BCP-47-style language tag (e.g. `ja`, `pt-BR`) the agent writes the PR's narrative text in; empty (the default) means English. Only the LLM-written free text is localized — statuses, commit messages, branch names, PR titles, and section headings stay English   |
+| Input                         | Purpose                                                                                                                                                                                                                                                                                                   |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm_api_key`                 | Provider API key — reaches **only** a non-dry-run agent step; required unless `dry_run: true`                                                                                                                                                                                                             |
+| `llm_model`                   | Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`; required unless `dry_run: true`                                                                                                                                                                                   |
+| `dry_run`                     | `true` to preview deterministic candidate filtering, grouping, and PR dispositions without applying updates, calling an LLM, pushing, or opening PRs (default `false`)                                                                                                                                    |
+| `conflict_refresh_only`       | `true` to rebuild only explicitly conflicted existing depvisor PRs and suppress every new/non-conflicted group (default `false`). Use it for dependency-state `push` triggers so a merge repairs remaining PRs without replenishing the open-PR queue                                                     |
+| `verify_commands`             | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                                                                                |
+| `open_pull_requests_limit`    | Ceiling on the number of open depvisor PRs (default `5`, matching Dependabot's `open-pull-requests-limit`). A normal run opens new PRs up to this limit and refreshes existing ones whose targets drift or whose branch conflicts with base; raising it multiplies LLM calls and CI time roughly linearly |
+| `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                                                                            |
+| `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). Exact names or trailing-`*` prefix globs (`@acme/*`); full-line `#` comments allowed                                 |
+| `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; `prefix*` skips every matching package; full-line `#` comments are allowed                                                                              |
+| `groups`                      | Newline-separated package groups updated together in one PR, each line `<group-name>: <package> <package> …` (members separated by spaces or commas). Exact names or trailing-`*` prefix globs, each package in at most one group; ungrouped packages keep getting their own PR                           |
+| `suggest_features`            | `true` to also surface newly added capabilities relevant to your code as a display-only PR-body section (default `false`). Opt-in because it costs extra tokens and widens the agent's engagement with untrusted release notes                                                                            |
+| `language`                    | Restricted BCP-47-style language tag (e.g. `ja`, `pt-BR`) the agent writes the PR's narrative text in; empty (the default) means English. Only the LLM-written free text is localized — statuses, commit messages, branch names, PR titles, and section headings stay English                             |
 
 ```yaml
 # e.g. when your checks go by other names:
@@ -144,6 +156,13 @@ run gives a failed group's unused slot to a later group. Dry-run still installs
 the target (npm/pnpm collection reads the installed tree) and reads the open-PR
 snapshot, but it does not run the baseline/update checks or require
 `llm_api_key` / `llm_model`. See [Dry-run planning](./docs/configuration.md#dry-run-planning-dry_run).
+
+When several depvisor PRs share a lockfile, merging one can conflict the
+others. depvisor regenerates a conflicted branch from the current base and runs
+the complete deterministic bump/verification pipeline again; it never rebases
+an old fixer commit. The optional `push` recipe above sets
+`conflict_refresh_only`, so that event repairs only already-open conflicted PRs
+and cannot create a new PR. See [Conflict refresh](./docs/configuration.md#refreshing-conflicted-prs-conflict_refresh_only).
 
 Every input above is documented in depth — behavior, edge cases, and failure
 modes — in [docs/configuration.md](./docs/configuration.md). The remaining

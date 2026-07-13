@@ -4,6 +4,7 @@ import {
   classifyGroup,
   countOpenDepvisorPrs,
   parseOpenPullRequestsLimit,
+  selectedForConflictRefreshOnly,
 } from "../src/core/budget.ts";
 
 test("parseOpenPullRequestsLimit defaults empty to 5 and accepts positive integers", () => {
@@ -30,6 +31,46 @@ test("countOpenDepvisorPrs counts only depvisor-owned branches", () => {
 
 test("classifyGroup: an up-to-date open PR is skipped and never consumes a slot", () => {
   assert.equal(classifyGroup({ hasOpenPr: true, upToDate: true, newSlots: 0 }), "skip-up-to-date");
+});
+
+test("classifyGroup: a conflicted up-to-date PR refreshes regardless of the ceiling", () => {
+  assert.equal(
+    classifyGroup({ hasOpenPr: true, upToDate: true, conflicted: true, newSlots: 0 }),
+    "refresh",
+  );
+  assert.equal(
+    classifyGroup({ hasOpenPr: false, upToDate: true, conflicted: true, newSlots: 0 }),
+    "held-back",
+  );
+});
+
+test("conflict-refresh-only selects only explicitly conflicted existing PRs", () => {
+  assert.equal(
+    selectedForConflictRefreshOnly({
+      conflictRefreshOnly: true,
+      hasOpenPr: true,
+      conflicted: true,
+    }),
+    true,
+  );
+  for (const [hasOpenPr, conflicted] of [
+    [true, false],
+    [false, true],
+    [false, false],
+  ] as const) {
+    assert.equal(
+      selectedForConflictRefreshOnly({ conflictRefreshOnly: true, hasOpenPr, conflicted }),
+      false,
+    );
+  }
+  assert.equal(
+    selectedForConflictRefreshOnly({
+      conflictRefreshOnly: false,
+      hasOpenPr: false,
+      conflicted: false,
+    }),
+    true,
+  );
 });
 
 test("classifyGroup: a drifted open PR is refreshed regardless of remaining slots", () => {

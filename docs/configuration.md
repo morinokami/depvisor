@@ -84,8 +84,9 @@ detection, and the open-PR snapshot. It lists:
 - `refresh` / `skip-up-to-date` for existing PRs, and provisional new-PR
   decisions.
 
-`refresh` and `skip-up-to-date` are fixed by the current open-PR snapshot and
-its trailing versions marker. `open-new-provisional` and
+`refresh` and `skip-up-to-date` are fixed by the current open-PR snapshot, its
+trailing versions marker, and GitHub's mergeability result. A conflicted PR is
+`refresh` even when its target versions have not changed. `open-new-provisional` and
 `held-back-provisional` are forecasts: dry-run assumes every earlier new group
 succeeds and consumes a slot. In a real run, a failed bump or verification does
 not consume its slot, so a later group shown as held back may be attempted.
@@ -341,7 +342,8 @@ updates, and no depvisor PR currently open, a run opens five PRs — security
 fixes first — and reports the remaining three as `held-back-by-limit` (green);
 they open on later runs as you merge or close PRs. Open PRs from earlier runs
 count against the ceiling, and depvisor always refreshes the PRs it already
-opened when their targets drift (a refresh does not consume a slot).
+opened when their targets drift or GitHub reports a conflict with the current
+base (a refresh does not consume a slot).
 
 The one-package granularity is deliberate: unrelated updates never share a PR,
 so each one is reviewable — and mergeable or rejectable — on its own. The
@@ -356,6 +358,54 @@ between-groups reinstall happens even with `install_command: skip` (which only
 skips the install before the first group) and uses the package manager's
 lockfile-faithful install — so multi-group runs need a committed lockfile;
 without one, groups after the first are reported as `reinstall-unavailable`.
+
+## Refreshing conflicted PRs (`conflict_refresh_only`)
+
+When multiple dependency PRs touch a shared lockfile, merging one can leave the
+others conflicted with the base branch. depvisor detects GitHub's explicit
+`CONFLICTING` / `DIRTY` result and regenerates each affected branch from the
+current base. This is not a rebase: the normal deterministic bump, install,
+scope gates, verification, optional fixer, digest, human-commit guard, and
+lease-protected push all run again. A mergeability result that remains
+`UNKNOWN` after bounded polling fails soft; an up-to-date PR is skipped with a
+summary note and reconsidered next run.
+
+Set `conflict_refresh_only: true` only on dependency-state `push` runs. In this
+mode depvisor processes explicitly conflicted existing PRs only: target-drifted
+but non-conflicted PRs wait, groups with no open PR are suppressed before
+advisory lookup and per-group work, and no empty `open_pull_requests_limit` slot
+is replenished. The run therefore cannot increase the set of open PRs.
+
+```yaml
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch: {}
+  # Optional: repair conflicted depvisor PRs shortly after a dependency merge.
+  push:
+    branches: [main]
+    paths:
+      - "**/package.json"
+      - package-lock.json
+      - pnpm-lock.yaml
+      - "bun.lock*"
+      - pnpm-workspace.yaml
+
+# ...
+- uses: morinokami/depvisor@v1
+  with:
+    conflict_refresh_only: ${{ github.event_name == 'push' }}
+    llm_api_key: ${{ secrets.LLM_API_KEY }}
+    llm_model: openai/gpt-5.5
+```
+
+Use `groups` to keep related packages and their shared lockfile movement in one
+PR. Use `open_pull_requests_limit: 1` when avoiding parallel dependency PRs is
+more important than throughput. Conflict refresh is the recovery path for the
+conflicts that remain. Scheduled/manual runs control when new PRs are opened;
+the optional push trigger controls how quickly existing conflicts are repaired.
+Because every conflict refresh re-runs the full group pipeline, many parallel
+PRs can also multiply verification and LLM cost.
 
 ## Security prioritization
 

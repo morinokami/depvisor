@@ -6,7 +6,7 @@ Each module's own rationale lives in its file header — read that first. This f
 
 ## Pipeline
 
-`config` (parse the knobs) → `preflight` (starting-point gates; pins `pm` — detect + per-PM command table + `updatePlan`) → `collect` (outdated) → `ignore` → `release-age` (cooldown clamp) → `grouping` (stable keys) → `advisories` (ordering) → `bump` (execute the `UpdatePlan`) → `verify` → `scope` (`checkBumpScope` pre-commit, `checkFixScope` post-fixer) → `git` (two-commit split, ref/worktree snapshots) → `test-changes` + `license` (display) → `pr` (payload/sanitize/narrative/labels) → `github` (push, `gh pr create`, labels).
+`config` (parse the knobs) → `preflight` (starting-point gates; pins `pm` — detect + per-PM command table + `updatePlan`) → `collect` (outdated) → `ignore` → `release-age` (cooldown clamp) → `grouping` (stable keys) → `open-pr-snapshot` (validated conflict/UNKNOWN observation and optional closed-world filtering) → `advisories` (ordering) → `bump` (execute the `UpdatePlan`) → `verify` → `scope` (`checkBumpScope` pre-commit, `checkFixScope` post-fixer) → `git` (two-commit split, ref/worktree snapshots) → `test-changes` + `license` (display) → `pr` (payload/sanitize/narrative/labels) → `github` (push, `gh pr create`, labels).
 
 Three ordering constraints are not free to change:
 
@@ -23,6 +23,7 @@ Do not unify it. The question is always "is this module a defense, a gate, or a 
 | `release-age.ts`                                     | fail-closed — drop the candidate (`release-age-unavailable`, red) | a defense (cooldown), not display |
 | `scope.ts`, `bump.ts`, `verify.ts`, `credentials.ts` | fail-closed                                                       | gates                             |
 | `advisories.ts`                                      | fail-soft — neutral order, run stays green                        | an optimization (ordering only)   |
+| `open-pr-snapshot.ts`                                | fail-soft — no conflict inferred; ceiling may fail open locally   | an observation, not a safety gate |
 | `license.ts`                                         | fail-open — render nothing                                        | display only                      |
 | `changelog.ts`                                       | never throws — returns an "unavailable" note                      | display / prompt input            |
 
@@ -67,7 +68,7 @@ Registry data (licenses, release notes, packuments) and agent output are both un
 
 ## Config parsers share one shape
 
-`dry-run.ts`, `budget.ts`, `release-age.ts`, `ignore.ts`, `suggest-features.ts`, `language.ts`: an empty string means "not set" (falsy checks, never `??`), matching is exact-string — except the three list knobs, which also accept `name-pattern.ts`'s trailing-`*` prefix globs — and an unrecognized value is a **fail-closed run-level `bad-*` status**, never a silent default. Follow this shape for a new knob. Validate even when the feature is disabled, so a typo fails now rather than on re-enable.
+`dry-run.ts`, `conflict-refresh-only.ts`, `budget.ts`, `release-age.ts`, `ignore.ts`, `suggest-features.ts`, `language.ts`: an empty string means "not set" (falsy checks, never `??`), matching is exact-string — except the three list knobs, which also accept `name-pattern.ts`'s trailing-`*` prefix globs — and an unrecognized value is a **fail-closed run-level `bad-*` status**, never a silent default. Follow this shape for a new knob. Validate even when the feature is disabled, so a typo fails now rather than on re-enable.
 
 `config.ts` sequences all of them into one `parseRunConfig(env)` and owns the rejection summaries; a new knob is a parser plus a field there. `check-config.ts` calls it in the Action before target install, and the workflow repeats it before `preflight.ts` for defense in depth/status ownership, so a mistyped knob is reported without touching the target repository (and its `bad-*` status carries no base branch). `DEPVISOR_LLM_MODEL` is deliberately not a `RunConfig` field — it belongs to the agent factory.
 

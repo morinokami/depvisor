@@ -15,6 +15,7 @@ import {
   type DryRunPlan,
 } from "../src/core/dry-run.ts";
 import { versionsMarker } from "../src/core/pr.ts";
+import type { OpenPrMetadata } from "../src/core/open-pr-snapshot.ts";
 import { emitRunStatus } from "../src/core/status.ts";
 import type { Candidate, Group } from "../src/core/types.ts";
 
@@ -33,6 +34,15 @@ function group(key: string, name = key.split("/").at(-1) ?? key): Group {
   return { key, reason: "test", members: [candidate(name)] };
 }
 
+const metadata = (headRefName: string, body: string, conflicted = false): OpenPrMetadata => ({
+  number: 1,
+  headRefName,
+  body,
+  conflicted,
+  mergeabilityUnknown: false,
+  mergeabilityObserved: true,
+});
+
 test("parseDryRun follows the boolean input convention and fails closed", () => {
   for (const raw of ["", " ", "false", " false "]) assert.equal(parseDryRun(raw), false);
   for (const raw of ["true", " true "]) assert.equal(parseDryRun(raw), true);
@@ -49,8 +59,8 @@ test("dry-run planning fixes existing-PR outcomes and projects new slots optimis
     group("prod/babel-core", "babel-core"),
   ];
   const open = new Map([
-    ["depvisor/dev-a", `body\n${versionsMarker(groups[0]!.members)}`],
-    ["depvisor/dev-b", "body with no current trailing marker"],
+    ["depvisor/dev-a", metadata("depvisor/dev-a", `body\n${versionsMarker(groups[0]!.members)}`)],
+    ["depvisor/dev-b", metadata("depvisor/dev-b", "body with no current trailing marker")],
   ]);
   const planned = planDryRunGroups(groups, open, 1);
   assert.deepEqual(
@@ -71,6 +81,40 @@ test("dry-run planning fixes existing-PR outcomes and projects new slots optimis
   );
 });
 
+test("dry-run planning refreshes an unchanged conflicted PR with a base-conflict reason", () => {
+  const groups = [group("prod/a", "a")];
+  const branch = "depvisor/prod-a";
+  const open: OpenPrMetadata = {
+    number: 1,
+    headRefName: branch,
+    body: `body\n${versionsMarker(groups[0]!.members)}`,
+    conflicted: true,
+    mergeabilityUnknown: false,
+    mergeabilityObserved: true,
+  };
+  const planned = planDryRunGroups(groups, new Map([[branch, open]]), 0);
+  assert.equal(planned[0]?.disposition, "refresh");
+  assert.equal(planned[0]?.refreshReason, "base-conflict");
+});
+
+test("conflict-only dry-run never gives a new group a provisional disposition", () => {
+  const groups = [group("prod/b", "b"), group("prod/c", "c")];
+  const branch = "depvisor/prod-b";
+  const open: OpenPrMetadata = {
+    number: 2,
+    headRefName: branch,
+    body: "stale marker",
+    conflicted: true,
+    mergeabilityUnknown: false,
+    mergeabilityObserved: true,
+  };
+  const planned = planDryRunGroups(groups, new Map([[branch, open]]), 5, true);
+  assert.deepEqual(
+    planned.map((entry) => [entry.branch, entry.disposition, entry.refreshReason]),
+    [[branch, "refresh", "base-conflict"]],
+  );
+});
+
 function plan(): DryRunPlan {
   const pkg = {
     name: "@scope/pkg",
@@ -80,6 +124,8 @@ function plan(): DryRunPlan {
     updateType: "major" as const,
   };
   return {
+    mode: "normal",
+    suppressedGroupCount: 0,
     collected: [pkg],
     ignored: [],
     cooldown: {

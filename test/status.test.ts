@@ -76,6 +76,7 @@ test("status failure policy keeps benign outcomes green and fail-closed stops re
     "in-progress",
     "baseline-red",
     "reset-failed",
+    "bad-conflict-refresh-only",
     "bad-open-pull-requests-limit",
     "reinstall-unavailable",
     "branch-collision",
@@ -143,6 +144,12 @@ test("toActionOutputs fails closed on off-vocabulary statuses and unsafe URLs", 
   assert.equal(outputs.failed, "true", "failed derives from the raw status, not the gated one");
   assert.equal(outputs.pr_urls, "", "a URL outside the strict charset is dropped");
   assert.equal(outputs.prepared_count, "1");
+});
+
+test("bad-conflict-refresh-only survives the action-output vocabulary and stays red", () => {
+  const outputs = toActionOutputs(run({ status: "bad-conflict-refresh-only", groups: [] }));
+  assert.equal(outputs.status, "bad-conflict-refresh-only");
+  assert.equal(outputs.failed, "true");
 });
 
 test("toActionOutputs reports a missing status file (crash before reporting) as failed", () => {

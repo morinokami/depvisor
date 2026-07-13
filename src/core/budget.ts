@@ -28,17 +28,32 @@ export function countOpenDepvisorPrs(openBranches: Iterable<string>): number {
 /**
  * What to do with a group this run:
  *   - `skip-up-to-date`: an open PR already covers exactly these target versions.
- *   - `refresh`: an open PR exists but its versions drifted — re-run (no slot).
+ *   - `refresh`: an open PR's versions drifted or it conflicts with base — re-run (no slot).
  *   - `open-new`: no open PR and a slot is free — open a new PR (consumes a slot).
  *   - `held-back`: no open PR and the ceiling is reached — wait for a slot.
  */
 export type GroupDisposition = "skip-up-to-date" | "refresh" | "open-new" | "held-back";
+export type RefreshReason = "target-drift" | "base-conflict";
 
 export function classifyGroup(args: {
   hasOpenPr: boolean;
   upToDate: boolean;
+  conflicted?: boolean;
   newSlots: number;
 }): GroupDisposition {
-  if (args.hasOpenPr) return args.upToDate ? "skip-up-to-date" : "refresh";
+  if (args.hasOpenPr) return args.upToDate && !args.conflicted ? "skip-up-to-date" : "refresh";
   return args.newSlots > 0 ? "open-new" : "held-back";
+}
+
+/**
+ * Closed-world selection for dependency-state push runs. Non-conflicting open
+ * PRs (even drifted ones) and groups with no open PR are excluded before
+ * advisory lookup, budgeting, status accounting, or any per-group work.
+ */
+export function selectedForConflictRefreshOnly(args: {
+  conflictRefreshOnly: boolean;
+  hasOpenPr: boolean;
+  conflicted: boolean;
+}): boolean {
+  return !args.conflictRefreshOnly || (args.hasOpenPr && args.conflicted);
 }

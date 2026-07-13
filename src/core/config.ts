@@ -2,7 +2,7 @@
  * The run's configuration surface: every `DEPVISOR_*` knob the update workflow
  * reads, parsed and validated in one place.
  *
- * Each knob's own parser (`dry-run.ts`, `budget.ts`, `release-age.ts`,
+ * Each knob's own parser (`dry-run.ts`, `conflict-refresh-only.ts`, `budget.ts`, `release-age.ts`,
  * `ignore.ts`, `grouping.ts`, `suggest-features.ts`, `language.ts`) owns its
  * default and its grammar — see those headers.
  * This module only sequences them and turns the first rejection into the
@@ -26,6 +26,7 @@
  */
 
 import { parseOpenPullRequestsLimit } from "./budget.ts";
+import { parseConflictRefreshOnly } from "./conflict-refresh-only.ts";
 import { parseDryRun } from "./dry-run.ts";
 import { type GroupRule, parseGroups } from "./grouping.ts";
 import { type IgnoreRule, parseIgnore } from "./ignore.ts";
@@ -40,13 +41,16 @@ export type ConfigEnv = Record<string, string | undefined>;
 interface RunConfig {
   /** Plan selection and PR disposition without modifying the target or calling an LLM. */
   dryRun: boolean;
+  /** Rebuild only conflicted existing PRs; never open or plan a new PR. */
+  conflictRefreshOnly: boolean;
   /**
    * CI passes the default branch explicitly; local runs leave this unset and
    * fall back to the current branch after preflight rejects HEAD or depvisor/*.
    */
   baseBranch: string | undefined;
   /**
-   * Path to a JSON snapshot of open PRs (`{headRefName, body}[]`), written by a
+   * Path to a JSON snapshot of open PRs (`{number, headRefName, body,
+   * mergeable, mergeStateStatus}[]`), written by a
    * separate token-holding workflow step. Data flows in; credentials never do.
    */
   openPrsFile: string | undefined;
@@ -138,6 +142,18 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
       summary:
         "The dry_run input must be 'true' or 'false' (empty means false); " +
         `got '${dryRunRaw.trim()}'.`,
+    };
+  }
+
+  const conflictRefreshOnlyRaw = read(env, "DEPVISOR_CONFLICT_REFRESH_ONLY");
+  const conflictRefreshOnly = parseConflictRefreshOnly(conflictRefreshOnlyRaw);
+  if (conflictRefreshOnly === null) {
+    return {
+      ok: false,
+      status: "bad-conflict-refresh-only",
+      summary:
+        "The conflict_refresh_only input must be 'true' or 'false' (empty means false); " +
+        `got '${conflictRefreshOnlyRaw.trim()}'.`,
     };
   }
 
@@ -239,6 +255,7 @@ export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
     ok: true,
     config: {
       dryRun,
+      conflictRefreshOnly,
       baseBranch: env.DEPVISOR_BASE_BRANCH || undefined,
       openPrsFile: env.DEPVISOR_OPEN_PRS_FILE || undefined,
       verifyCommands: read(env, "DEPVISOR_VERIFY_COMMANDS"),

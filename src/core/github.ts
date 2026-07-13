@@ -158,6 +158,15 @@ function gh(
   return sh(env, repo, GH_BIN, args);
 }
 
+/** gh (by absolute path) for other token-holding entrypoints using the same scrubbed env. */
+export function runSecureGh(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  args: string[],
+): { code: number; out: string; err: string } {
+  return gh(env, cwd, args);
+}
+
 /** Clean checkout to push from: fresh clone, scrubbed env, verified branch sha. */
 interface PreparedPush {
   clone: string;
