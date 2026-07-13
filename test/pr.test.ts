@@ -45,6 +45,7 @@ test("parsePrPayload accepts a well-shaped payload and drops extra keys", () => 
     title: "deps: update",
     body: "body",
     labels: ["depvisor"],
+    advisoriesOk: true,
     extra: "dropped",
   });
   assert.deepEqual(parsed, {
@@ -53,10 +54,22 @@ test("parsePrPayload accepts a well-shaped payload and drops extra keys", () => 
     title: "deps: update",
     body: "body",
     labels: ["depvisor"],
+    advisoriesOk: true,
   });
   // Label ENTRIES are deliberately not type-checked here; sanitizeLabels
   // re-validates each against the allowlist at the exit boundary.
   assert.ok(parsePrPayload({ branch: "b", base: "m", title: "t", body: "", labels: [42] }));
+});
+
+test("parsePrPayload reads anything but a true advisoriesOk as false (fail-safe)", () => {
+  // advisoriesOk only gates label reconciliation (fail-soft), so a missing or
+  // mistyped value must not cost the PR; it degrades to the preserving side.
+  const valid = { branch: "b", base: "m", title: "t", body: "", labels: [] };
+  for (const bad of [undefined, "true", 1, null]) {
+    const parsed = parsePrPayload({ ...valid, advisoriesOk: bad });
+    assert.ok(parsed, `advisoriesOk ${JSON.stringify(bad)} must not reject the payload`);
+    assert.equal(parsed.advisoriesOk, false);
+  }
 });
 
 test("parsePrPayload rejects JSON-parseable non-payloads (untrusted read-back)", () => {
@@ -844,6 +857,18 @@ test("buildPrPayload carries fixer:applied only from the trusted commit fact", (
   });
   assert.ok(p.labels.includes("fixer:applied"));
   assert.ok(!p.labels.includes("fixer:none"));
+});
+
+test("buildPrPayload records advisory availability, defaulting to the fail-safe false", () => {
+  const args = {
+    branch: "depvisor/major-lodash",
+    base: "main",
+    candidates: [cand("lodash", "4.17.15", "4.17.21")],
+    narrative: narrative("Bump lodash."),
+    verification: [{ name: "test", ok: true, code: 0 }],
+  };
+  assert.equal(buildPrPayload(args).advisoriesOk, false);
+  assert.equal(buildPrPayload({ ...args, advisoriesOk: true }).advisoriesOk, true);
 });
 
 test("sanitizeLabels keeps only the fixed vocabulary, deduping and stabilizing", () => {

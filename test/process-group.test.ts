@@ -240,6 +240,9 @@ test("the fast path returns a sealed prepared payload and consumes a new-PR slot
   assert.match(outcome.payload.body, /digest-only-summary/);
   assert.ok(outcome.payload.labels.includes("fixer:none"));
   assert.ok(!outcome.payload.labels.includes("fixer:applied"));
+  // The trusted advisory lookup in these options succeeded (ok: true), so the
+  // open-pr step is allowed to reconcile `security` away on refresh.
+  assert.equal(outcome.payload.advisoriesOk, true);
   assert.equal(execSync("git status --porcelain", { cwd: repo, encoding: "utf8" }).trim(), "");
 });
 
@@ -276,6 +279,8 @@ test("a validated fixer commit produces fixer:applied provenance", async () => {
   if (outcome.kind !== "prepared") return;
   assert.ok(outcome.payload.labels.includes("fixer:applied"));
   assert.ok(!outcome.payload.labels.includes("fixer:none"));
+  // With an accepted fix commit, the fixer's account of it belongs in the body.
+  assert.match(outcome.payload.body, /updated the compatibility shim/);
   assert.equal(
     execSync("git rev-list --count main..HEAD", { cwd: repo, encoding: "utf8" }).trim(),
     "2",
@@ -308,6 +313,9 @@ test("an invoked fixer with no accepted commit remains fixer:none", async () => 
   if (outcome.kind !== "prepared") return;
   assert.ok(outcome.payload.labels.includes("fixer:none"));
   assert.ok(!outcome.payload.labels.includes("fixer:applied"));
+  // No accepted commit → the agent's claimed fixes must not reach the body of a
+  // PR that carries no fix commit.
+  assert.doesNotMatch(outcome.payload.body, /updated the compatibility shim/);
   assert.equal(
     execSync("git rev-list --count main..HEAD", { cwd: repo, encoding: "utf8" }).trim(),
     "1",

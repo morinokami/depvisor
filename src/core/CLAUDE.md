@@ -31,9 +31,11 @@ Do not unify it. The question is always "is this module a defense, a gate, or a 
 PR labels are review metadata, not gates. `pr.ts` derives their fixed vocabulary
 from deterministic inputs (including the trusted fixer-commit result), and
 `github.ts` best-effort reconciles only that vocabulary while preserving labels
-outside it. Label read/create/add/remove failures stay fail-soft and must never
-cost an otherwise verified PR; consequently, labels must not be described as a
-security attestation or merge authorization.
+outside it. `security` rides the one fail-open input (the advisory lookup), so a
+failed lookup (`advisoriesOk: false` in the payload) blocks its removal — absence
+is then missing data, not evidence. Label read/create/add/remove failures stay
+fail-soft and must never cost an otherwise verified PR; consequently, labels must
+not be described as a security attestation or merge authorization.
 
 ## Display-only modules never gate
 

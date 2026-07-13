@@ -124,8 +124,12 @@ label you already have) and applies it with that scope alone. It is also
 label that somehow cannot be applied is logged and skipped rather than failing
 the run. On refresh, depvisor also removes obsolete labels from its own fixed
 vocabulary (for example, an old `semver:patch` or `fixer:none`) while preserving
-all labels outside that vocabulary. Reconciliation is best-effort for the same reason.
-Label names are a fixed set today; a configurable/opt-out input may come later.
+all labels outside that vocabulary. Reconciliation is best-effort for the same
+reason. One asymmetry: `security` is removed only when that run's advisory
+lookup succeeded — the lookup is fail-open, so during an advisory-endpoint
+outage the label's absence is missing data, and an existing `security` label
+stays rather than being stripped. Label names are a fixed set today; a
+configurable/opt-out input may come later.
 
 These labels describe **how depvisor prepared the PR**. They do not establish
 the integrity or provenance of the package release: passing your configured

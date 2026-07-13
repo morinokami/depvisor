@@ -528,7 +528,10 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     verification = stripVerifyTails(postFix);
     fixerReport = {
       summary: fixerResult.summary,
-      fixesApplied: fixerResult.fixes_applied,
+      // Without an accepted commit there is no fix to describe: the agent's
+      // claimed fixes must not appear in a PR labeled fixer:none, which carries
+      // no fix commit. Residual risks stay — they warn, not claim.
+      fixesApplied: fixerApplied ? fixerResult.fixes_applied : [],
       residualRisks: fixerResult.residual_risks,
     };
   }
@@ -639,6 +642,7 @@ export async function processGroup(opts: ProcessGroupOptions): Promise<GroupOutc
     licenseChanges,
     newFeatures,
     fixerApplied,
+    advisoriesOk: advisories.ok,
     narrative,
     verification,
   });

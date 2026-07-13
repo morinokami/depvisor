@@ -23,6 +23,14 @@ export interface PrPayload {
    * open-pr reads it back.
    */
   labels: string[];
+  /**
+   * Whether this run's advisory lookup succeeded. Advisory data is the one
+   * fail-open input behind a label (`security`): when the lookup failed, the
+   * label's absence from `labels` is missing data, not evidence, so the open-pr
+   * step must not remove an existing `security` label from the PR on refresh.
+   * Everything else derived into `labels` is deterministic and safe to remove.
+   */
+  advisoriesOk: boolean;
 }
 
 /**
@@ -53,7 +61,18 @@ export function parsePrPayload(raw: unknown): PrPayload | null {
   if (typeof p.title !== "string") return null;
   if (typeof p.body !== "string") return null;
   if (!Array.isArray(p.labels)) return null;
-  return { branch: p.branch, base: p.base, title: p.title, body: p.body, labels: p.labels };
+  // advisoriesOk only gates label reconciliation, which is fail-soft by policy:
+  // a missing/mistyped value must not cost the PR, so anything but `true` reads
+  // as false — which preserves an existing `security` label instead of removing
+  // it. That makes tampering with this field fail-safe as well.
+  return {
+    branch: p.branch,
+    base: p.base,
+    title: p.title,
+    body: p.body,
+    labels: p.labels,
+    advisoriesOk: p.advisoriesOk === true,
+  };
 }
 
 export function slugify(s: string): string {
@@ -570,6 +589,12 @@ export function buildPrPayload(args: {
   newFeatures?: readonly RelevantNewFeature[];
   /** Whether trusted workflow code created the validated fixer commit. */
   fixerApplied?: boolean;
+  /**
+   * Whether the advisory lookup succeeded (`AdvisoryLookup.ok`). Defaults to
+   * false — the fail-safe direction, since false only stops the open-pr step
+   * from removing an existing `security` label.
+   */
+  advisoriesOk?: boolean;
   narrative: UpdateNarrative;
   verification: VerifyResult[];
 }): PrPayload {
@@ -583,6 +608,7 @@ export function buildPrPayload(args: {
     licenseChanges,
     newFeatures,
     fixerApplied,
+    advisoriesOk,
     narrative,
     verification,
   } = args;
@@ -651,6 +677,7 @@ export function buildPrPayload(args: {
     title,
     body,
     labels: deriveLabels(candidates, advisories, fixerApplied),
+    advisoriesOk: advisoriesOk === true,
   };
 }
 
