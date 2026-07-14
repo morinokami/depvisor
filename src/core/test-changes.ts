@@ -1,5 +1,3 @@
-import type { NumstatEntry } from "./git.ts";
-
 /**
  * Deterministic, LLM-free classifier for "does this changed path look like a
  * test?" — the visibility counterpart to `core/scope.ts`.
@@ -8,7 +6,7 @@ import type { NumstatEntry } from "./git.ts";
  * legitimate part of a dependency update, so a poisoned agent that weakens an
  * assertion to make verification pass takes exactly the same path a good update
  * does. That hole cannot be gated shut without stopping honest PRs, so instead
- * we surface it: classify the committed diff and, when tests changed, flag it in
+ * we surface it: classify the candidate paths and, when tests changed, flag it in
  * the PR body and step summary so review attention lands where the gate cannot
  * vouch.
  *
@@ -28,21 +26,11 @@ const TEST_PATH_RE: RegExp[] = [
   /(^|\/)cypress\//,
   /(^|\/)playwright\//,
   /\.(test|spec)\.[cm]?[jt]sx?$/, // foo.test.ts, foo.spec.jsx, foo.test.mjs
-  /(^|\/)[^/]+_test\.[cm]?[jt]sx?$/, // Go/Python-style foo_test.ts
+  /(^|\/)[^/]+_test\.(?:[cm]?[jt]sx?|go|py)$/, // foo_test.ts, foo_test.go, foo_test.py
+  /(^|\/)test_[^/]+\.py$/, // Python test_cache.py
 ];
 
 /** Whether a repo-relative path matches a common test-file convention. */
 export function isTestPath(path: string): boolean {
   return TEST_PATH_RE.some((re) => re.test(path));
-}
-
-/** The subset of a diff's entries whose paths look like tests. */
-export function classifyTestChanges(entries: readonly NumstatEntry[]): NumstatEntry[] {
-  return entries.filter((e) => isTestPath(e.path));
-}
-
-/** Render a numstat entry's line delta; binary files report null counts. */
-export function formatNumstatLines(entry: NumstatEntry): string {
-  if (entry.added === null || entry.removed === null) return "binary";
-  return `+${entry.added} / -${entry.removed}`;
 }

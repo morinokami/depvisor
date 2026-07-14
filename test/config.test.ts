@@ -1,147 +1,44 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { parseRunConfig, type ConfigEnv } from "../src/core/config.ts";
+import test from "node:test";
+import { parseConfig } from "../src/core/config.ts";
 
-/** parseRunConfig on an env with no DEPVISOR_* knobs set at all. */
-function defaults() {
-  const parsed = parseRunConfig({});
-  assert.ok(parsed.ok);
-  return parsed.config;
-}
+const valid = `
+version: 2
+repair:
+  enabled: true
+verification:
+  commands: [pnpm run check]
+report:
+  enabled: true
+  update_types: [minor, major, unknown]
+`;
 
-/** The status of the first rejected knob, or null when the env parses. */
-function rejection(env: ConfigEnv): { status: string; summary: string } | null {
-  const parsed = parseRunConfig(env);
-  return parsed.ok ? null : { status: parsed.status, summary: parsed.summary };
-}
-
-test("an empty env yields every documented default", () => {
-  const config = defaults();
-  assert.equal(config.dryRun, false);
-  assert.equal(config.conflictRefreshOnly, false);
-  assert.equal(config.openPullRequestsLimit, 5);
-  assert.equal(config.minimumReleaseAge, 1);
-  assert.equal(config.suggestFeatures, false);
-  assert.equal(config.language, "");
-  assert.equal(config.baseBranch, undefined);
-  assert.equal(config.openPrsFile, undefined);
-  assert.equal(config.verifyCommands, "");
-  assert.equal(config.installCommand, "");
-  assert.deepEqual([...config.releaseAgeExclude], []);
-  assert.deepEqual(config.ignoreRules, []);
-  assert.deepEqual(config.groupRules, []);
+test("v2 config is explicit, strict, and content-addressed", () => {
+  const parsed = parseConfig(valid);
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  assert.equal(parsed.config.version, 2);
+  assert.deepEqual(parsed.config.verification.prepare, []);
+  assert.match(parsed.digest, /^[0-9a-f]{64}$/);
 });
 
-test("empty strings mean 'not set', as the composite action forwards them", () => {
-  const parsed = parseRunConfig({
-    DEPVISOR_BASE_BRANCH: "",
-    DEPVISOR_CONFLICT_REFRESH_ONLY: "",
-    DEPVISOR_OPEN_PRS_FILE: "",
-    DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "",
-    DEPVISOR_MINIMUM_RELEASE_AGE: "",
-    DEPVISOR_SUGGEST_FEATURES: "",
-    DEPVISOR_IGNORE: "",
-    DEPVISOR_GROUPS: "",
-    DEPVISOR_LANGUAGE: "",
-  });
-  assert.ok(parsed.ok);
-  assert.deepEqual(parsed.config, defaults());
+test("missing, old, and unknown-key configs fail closed", () => {
+  assert.equal(parseConfig(null).ok, false);
+  assert.equal(parseConfig(valid.replace("version: 2", "version: 1")).ok, false);
+  assert.equal(parseConfig(`${valid}\nignore: [react]\n`).ok, false);
+  assert.equal(
+    parseConfig(valid.replace("enabled: true", "enabled: true\n  dry_run: true")).ok,
+    false,
+  );
+  assert.equal(parseConfig(valid.replace("pnpm run check", "'   '")).ok, false);
+  assert.equal(parseConfig(`${valid}\n# ${"x".repeat(70_000)}`).ok, false);
 });
 
-test("set knobs are carried through", () => {
-  const parsed = parseRunConfig({
-    DEPVISOR_BASE_BRANCH: "main",
-    DEPVISOR_DRY_RUN: "true",
-    DEPVISOR_CONFLICT_REFRESH_ONLY: "true",
-    DEPVISOR_OPEN_PRS_FILE: "/tmp/open-prs.json",
-    DEPVISOR_VERIFY_COMMANDS: "npm run ci",
-    DEPVISOR_INSTALL_COMMAND: "npm ci",
-    DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "3",
-    DEPVISOR_MINIMUM_RELEASE_AGE: "0",
-    DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "@acme/private\n@acme/tools-*\n# a comment",
-    DEPVISOR_IGNORE: "lodash\nreact@19\n@types/*",
-    DEPVISOR_GROUPS: "react: react react-dom\nacme: @acme/*",
-    DEPVISOR_SUGGEST_FEATURES: "true",
-    DEPVISOR_LANGUAGE: "pt-BR",
-  });
-  assert.ok(parsed.ok);
-  const config = parsed.config;
-  assert.equal(config.dryRun, true);
-  assert.equal(config.conflictRefreshOnly, true);
-  assert.equal(config.baseBranch, "main");
-  assert.equal(config.openPrsFile, "/tmp/open-prs.json");
-  assert.equal(config.verifyCommands, "npm run ci");
-  assert.equal(config.installCommand, "npm ci");
-  assert.equal(config.openPullRequestsLimit, 3);
-  assert.equal(config.minimumReleaseAge, 0);
-  assert.equal(config.suggestFeatures, true);
-  assert.equal(config.language, "pt-BR");
-  assert.deepEqual(config.releaseAgeExclude, [
-    { name: "@acme/private" },
-    { namePrefix: "@acme/tools-" },
-  ]);
-  assert.deepEqual(config.ignoreRules, [
-    { name: "lodash", major: null },
-    { name: "react", major: 19 },
-    { namePrefix: "@types/" },
-  ]);
-  assert.deepEqual(config.groupRules, [
-    { name: "react", packages: [{ name: "react" }, { name: "react-dom" }] },
-    { name: "acme", packages: [{ namePrefix: "@acme/" }] },
-  ]);
-});
-
-test("each knob fails closed with its own bad-* status and echoes the value", () => {
-  const cases: [ConfigEnv, string, string][] = [
-    [{ DEPVISOR_DRY_RUN: "yes" }, "bad-dry-run", "'yes'"],
-    [{ DEPVISOR_CONFLICT_REFRESH_ONLY: "yes" }, "bad-conflict-refresh-only", "'yes'"],
-    [{ DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: " 0 " }, "bad-open-pull-requests-limit", "'0'"],
-    [{ DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "many" }, "bad-open-pull-requests-limit", "'many'"],
-    [{ DEPVISOR_MINIMUM_RELEASE_AGE: "-1" }, "bad-minimum-release-age", "'-1'"],
-    [{ DEPVISOR_SUGGEST_FEATURES: "yes" }, "bad-suggest-features", "'yes'"],
-    [{ DEPVISOR_LANGUAGE: "japanese please" }, "bad-language", "'japanese please'"],
-  ];
-  for (const [env, status, echoed] of cases) {
-    const rejected = rejection(env);
-    assert.equal(rejected?.status, status);
-    assert.ok(rejected.summary.includes(echoed), `${status} summary should echo ${echoed}`);
-  }
-});
-
-test("list knobs name every unrecognized entry, pluralized", () => {
-  const one = rejection({ DEPVISOR_IGNORE: "not a package name" });
-  assert.equal(one?.status, "bad-ignore");
-  assert.ok(one.summary.includes("1 unrecognized entry:"));
-  assert.ok(one.summary.includes("not a package name"));
-
-  const two = rejection({ DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "bad name\nlodash@4" });
-  assert.equal(two?.status, "bad-minimum-release-age-exclude");
-  assert.ok(two.summary.includes("2 unrecognized entries:"));
-  assert.ok(two.summary.includes("bad name, lodash@4"));
-
-  const groups = rejection({ DEPVISOR_GROUPS: "react react-dom\nreact: react\nweb: react" });
-  assert.equal(groups?.status, "bad-groups");
-  assert.ok(groups.summary.includes("2 invalid entries:"));
-  assert.ok(groups.summary.includes("react react-dom")); // the line missing its ':'
-  assert.ok(groups.summary.includes("'react'")); // the package claimed by two groups
-});
-
-test("the cooldown exclusion is validated even when the cooldown is disabled", () => {
-  // A typo must fail now, not the day minimum_release_age is turned back on.
-  const rejected = rejection({
-    DEPVISOR_MINIMUM_RELEASE_AGE: "0",
-    DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "not a package name",
-  });
-  assert.equal(rejected?.status, "bad-minimum-release-age-exclude");
-});
-
-test("the first rejection wins, in the order the knobs are parsed", () => {
-  const rejected = rejection({
-    DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "nope",
-    DEPVISOR_MINIMUM_RELEASE_AGE: "nope",
-    DEPVISOR_IGNORE: "nope nope",
-    DEPVISOR_SUGGEST_FEATURES: "nope",
-    DEPVISOR_LANGUAGE: "nope nope",
-  });
-  assert.equal(rejected?.status, "bad-open-pull-requests-limit");
+test("review-only config may omit verification commands", () => {
+  const parsed = parseConfig(`
+version: 2
+repair: {enabled: false}
+report: {enabled: true, update_types: [unknown]}
+`);
+  assert.equal(parsed.ok, true);
 });

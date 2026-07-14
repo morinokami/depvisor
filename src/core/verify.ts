@@ -1,106 +1,202 @@
+/** Deterministic verification against commands read from the trusted base SHA. */
+
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PmToolchain } from "./pm.ts";
+import { changedPaths, resetHardClean, snapshotWorktree, worktreeDrift } from "./git.ts";
+import { RefGuard } from "./ref-guard.ts";
 import { tail } from "./text.ts";
+import type { VerificationStepResult } from "./types.ts";
 
-export interface VerifyStep {
-  name: string;
-  /** Shell command, run via the system shell in the target repo. */
-  run: string;
+export type VerificationPhase = "baseline" | "head" | "candidate";
+
+export interface InternalVerificationResult extends VerificationStepResult {
+  tail: string;
 }
 
-export interface VerifyResult {
-  name: string;
-  ok: boolean;
-  code: number | null;
-  /**
-   * Bounded tail of the step's combined stdout+stderr, for INTERNAL use only:
-   * the failure diagnostics the fixer prompt shows. Never written to the status
-   * file or the PR payload — `stripVerifyTails` drops it at the record/payload
-   * boundary so those shapes stay `{ name, ok, code }`.
-   */
-  tail?: string;
+export interface VerificationRun {
+  state: "green" | "stable-red" | "unstable" | "unexpected-commits" | "dirty";
+  results: InternalVerificationResult[];
+  detail: string;
 }
 
-// Timeout keeps a hung test suite from eating the whole CI job.
 const STEP_TIMEOUT_MS = 10 * 60 * 1000;
-// Generous capture ceiling: spawnSync's 1 MB default would kill a chatty but
-// passing step, so raise it far past any realistic verify output. Output beyond
-// this is truncated, not fatal.
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
-/**
- * Parse explicitly configured verification commands: one shell command per
- * line, run in order. The value must come from the workflow
- * (`verify_commands` / DEPVISOR_VERIFY_COMMANDS), never from the agent-writable
- * working tree.
- */
-export function parseVerifyCommands(raw: string): VerifyStep[] {
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => ({ name: line, run: line }));
-}
-
-/**
- * Derive the verification gate from package.json scripts in execution order
- * build → lint → test: build first because tests may consume its artifacts,
- * the expensive test suite last. Only scripts
- * the project actually defines are run; an empty result means the gate cannot
- * vouch for anything and the caller must not open a PR.
- */
-export function verifyStepsFor(repoPath: string, pm: PmToolchain): VerifyStep[] {
-  let scripts: Record<string, string> = {};
-  try {
-    const pkg = JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8"));
-    scripts = pkg.scripts ?? {};
-  } catch {
-    return [];
+function targetEnvironment(): { env: NodeJS.ProcessEnv; home: string } {
+  const env: NodeJS.ProcessEnv = {};
+  const safeExact = new Set([
+    "PATH",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "CI",
+    "TERM",
+    "JAVA_HOME",
+    "GOROOT",
+    "GOPATH",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "PNPM_HOME",
+    "BUN_INSTALL",
+  ]);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && (safeExact.has(key) || key.startsWith("LC_"))) env[key] = value;
   }
-  return ["build", "lint", "test"]
-    .filter((name) => typeof scripts[name] === "string")
-    .map((name) => ({ name, run: pm.runScript(name) }));
+  const home = mkdtempSync(join(tmpdir(), "depvisor-target-home-"));
+  const configHome = join(home, ".config");
+  mkdirSync(configHome, { recursive: true });
+  env.HOME = home;
+  env.XDG_CONFIG_HOME = configHome;
+  env.GIT_CONFIG_GLOBAL = "/dev/null";
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_TERMINAL_PROMPT = "0";
+  env.FORCE_COLOR = "0";
+  return { env, home };
 }
 
-/**
- * Run the verification gate. Steps run in order; the first failure stops the
- * gate. Output is captured (not inherited) so a failing step's tail can be
- * handed to the fixer, then echoed to the run log so failures stay diagnosable
- * there. Each result carries that bounded `tail`; callers strip it with
- * `stripVerifyTails` before it crosses the record/payload boundary.
- */
-export function runVerification(repoPath: string, steps: VerifyStep[]): VerifyResult[] {
-  const results: VerifyResult[] = [];
-  for (const step of steps) {
-    const res = spawnSync(step.run, {
-      cwd: repoPath,
-      shell: true,
-      encoding: "utf8",
-      timeout: STEP_TIMEOUT_MS,
-      maxBuffer: MAX_OUTPUT_BYTES,
-    });
-    if (res.stdout) process.stdout.write(res.stdout);
-    if (res.stderr) process.stderr.write(res.stderr);
-    const ok = res.status === 0 && !res.error;
-    results.push({
-      name: step.name,
-      ok,
-      code: res.status,
-      tail: tail(`${res.stdout ?? ""}${res.stderr ?? ""}`),
-    });
-    if (!ok) break;
+function runCommands(
+  repo: string,
+  phase: VerificationPhase,
+  attempt: 1 | 2,
+  prepare: readonly string[],
+  commands: readonly string[],
+): InternalVerificationResult[] {
+  const results: InternalVerificationResult[] = [];
+  const { env, home } = targetEnvironment();
+  const steps = [
+    ...prepare.map((run) => ({ name: `prepare: ${run}`, run, preparation: true })),
+    ...commands.map((run) => ({ name: run, run, preparation: false })),
+  ];
+  let preparationFailed = false;
+  try {
+    for (const step of steps) {
+      if (preparationFailed && !step.preparation) break;
+      const result = spawnSync(step.run, {
+        cwd: repo,
+        shell: true,
+        encoding: "utf8",
+        timeout: STEP_TIMEOUT_MS,
+        maxBuffer: MAX_OUTPUT_BYTES,
+        env,
+      });
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr);
+      const ok = result.status === 0 && !result.error;
+      results.push({
+        phase,
+        attempt,
+        name: step.name,
+        ok,
+        code: result.status,
+        tail: tail(`${result.stdout ?? ""}${result.stderr ?? ""}`),
+      });
+      if (!ok && step.preparation) preparationFailed = true;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
   return results;
 }
 
-/**
- * Drop the internal `tail` from each result. Verification results are persisted
- * in the status file and rendered in the PR body as `{ name, ok, code }` only;
- * the tail exists solely to feed the fixer prompt, so it is stripped before a
- * result is recorded or handed to the PR payload.
- */
-export function stripVerifyTails(results: readonly VerifyResult[]): VerifyResult[] {
-  return results.map(({ name, ok, code }) => ({ name, ok, code }));
+function green(results: readonly InternalVerificationResult[]): boolean {
+  return results.length > 0 && results.every((result) => result.ok);
+}
+
+function signature(results: readonly InternalVerificationResult[]): string {
+  return results.map((result) => `${result.name}:${result.ok}:${result.code}`).join("|");
+}
+
+export function runConfirmedVerification(
+  repo: string,
+  sha: string,
+  phase: "baseline" | "head",
+  prepare: readonly string[],
+  commands: readonly string[],
+): VerificationRun {
+  if (commands.length === 0) {
+    return { state: "stable-red", results: [], detail: "No verification commands are configured." };
+  }
+  resetHardClean(repo, sha);
+  const guard = RefGuard.capture(repo);
+  const first = runCommands(repo, phase, 1, prepare, commands);
+  const firstDrift = guard.intactAt(sha, sha);
+  if (firstDrift) {
+    return {
+      state: "unexpected-commits",
+      results: first,
+      detail: `Target execution moved git state: ${firstDrift.refs.join(", ") || "HEAD"}.`,
+    };
+  }
+  if (changedPaths(repo).length > 0) {
+    return { state: "dirty", results: first, detail: "Verification modified the repository." };
+  }
+  if (green(first)) return { state: "green", results: first, detail: "Verification passed." };
+
+  resetHardClean(repo, sha);
+  const second = runCommands(repo, phase, 2, prepare, commands);
+  const secondDrift = guard.intactAt(sha, sha);
+  if (secondDrift) {
+    return {
+      state: "unexpected-commits",
+      results: [...first, ...second],
+      detail: `Confirmation moved git state: ${secondDrift.refs.join(", ") || "HEAD"}.`,
+    };
+  }
+  if (changedPaths(repo).length > 0) {
+    return {
+      state: "dirty",
+      results: [...first, ...second],
+      detail: "Confirmation modified the repository.",
+    };
+  }
+  if (signature(first) !== signature(second)) {
+    return {
+      state: "unstable",
+      results: [...first, ...second],
+      detail: "Clean verification attempts disagreed.",
+    };
+  }
+  return {
+    state: "stable-red",
+    results: [...first, ...second],
+    detail: "The same verification failure reproduced twice.",
+  };
+}
+
+export function runCandidateVerification(
+  repo: string,
+  updaterHeadSha: string,
+  prepare: readonly string[],
+  commands: readonly string[],
+): VerificationRun {
+  const guard = RefGuard.capture(repo);
+  const expectedWorktree = snapshotWorktree(repo);
+  const results = runCommands(repo, "candidate", 1, prepare, commands);
+  const refMovement = guard.intactAt(updaterHeadSha, updaterHeadSha);
+  if (refMovement) {
+    return {
+      state: "unexpected-commits",
+      results,
+      detail: `Candidate verification moved git state: ${refMovement.refs.join(", ") || "HEAD"}.`,
+    };
+  }
+  const drift = worktreeDrift(repo, expectedWorktree);
+  if (drift.length > 0) {
+    return {
+      state: "dirty",
+      results,
+      detail: `Candidate verification changed the serialized fixer patch: ${drift.join(", ")}.`,
+    };
+  }
+  return green(results)
+    ? { state: "green", results, detail: "Candidate verification passed." }
+    : { state: "stable-red", results, detail: "The one-shot candidate did not pass." };
+}
+
+export function publicVerificationResults(
+  results: readonly InternalVerificationResult[],
+): VerificationStepResult[] {
+  return results.map(({ phase, attempt, name, ok, code }) => ({ phase, attempt, name, ok, code }));
 }

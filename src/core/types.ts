@@ -1,74 +1,132 @@
-export type UpdateType = "patch" | "minor" | "major" | "unknown";
-export type DepKind = "prod" | "dev";
+import * as v from "valibot";
 
-export interface Candidate {
-  name: string;
-  current: string;
-  latest: string;
-  kind: DepKind;
-  updateType: UpdateType;
-  /**
-   * Repo-relative paths of the workspaces that declare this dependency; the root
-   * package.json is "" (a single-package repo is therefore `[""]`). Drives the
-   * workspace-scoped update command (`PmToolchain.updatePlan`). For pnpm
-   * this may omit occurrences that `pnpm outdated -r` collapsed behind a
-   * name-key collision — harmless, because `pnpm -r update` updates every
-   * declaring workspace regardless.
-   */
-  locations: string[];
-  /**
-   * Distinct `current` versions this dependency is declared at across the
-   * declaring workspaces. `current` above is the LOWEST of these (the most
-   * conservative update-type classification), but advisory matching
-   * (`core/advisories.ts`) checks EVERY entry so a vulnerability affecting only a
-   * higher-versioned workspace is not hidden behind the lowest. npm/bun can
-   * report several; pnpm collapses cross-workspace occurrences to one. Absent →
-   * treat as `[current]`.
-   */
-  currents?: string[];
-}
+export const GitShaSchema = v.pipe(v.string(), v.regex(/^[0-9a-f]{40}$/));
+const RepositorySchema = v.pipe(
+  v.string(),
+  v.maxLength(200),
+  v.regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+);
+const RefSchema = v.pipe(v.string(), v.minLength(1), v.maxLength(1_024), v.regex(/^[^\p{Cc}]+$/u));
 
-/**
- * One unit of update = one prospective PR. The key is the stable branch/PR
- * identity (see grouping.ts). By default every group is a singleton — one
- * package — and the user-declared `groups` config (Dependabot's `groups`)
- * bundles several packages into one group; everything downstream (prompt,
- * gates, PR body, labels) handles the plural.
- */
-export interface Group {
-  key: string;
-  reason: string;
-  members: Candidate[];
-}
+export const ProviderSchema = v.picklist(["dependabot", "renovate"]);
+export type Provider = v.InferOutput<typeof ProviderSchema>;
 
-/** Agent-written digest of one package's release notes. */
-export interface NotableChange {
-  package: string;
-  note: string;
-}
+export const CapabilitySchema = v.picklist([
+  "generic-review",
+  "identified",
+  "repair-safe",
+  "deep-evidence",
+]);
 
-/**
- * Agent-suggested newly added capability from an update's release notes that may
- * relate to code already in the repository (the opt-in suggest_features feature).
- * Display-only, never adopted; `package` names one updated package, `summary`
- * describes the capability, and `codebaseRelevance` names the concrete existing
- * symbol or file it could improve. Both free-text fields are untrusted (release
- * notes + LLM judgment), so pr.ts sanitizes them like any other narrative field.
- */
-export interface RelevantNewFeature {
-  package: string;
-  summary: string;
-  codebaseRelevance: string;
-}
+export const UpdateTypeSchema = v.picklist(["patch", "minor", "major", "digest", "unknown"]);
+export type UpdateType = v.InferOutput<typeof UpdateTypeSchema>;
 
-/**
- * The agent's structured account of an update. Keeping fields separate lets the
- * PR renderer compose the body deterministically and sanitize each untrusted,
- * changelog-derived field on its own.
- */
-export interface UpdateNarrative {
-  summary: string;
-  notableChanges: NotableChange[];
-  breakingChangesAddressed: string[];
-  residualRisks: string[];
-}
+export const EvidenceReferenceSchema = v.strictObject({
+  kind: v.picklist([
+    "pr-diff",
+    "release-note",
+    "package-diff",
+    "source-diff",
+    "registry",
+    "advisory",
+    "ci",
+  ]),
+  source: v.string(),
+  summary: v.string(),
+  untrusted: v.literal(true),
+});
+
+export const PullRequestTargetSchema = v.strictObject({
+  repositoryId: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  repository: RepositorySchema,
+  number: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  baseRef: RefSchema,
+  baseTipSha: GitShaSchema,
+  mergeBaseSha: GitShaSchema,
+  prHeadSha: GitShaSchema,
+  updaterHeadSha: GitShaSchema,
+  headRepository: RepositorySchema,
+  headRef: RefSchema,
+  provider: ProviderSchema,
+});
+
+export const DependencyChangeSchema = v.strictObject({
+  ecosystem: v.string(),
+  manager: v.string(),
+  package: v.string(),
+  from: v.nullable(v.string()),
+  to: v.nullable(v.string()),
+  kind: v.picklist(["runtime", "development", "unknown"]),
+  directness: v.picklist(["direct", "transitive", "unknown"]),
+  manifests: v.array(v.string()),
+  lockfiles: v.array(v.string()),
+  protectedPaths: v.array(v.string()),
+  capability: CapabilitySchema,
+  evidence: v.array(EvidenceReferenceSchema),
+});
+export type DependencyChange = v.InferOutput<typeof DependencyChangeSchema>;
+
+export const VerificationStepResultSchema = v.strictObject({
+  phase: v.picklist(["baseline", "head", "candidate"]),
+  attempt: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(2)),
+  name: v.string(),
+  ok: v.boolean(),
+  code: v.nullable(v.number()),
+});
+export type VerificationStepResult = v.InferOutput<typeof VerificationStepResultSchema>;
+
+export const UsageEntrySchema = v.strictObject({
+  role: v.picklist(["fixer", "reviewer"]),
+  input: v.number(),
+  output: v.number(),
+  cacheRead: v.number(),
+  cacheWrite: v.number(),
+  totalTokens: v.number(),
+  costUsd: v.number(),
+  model: v.string(),
+});
+export type UsageEntry = v.InferOutput<typeof UsageEntrySchema>;
+
+export const V2StatusSchema = v.picklist([
+  "in-progress",
+  "no-target",
+  "not-updater",
+  "policy-skipped",
+  "reviewed",
+  "repair-not-needed",
+  "repair-applied",
+  "updater-refresh-requested",
+  "stale-base",
+  "stale-head",
+  "human-takeover",
+  "unsupported-provider",
+  "untrusted-updater",
+  "bad-config",
+  "verification-unavailable",
+  "repair-unsupported",
+  "updater-refresh-required",
+  "baseline-red",
+  "verification-unstable",
+  "failure-not-reproduced",
+  "repair-deferred",
+  "verification-failed",
+  "scope-violation",
+  "unexpected-commits",
+  "publish-failed",
+]);
+export type V2Status = v.InferOutput<typeof V2StatusSchema>;
+
+export const V2ResultSchema = v.strictObject({
+  status: V2StatusSchema,
+  pr: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  analyzedBaseTipSha: v.nullable(GitShaSchema),
+  analyzedPrHeadSha: v.nullable(GitShaSchema),
+  updaterHeadSha: v.nullable(GitShaSchema),
+  publishedHeadSha: v.nullable(GitShaSchema),
+  provider: v.nullable(ProviderSchema),
+  changes: v.array(DependencyChangeSchema),
+  repairApplied: v.boolean(),
+  verification: v.array(VerificationStepResultSchema),
+  reportUrl: v.nullable(v.string()),
+  usage: v.array(UsageEntrySchema),
+});

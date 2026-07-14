@@ -1,94 +1,139 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { npmToolchain, pnpmToolchain } from "../src/core/pm.ts";
-import {
-  parseVerifyCommands,
-  runVerification,
-  stripVerifyTails,
-  verifyStepsFor,
-} from "../src/core/verify.ts";
+import test from "node:test";
+import { changedPaths, revParse } from "../src/core/git.ts";
+import { runCandidateVerification, runConfirmedVerification } from "../src/core/verify.ts";
 
-test("parseVerifyCommands: one command per line, trimmed, blanks dropped", () => {
-  assert.deepEqual(parseVerifyCommands("npm run check\n\n  npm run test:unit  \n"), [
-    { name: "npm run check", run: "npm run check" },
-    { name: "npm run test:unit", run: "npm run test:unit" },
-  ]);
-});
+function git(repo: string, ...args: string[]): string {
+  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+    cwd: repo,
+    encoding: "utf8",
+  }).trim();
+}
 
-test("parseVerifyCommands: CRLF input (GitHub Actions multi-line values)", () => {
-  assert.deepEqual(parseVerifyCommands("make lint\r\nmake test\r\n"), [
-    { name: "make lint", run: "make lint" },
-    { name: "make test", run: "make test" },
-  ]);
-});
-
-test("parseVerifyCommands: empty/whitespace-only means unset", () => {
-  assert.deepEqual(parseVerifyCommands(""), []);
-  assert.deepEqual(parseVerifyCommands("  \n \r\n"), []);
-});
-
-test("verifyStepsFor: detects known scripts in gate order, ignores the rest", () => {
-  const repo = mkdtempSync(join(tmpdir(), "depvisor-verify-"));
-  // typecheck is opt-in through verify_commands; build is the stronger default.
-  writeFileSync(
-    join(repo, "package.json"),
-    `{"scripts":{"test":"node --test","lint":"oxlint","typecheck":"tsc --noEmit","deploy":"sh deploy.sh"}}`,
+function repository(): { repo: string; sha: string; dispose(): void } {
+  const repo = mkdtempSync(join(tmpdir(), "depvisor-verify-test-"));
+  git(repo, "init", "--initial-branch=main");
+  writeFileSync(join(repo, "source.ts"), "export const value = 1;\n");
+  git(repo, "add", "source.ts");
+  git(
+    repo,
+    "-c",
+    "user.name=test",
+    "-c",
+    "user.email=test@example.invalid",
+    "commit",
+    "-m",
+    "base",
   );
-  assert.deepEqual(verifyStepsFor(repo, npmToolchain), [
-    { name: "lint", run: "npm run lint" },
-    { name: "test", run: "npm run test" },
-  ]);
+  return { repo, sha: revParse(repo, "HEAD"), dispose: () => rmSync(repo, { recursive: true }) };
+}
+
+test("baseline/head verification distinguishes green, stable red, and flake", () => {
+  const fixture = repository();
+  const marker = join(tmpdir(), `depvisor-verify-marker-${process.pid}-${Date.now()}`);
+  try {
+    assert.equal(
+      runConfirmedVerification(
+        fixture.repo,
+        fixture.sha,
+        "baseline",
+        [],
+        [`${JSON.stringify(process.execPath)} -e "process.exit(0)"`],
+      ).state,
+      "green",
+    );
+    const stable = runConfirmedVerification(
+      fixture.repo,
+      fixture.sha,
+      "head",
+      [],
+      [`${JSON.stringify(process.execPath)} -e "process.exit(7)"`],
+    );
+    assert.equal(stable.state, "stable-red");
+    assert.equal(stable.results.length, 2);
+
+    const script =
+      `const fs=require('node:fs');const p=${JSON.stringify(marker)};` +
+      "if(fs.existsSync(p))process.exit(0);fs.writeFileSync(p,'x');process.exit(1)";
+    assert.equal(
+      runConfirmedVerification(
+        fixture.repo,
+        fixture.sha,
+        "head",
+        [],
+        [`${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`],
+      ).state,
+      "unstable",
+    );
+  } finally {
+    rmSync(marker, { force: true });
+    fixture.dispose();
+  }
 });
 
-test("verifyStepsFor: runs scripts through the detected package manager", () => {
-  const repo = mkdtempSync(join(tmpdir(), "depvisor-verify-"));
-  writeFileSync(join(repo, "package.json"), `{"scripts":{"build":"tsc","test":"node --test"}}`);
-  assert.deepEqual(verifyStepsFor(repo, pnpmToolchain), [
-    { name: "build", run: "pnpm run build" },
-    { name: "test", run: "pnpm run test" },
-  ]);
+test("verification fails closed on worktree and ref mutation", () => {
+  const fixture = repository();
+  try {
+    const dirtyScript = "require('node:fs').writeFileSync('generated.ts','bad')";
+    assert.equal(
+      runConfirmedVerification(
+        fixture.repo,
+        fixture.sha,
+        "baseline",
+        [],
+        [`${JSON.stringify(process.execPath)} -e ${JSON.stringify(dirtyScript)}`],
+      ).state,
+      "dirty",
+    );
+
+    const refMutation = "git update-ref refs/heads/injected HEAD";
+    assert.equal(
+      runConfirmedVerification(fixture.repo, fixture.sha, "head", [], [refMutation]).state,
+      "unexpected-commits",
+    );
+  } finally {
+    fixture.dispose();
+  }
 });
 
-test("verifyStepsFor: no package.json means no steps", () => {
-  const repo = mkdtempSync(join(tmpdir(), "depvisor-verify-"));
-  assert.deepEqual(verifyStepsFor(repo, npmToolchain), []);
+test("candidate verification seals the exact source patch", () => {
+  const fixture = repository();
+  try {
+    writeFileSync(join(fixture.repo, "source.ts"), "export const value = 2;\n");
+    assert.equal(
+      runCandidateVerification(
+        fixture.repo,
+        fixture.sha,
+        [],
+        [`${JSON.stringify(process.execPath)} -e "process.exit(0)"`],
+      ).state,
+      "green",
+    );
+    const mutation = "require('node:fs').appendFileSync('source.ts','// changed\\n')";
+    assert.equal(
+      runCandidateVerification(
+        fixture.repo,
+        fixture.sha,
+        [],
+        [`${JSON.stringify(process.execPath)} -e ${JSON.stringify(mutation)}`],
+      ).state,
+      "dirty",
+    );
+  } finally {
+    fixture.dispose();
+  }
 });
 
-test("runVerification: runs steps in order and reports exit codes", () => {
-  const repo = mkdtempSync(join(tmpdir(), "depvisor-verify-"));
-  const results = runVerification(repo, [
-    { name: "ok", run: `node -e "process.exit(0)"` },
-    { name: "also-ok", run: `node -e "process.exit(0)"` },
-  ]);
-  // The internal tail is compared out; the persisted shape stays {name,ok,code}.
-  assert.deepEqual(stripVerifyTails(results), [
-    { name: "ok", ok: true, code: 0 },
-    { name: "also-ok", ok: true, code: 0 },
-  ]);
-});
-
-test("runVerification: first failure stops the gate", () => {
-  const repo = mkdtempSync(join(tmpdir(), "depvisor-verify-"));
-  const results = runVerification(repo, [
-    { name: "fails", run: `node -e "process.exit(3)"` },
-    { name: "never-runs", run: `node -e "process.exit(0)"` },
-  ]);
-  assert.deepEqual(stripVerifyTails(results), [{ name: "fails", ok: false, code: 3 }]);
-});
-
-test("runVerification: captures a bounded output tail; stripVerifyTails removes it", () => {
-  const repo = mkdtempSync(join(tmpdir(), "depvisor-verify-"));
-  const results = runVerification(repo, [
-    { name: "noisy", run: `node -e "process.stdout.write('hello-tail'); process.exit(1)"` },
-  ]);
-  // The tail is captured for the fixer's failure diagnostics …
-  assert.equal(results.length, 1);
-  assert.match(results[0]?.tail ?? "", /hello-tail/);
-  // … but stripped before a result crosses the record/payload boundary, so the
-  // status file and PR body see only {name, ok, code}.
-  assert.deepEqual(stripVerifyTails(results), [{ name: "noisy", ok: false, code: 1 }]);
-  assert.equal(stripVerifyTails(results)[0]?.tail, undefined);
+test("git path collection preserves both sides of a rename", () => {
+  const fixture = repository();
+  try {
+    git(fixture.repo, "mv", "source.ts", "renamed.ts");
+    assert.deepEqual(changedPaths(fixture.repo), ["renamed.ts", "source.ts"]);
+  } finally {
+    fixture.dispose();
+  }
 });

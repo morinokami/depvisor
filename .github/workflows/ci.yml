@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "v2"]
   pull_request:
     branches: ["main"]
 
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   ci:
-    name: Code quality and tests
+    name: Code quality and v2 contract tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -32,185 +32,29 @@ jobs:
             registry.npmjs.org:443
             npm.flatt.tech:443
             nodejs.org:443
-
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-
       - name: Setup Takumi Guard
         uses: flatt-security/setup-takumi-guard-npm@9a5d797c2085b6326d3a2985c08e3a114b9b88c1 # v1.1.1
-
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: ./.node-version
-          cache: "pnpm"
-
+          cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run fmt:check
+      - run: pnpm run test
+      - run: pnpm run typecheck
+      - run: pnpm run knip
 
-      # TODO: Restore `background: true` and `wait-all` once the zizmor version
-      # shipped by zizmor-action can parse GitHub's parallel-step syntax.
-      - name: Run oxlint
-        run: pnpm run lint
-
-      - name: Run format check
-        run: pnpm run fmt:check
-
-      - name: Run unit tests
-        run: pnpm run test
-
-      - name: Run type check
-        run: pnpm run typecheck
-
-      - name: Run knip
-        run: pnpm run knip
-
-  # E2E against real package managers: generate each fixture, run the
-  # deterministic scan, then execute the real Flue workflow through its
-  # credential-free dry-run branch and assert its plan/status/no-mutation
-  # contracts. Talks to the live npm registry (fixture installs + PM outdated)
-  # and OSV prioritization, so upstream hiccups fail one variant,
-  # not all (fail-fast: false; OSV itself remains product-level fail-soft).
-  fixture-e2e:
-    name: Fixture E2E (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        # `expect` names the packages every scan must surface as ACTIONABLE
-        # (grouped, not degraded to `unknown`), with `@<location>` pinning the
-        # declaring workspace — so a partial parser regression (one dep-kind
-        # section dropped, one workspace missing from enumeration, a dep losing
-        # a location) fails the job instead of shrinking the output unnoticed.
-        # Each list is the COMPLETE outdated-dependency × declaring-location
-        # enumeration of its fixture template; update together. The npm
-        # workspace template deliberately declares @types/semver only in
-        # packages/core (npm hoists; the bun/pnpm isolated linkers need a copy
-        # per package — see scripts/init-fixture.sh), hence its shorter list.
-        include:
-          - name: npm
-            init: "fixture:init"
-            dest: fixtures/sample-app
-            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
-          - name: pnpm
-            init: "fixture:init:pnpm"
-            dest: fixtures/sample-app-pnpm
-            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
-          - name: bun
-            init: "fixture:init:bun"
-            dest: fixtures/sample-app-bun
-            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
-            bun: true
-          - name: npm-workspaces
-            init: "fixture:init:workspaces"
-            dest: fixtures/sample-app-workspaces
-            expect: >-
-              lru-cache@packages/core,
-              chalk@packages/web,
-              semver@packages/core, semver@packages/web,
-              @types/node@packages/core, @types/node@packages/web,
-              @types/semver@packages/core,
-              typescript@packages/core, typescript@packages/web
-          - name: pnpm-workspaces
-            init: "fixture:init:workspaces:pnpm"
-            dest: fixtures/sample-app-pnpm-workspaces
-            expect: >-
-              lru-cache@packages/core,
-              chalk@packages/web,
-              semver@packages/core, semver@packages/web,
-              @types/node@packages/core, @types/node@packages/web,
-              @types/semver@packages/core, @types/semver@packages/web,
-              typescript@packages/core, typescript@packages/web
-          - name: bun-workspaces
-            init: "fixture:init:workspaces:bun"
-            dest: fixtures/sample-app-bun-workspaces
-            expect: >-
-              lru-cache@packages/core,
-              chalk@packages/web,
-              semver@packages/core, semver@packages/web,
-              @types/node@packages/core, @types/node@packages/web,
-              @types/semver@packages/core, @types/semver@packages/web,
-              typescript@packages/core, typescript@packages/web
-            bun: true
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            api.github.com:443
-            objects.githubusercontent.com:443
-            release-assets.githubusercontent.com:443
-            *.actions.githubusercontent.com:443
-            registry.npmjs.org:443
-            api.osv.dev:443
-            npm.flatt.tech:443
-            nodejs.org:443
-
-      - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-
-      - name: Setup Takumi Guard
-        uses: flatt-security/setup-takumi-guard-npm@9a5d797c2085b6326d3a2985c08e3a114b9b88c1 # v1.1.1
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: ./.node-version
-          cache: "pnpm"
-
-      # bun-version is pinned (docs/configuration.md's own advice to consumers):
-      # depvisor parses `bun outdated`'s table output, so an unpinned bun would
-      # turn upstream format drift into flakes instead of a deliberate
-      # pin-bump-plus-parser-update.
-      - name: Setup Bun
-        if: ${{ matrix.bun }}
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: "1.3.14"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Initialize fixture
-        env:
-          INIT: ${{ matrix.init }}
-        run: pnpm run "$INIT"
-
-      - name: Run deterministic scan with verification
-        env:
-          DEST: ${{ matrix.dest }}
-          EXPECT: ${{ matrix.expect }}
-        run: node src/dev/scan.ts "$DEST" --verify --expect-updates="$EXPECT"
-
-      - name: Run credential-free dry-run workflow
-        env:
-          DEPVISOR_DRY_RUN: "true"
-          DEPVISOR_LLM_MODEL: ""
-          DEPVISOR_MINIMUM_RELEASE_AGE: "0"
-          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/${{ matrix.dest }}
-          EXPECT: ${{ matrix.expect }}
-          OPENAI_API_KEY: ""
-          ANTHROPIC_API_KEY: ""
-          OPENROUTER_API_KEY: ""
-        run: |
-          pnpm exec flue run update --target node
-          node src/dev/assert-dry-run.ts "$DEPVISOR_TARGET_REPO" "$EXPECT"
-
-  zizmor:
-    name: GitHub Actions security audit
+  actions-security:
+    name: GitHub Actions semantics and security
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -225,14 +69,11 @@ jobs:
             release-assets.githubusercontent.com:443
             ghcr.io:443
             pkg-containers.githubusercontent.com:443
-
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-
       - name: Run actionlint
-        # TODO: Consider automating updates to the actionlint version and checksum.
         env:
           ACTIONLINT_VERSION: "1.7.12"
           ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -244,7 +85,6 @@ jobs:
           printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check --strict
           tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
-
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
         with:

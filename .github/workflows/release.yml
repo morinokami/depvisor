@@ -6,8 +6,8 @@ name: Release
 #
 # release-please maintains one Release PR from Conventional Commits on main.
 # Merging that PR cuts the vX.Y.Z tag + GitHub Release; the tag-major job then
-# moves the v1 (and v1.x) movable tags so consumers pinning `@v1` (README) keep
-# resolving. release-please only ever creates immutable vX.Y.Z tags itself.
+# moves the released major/minor tags. A v2 release advances v2/v2.0 while the
+# final v1 tags remain available to legacy composite-action consumers.
 
 on:
   push:
@@ -59,8 +59,7 @@ jobs:
           token: ${{ github.token }}
 
   # release-please stops at immutable vX.Y.Z tags. Re-point the movable major
-  # (v1) and minor (v1.x) tags at the released commit so `morinokami/depvisor@v1`
-  # in the README follows the latest v1.x. Hand-carved shell — no extra pinned
+  # and minor tags at the released commit. Hand-carved shell — no extra pinned
   # third-party action just to force-move two tags.
   tag-major:
     name: Move the major and minor tags

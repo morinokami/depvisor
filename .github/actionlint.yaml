@@ -1,0 +1,6 @@
+paths:
+  .github/workflows/depvisor.yml:
+    # GitHub exposes these called-workflow identity fields, but actionlint
+    # v1.7.12 has not added them to its job-context type yet.
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type'

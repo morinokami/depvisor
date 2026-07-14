@@ -19,11 +19,11 @@ import { REPO } from "../shared/target.ts";
  *
  * The root agent uses Flue's in-memory virtual sandbox, not `local()`, so its
  * built-in filesystem/shell capabilities cannot reach the runner. These custom
- * tools are the only bridge to the host checkout: digest receives the read-only
+ * tools are the only bridge to the host checkout: reviewer receives the read-only
  * set, while fixer additionally receives the write set. Every path is repo-
  * relative, jailed below the real target root (including symlink resolution),
  * and `.git` is never exposed. A prompt-injected agent therefore cannot rewrite
- * depvisor's own checkout or the later token-holding open-pr entrypoint.
+ * depvisor's own checkout or the later token-holding publisher entrypoint.
  */
 
 const READ_CHARS_MAX = 30_000;

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.0 (unreleased)
+
+### Breaking changes
+
+- Replaced the standalone dependency updater/composite action with a reusable
+  `workflow_run` aftercare workflow for existing Dependabot and Renovate PRs.
+- Removed candidate discovery, version selection, deterministic bumping,
+  grouping, cooldown/ignore policy, PR budgets, branch creation, and every v1
+  input/output/status.
+- Added immutable PR-head idempotency, base-SHA configuration, provider
+  attestation, JavaScript and Go ecosystem adapters, isolated baseline/head and
+  candidate verification, one-shot source/test repair, and compare-and-swap
+  GitHub App publication.
+
+The movable `v1` tags remain on the final v1 release for legacy consumers.
+
 ## [1.5.0](https://github.com/morinokami/depvisor/compare/v1.4.0...v1.5.0) (2026-07-13)
 
 

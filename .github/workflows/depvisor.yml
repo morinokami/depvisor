@@ -1,78 +1,556 @@
-name: depvisor
+name: depvisor v2 aftercare
 
 on:
-  # Keep the schedule disabled here; consumers enable it in their own workflow.
-  # schedule:
-  #   - cron: '0 3 * * 1'
+  workflow_call:
+    inputs:
+      workflow_run_id:
+        description: Completed aggregate CI workflow run to resolve to one updater PR
+        required: false
+        type: number
+        default: 0
+      pr_number:
+        description: Explicit PR number for manual fallback
+        required: false
+        type: number
+        default: 0
+      llm_model:
+        description: Flue model specifier used only in reviewer/fixer jobs
+        required: true
+        type: string
+      llm_api_key_env:
+        description: Provider API-key environment variable name
+        required: false
+        type: string
+        default: OPENAI_API_KEY
+    secrets:
+      llm_api_key:
+        required: true
+      publisher_app_client_id:
+        required: false
+      publisher_private_key:
+        required: false
+      publisher_token:
+        required: false
+    outputs:
+      status:
+        description: Terminal v2 status
+        value: ${{ jobs.publish.outputs.status || jobs.resolve.outputs.status }}
+      pr:
+        description: Resolved pull request number
+        value: ${{ jobs.publish.outputs.pr || jobs.resolve.outputs.pr }}
+      repair_applied:
+        description: Whether a verified depvisor repair is present
+        value: ${{ jobs.publish.outputs.repair_applied || 'false' }}
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: Preview candidates, groups, and PR actions without changing anything
-        type: boolean
-        default: false
+      workflow_run_id:
+        description: Completed CI workflow run ID (use this or pr_number)
+        required: false
+        type: number
+        default: 0
+      pr_number:
+        description: Explicit updater PR number
+        required: false
+        type: number
+        default: 0
+      llm_model:
+        description: Flue model specifier
+        required: true
+        type: string
+      llm_api_key_env:
+        description: Provider API-key environment variable name
+        required: false
+        type: choice
+        options: [OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY]
+        default: OPENAI_API_KEY
 
 permissions: {}
 
 concurrency:
-  group: depvisor
+  group: depvisor-${{ github.repository }}-${{ github.event.workflow_run.head_branch || inputs.pr_number || inputs.workflow_run_id }}
   cancel-in-progress: false
 
 jobs:
-  update:
-    name: Prepare dependency updates
+  resolve:
+    name: Resolve, attest, and normalize
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
-      contents: write # push prepared update branches
-      pull-requests: write # open or refresh dependency PRs
+      actions: read # resolve the trusted workflow_run ID and conclusion
+      contents: read
+      pull-requests: read # resolve and attest the PR plus its commit chain
+    outputs:
+      admitted: ${{ steps.resolve.outputs.admitted }}
+      status: ${{ steps.resolve.outputs.status }}
+      pr: ${{ steps.resolve.outputs.pr }}
+      base_tip: ${{ steps.resolve.outputs.base_tip }}
+      pr_head: ${{ steps.resolve.outputs.pr_head }}
+      updater_head: ${{ steps.resolve.outputs.updater_head }}
+      head_repository: ${{ steps.resolve.outputs.head_repository }}
+      review_selected: ${{ steps.normalize.outputs.review_selected }}
+      repair_selected: ${{ steps.normalize.outputs.repair_selected }}
+      verification_selected: ${{ steps.normalize.outputs.verification_selected }}
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            api.github.com:443
-            codeload.github.com:443
-            objects.githubusercontent.com:443
-            *.actions.githubusercontent.com:443
-            registry.npmjs.org:443
-            api.osv.dev:443
-            api.openai.com:443
-            api.anthropic.com:443
-
+          egress-policy: audit
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: depvisor
           persist-credentials: false
-
-      - uses: ./
-        id: depvisor
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
-          dry_run: ${{ inputs.dry_run }}
-          # A GitHub Environment would add consumer setup; the composite action
-          # keeps this key in its structurally token-free step.
-          llm_api_key: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] dedicated token-free step
-          llm_model: openai/gpt-5.5
-          install_command: skip
-          # The target here is depvisor itself; auto-detection would only find
-          # lint/test, so name the full CI gate set explicitly.
-          verify_commands: |
-            pnpm run typecheck
-            pnpm run lint
-            pnpm run fmt:check
-            pnpm run knip
-            pnpm run test
-
-      # Consume the action outputs the way docs/results.md documents (env-mediated,
-      # if: always()) — doubles as an end-to-end check that outputs survive a
-      # red run.
-      - name: Show depvisor outputs
-        if: always()
+          package_json_file: depvisor/package.json
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: depvisor/.node-version
+          cache: pnpm
+          cache-dependency-path: depvisor/pnpm-lock.yaml
+      - working-directory: depvisor
+        run: pnpm install --frozen-lockfile
+      - name: Resolve and attest updater PR
+        id: resolve
+        working-directory: depvisor
         env:
-          DEPVISOR_STATUS: ${{ steps.depvisor.outputs.status }}
-          DEPVISOR_FAILED: ${{ steps.depvisor.outputs.failed }}
-          DEPVISOR_PREPARED_COUNT: ${{ steps.depvisor.outputs.prepared_count }}
-          DEPVISOR_PR_URLS: ${{ steps.depvisor.outputs.pr_urls }}
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_PR_NUMBER: ${{ inputs.pr_number }}
+          DEPVISOR_WORKFLOW_RUN_ID: ${{ inputs.workflow_run_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node src/cli/resolve.ts
+      - name: Checkout immutable PR head
+        if: steps.resolve.outputs.admitted == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ steps.resolve.outputs.head_repository }}
+          ref: ${{ steps.resolve.outputs.pr_head }}
+          fetch-depth: 0
+          path: target
+          persist-credentials: false
+      - name: Normalize dependency changes and policy
+        if: steps.resolve.outputs.admitted == 'true'
+        id: normalize
+        working-directory: depvisor
+        env:
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_RESOLVE_FILE: ${{ github.workspace }}/run/resolve.json
+          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/target
+        run: node src/cli/normalize.ts
+      - name: Upload typed analysis artifact
+        if: steps.resolve.outputs.admitted == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: depvisor-analysis
+          path: |
+            run/resolve.json
+            run/analysis.json
+          if-no-files-found: error
+          retention-days: 1
+
+  baseline:
+    name: Verify current base tip
+    needs: resolve
+    if: needs.resolve.outputs.verification_selected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.verify.outputs.state }}
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ job.workflow_repository }}",
+            ref: "${{ job.workflow_sha }}",
+            path: depvisor,
+            persist-credentials: false,
+          }
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with: { package_json_file: depvisor/package.json }
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          {
+            node-version-file: depvisor/.node-version,
+            cache: pnpm,
+            cache-dependency-path: depvisor/pnpm-lock.yaml,
+          }
+      - working-directory: depvisor
+        run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: depvisor-analysis, path: run }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            ref: "${{ needs.resolve.outputs.base_tip }}",
+            fetch-depth: 0,
+            path: target,
+            persist-credentials: false,
+          }
+      - name: Run clean baseline and confirmation
+        id: verify
+        working-directory: depvisor
+        env:
+          DEPVISOR_ANALYSIS_FILE: ${{ github.workspace }}/run/analysis.json
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/target
+          DEPVISOR_VERIFY_PHASE: baseline
+        run: node src/cli/verify.ts
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          {
+            name: depvisor-baseline,
+            path: run/baseline.json,
+            if-no-files-found: error,
+            retention-days: 1,
+          }
+
+  head:
+    name: Verify immutable PR head
+    needs: resolve
+    if: needs.resolve.outputs.verification_selected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.verify.outputs.state }}
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with: { egress-policy: audit }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ job.workflow_repository }}",
+            ref: "${{ job.workflow_sha }}",
+            path: depvisor,
+            persist-credentials: false,
+          }
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with: { package_json_file: depvisor/package.json }
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          {
+            node-version-file: depvisor/.node-version,
+            cache: pnpm,
+            cache-dependency-path: depvisor/pnpm-lock.yaml,
+          }
+      - working-directory: depvisor
+        run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: depvisor-analysis, path: run }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ needs.resolve.outputs.head_repository }}",
+            ref: "${{ needs.resolve.outputs.pr_head }}",
+            fetch-depth: 0,
+            path: target,
+            persist-credentials: false,
+          }
+      - name: Reproduce head failure twice
+        id: verify
+        working-directory: depvisor
+        env:
+          DEPVISOR_ANALYSIS_FILE: ${{ github.workspace }}/run/analysis.json
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/target
+          DEPVISOR_VERIFY_PHASE: head
+        run: node src/cli/verify.ts
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          { name: depvisor-head, path: run/head.json, if-no-files-found: error, retention-days: 1 }
+
+  reviewer:
+    name: Evidence-grounded reviewer
+    needs: resolve
+    if: needs.resolve.outputs.review_selected == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with: { egress-policy: audit }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ job.workflow_repository }}",
+            ref: "${{ job.workflow_sha }}",
+            path: depvisor,
+            persist-credentials: false,
+          }
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with: { package_json_file: depvisor/package.json }
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          {
+            node-version-file: depvisor/.node-version,
+            cache: pnpm,
+            cache-dependency-path: depvisor/pnpm-lock.yaml,
+          }
+      - working-directory: depvisor
+        run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { name: depvisor-analysis, path: run }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ needs.resolve.outputs.head_repository }}",
+            ref: "${{ needs.resolve.outputs.updater_head }}",
+            fetch-depth: 0,
+            path: target,
+            persist-credentials: false,
+          }
+      - name: Run read-only reviewer without GitHub credentials
+        working-directory: depvisor
+        env:
+          DEPVISOR_AGENT_OUTPUT: ${{ github.workspace }}/run/reviewer.json
+          DEPVISOR_ANALYSIS_FILE: ${{ github.workspace }}/run/analysis.json
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_LLM_API_KEY: ${{ secrets.llm_api_key }}
+          DEPVISOR_LLM_API_KEY_ENV: ${{ inputs.llm_api_key_env }}
+          DEPVISOR_LLM_MODEL: ${{ inputs.llm_model }}
+          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/target
         run: |
-          echo "status=$DEPVISOR_STATUS failed=$DEPVISOR_FAILED prepared_count=$DEPVISOR_PREPARED_COUNT"
-          echo "pr_urls:"
-          echo "$DEPVISOR_PR_URLS"
+          case "$DEPVISOR_LLM_API_KEY_ENV" in
+            OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY) ;;
+            *) echo "unsupported llm_api_key_env" >&2; exit 1 ;;
+          esac
+          export "$DEPVISOR_LLM_API_KEY_ENV=$DEPVISOR_LLM_API_KEY"
+          unset DEPVISOR_LLM_API_KEY
+          pnpm exec flue run aftercare --target node --input '{"role":"reviewer"}'
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          {
+            name: depvisor-reviewer,
+            path: run/reviewer.json,
+            if-no-files-found: error,
+            retention-days: 1,
+          }
+
+  fixer:
+    name: One-shot source/test fixer
+    needs: [resolve, baseline, head]
+    if: needs.baseline.outputs.state == 'green' && needs.head.outputs.state == 'stable-red'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.candidate.outputs.verdict }}
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with: { egress-policy: audit }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ job.workflow_repository }}",
+            ref: "${{ job.workflow_sha }}",
+            path: depvisor,
+            persist-credentials: false,
+          }
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with: { package_json_file: depvisor/package.json }
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          {
+            node-version-file: depvisor/.node-version,
+            cache: pnpm,
+            cache-dependency-path: depvisor/pnpm-lock.yaml,
+          }
+      - working-directory: depvisor
+        run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: depvisor-{analysis,head}
+          merge-multiple: true
+          path: run
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ needs.resolve.outputs.head_repository }}",
+            ref: "${{ needs.resolve.outputs.updater_head }}",
+            fetch-depth: 0,
+            path: target,
+            persist-credentials: false,
+          }
+      - name: Run fixer without GitHub credentials
+        working-directory: depvisor
+        env:
+          DEPVISOR_AGENT_OUTPUT: ${{ github.workspace }}/run/fixer.json
+          DEPVISOR_ANALYSIS_FILE: ${{ github.workspace }}/run/analysis.json
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_HEAD_VERIFICATION_FILE: ${{ github.workspace }}/run/head.json
+          DEPVISOR_LLM_API_KEY: ${{ secrets.llm_api_key }}
+          DEPVISOR_LLM_API_KEY_ENV: ${{ inputs.llm_api_key_env }}
+          DEPVISOR_LLM_MODEL: ${{ inputs.llm_model }}
+          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/target
+        run: |
+          case "$DEPVISOR_LLM_API_KEY_ENV" in
+            OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY) ;;
+            *) echo "unsupported llm_api_key_env" >&2; exit 1 ;;
+          esac
+          export "$DEPVISOR_LLM_API_KEY_ENV=$DEPVISOR_LLM_API_KEY"
+          unset DEPVISOR_LLM_API_KEY
+          pnpm exec flue run aftercare --target node --input '{"role":"fixer"}'
+      - name: Serialize and scope-check fixer patch
+        id: candidate
+        working-directory: depvisor
+        env:
+          DEPVISOR_AGENT_FILE: ${{ github.workspace }}/run/fixer.json
+          DEPVISOR_ANALYSIS_FILE: ${{ github.workspace }}/run/analysis.json
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/target
+        run: node src/cli/candidate.ts
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: depvisor-fixer
+          path: |
+            run/fixer.json
+            run/candidate.json
+          if-no-files-found: error
+          retention-days: 1
+
+  candidate:
+    name: Verify candidate in isolation
+    needs: [resolve, fixer]
+    if: needs.fixer.outputs.verdict == 'candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.verify.outputs.state }}
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with: { egress-policy: audit }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ job.workflow_repository }}",
+            ref: "${{ job.workflow_sha }}",
+            path: depvisor,
+            persist-credentials: false,
+          }
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with: { package_json_file: depvisor/package.json }
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          {
+            node-version-file: depvisor/.node-version,
+            cache: pnpm,
+            cache-dependency-path: depvisor/pnpm-lock.yaml,
+          }
+      - working-directory: depvisor
+        run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: depvisor-{analysis,fixer}
+          merge-multiple: true
+          path: run
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ needs.resolve.outputs.head_repository }}",
+            ref: "${{ needs.resolve.outputs.updater_head }}",
+            fetch-depth: 0,
+            path: target,
+            persist-credentials: false,
+          }
+      - name: Apply exact patch and run authoritative checks
+        id: verify
+        working-directory: depvisor
+        env:
+          DEPVISOR_ANALYSIS_FILE: ${{ github.workspace }}/run/analysis.json
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_CANDIDATE_FILE: ${{ github.workspace }}/run/candidate.json
+          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/target
+          DEPVISOR_VERIFY_PHASE: candidate
+        run: node src/cli/verify.ts
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          {
+            name: depvisor-candidate,
+            path: run/candidate-verification.json,
+            if-no-files-found: error,
+            retention-days: 1,
+          }
+
+  publish:
+    name: Compare-and-swap publisher
+    needs: [resolve, baseline, head, reviewer, fixer, candidate]
+    if: always() && needs.resolve.outputs.admitted == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      APP_CLIENT_ID: ${{ secrets.publisher_app_client_id }}
+    outputs:
+      status: ${{ steps.publish.outputs.status }}
+      failed: ${{ steps.publish.outputs.failed }}
+      repair_applied: ${{ steps.publish.outputs.repair_applied }}
+      pr: ${{ steps.publish.outputs.pr }}
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with: { egress-policy: audit }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          {
+            repository: "${{ job.workflow_repository }}",
+            ref: "${{ job.workflow_sha }}",
+            path: depvisor,
+            persist-credentials: false,
+          }
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with: { package_json_file: depvisor/package.json }
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          {
+            node-version-file: depvisor/.node-version,
+            cache: pnpm,
+            cache-dependency-path: depvisor/pnpm-lock.yaml,
+          }
+      - working-directory: depvisor
+        run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: { pattern: "depvisor-*", merge-multiple: true, path: run }
+      - name: Create short-lived publisher token
+        if: env.APP_CLIENT_ID != ''
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.publisher_app_client_id }}
+          private-key: ${{ secrets.publisher_private_key }}
+          permission-checks: write
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Revalidate, publish, and report
+        id: publish
+        working-directory: depvisor
+        env:
+          DEPVISOR_ANALYSIS_FILE: ${{ github.workspace }}/run/analysis.json
+          DEPVISOR_ARTIFACT_DIR: ${{ github.workspace }}/run
+          DEPVISOR_PUBLISH_TOKEN: ${{ secrets.publisher_token || steps.app-token.outputs.token }}
+        run: node src/cli/publish.ts
+      - name: Upload final machine result
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          {
+            name: depvisor-result,
+            path: run/result.json,
+            if-no-files-found: warn,
+            retention-days: 7,
+          }

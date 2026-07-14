@@ -1,259 +1,190 @@
 # depvisor
 
-A GitHub Action that updates your dependencies, fixes any breakage the update causes
-with an AI agent, verifies the result with your build/test suite, and opens a
-Dependabot/Renovate-style PR.
+depvisor is dependency-update PR aftercare. It accepts an existing Dependabot or
+Renovate pull request, explains the update in this repository, reproduces a
+failing CI gate, proposes one bounded source/test repair when safe, proves the
+candidate with deterministic commands, and publishes a reviewer report.
 
-Unlike rule-based updaters, depvisor does not stop at bumping a version: it applies the
-update and runs your build/test suite deterministically, and when the update breaks
-them, an AI agent reads the codebase and the release notes and makes the code fixes
-needed to get your checks passing again. A read-only agent then explains the change (and
-any risks) in the PR body. It is LLM-provider-agnostic (bring your own API key:
-OpenAI, Anthropic, …) and ships as a GitHub Action. The final merge decision stays with
-you.
+depvisor does **not** discover versions, edit manifests or lockfiles, group
+updates, open PRs, resolve conflicts, rebase, merge, or auto-merge. The updater
+continues to own dependency selection and branch lifecycle.
 
-> depvisor currently supports npm, pnpm, and bun projects and updates direct
-> dependencies only; yarn stops with a clear error rather than guessing.
+> Turn a dependency-update PR into a green, reviewable PR without taking
+> ownership of dependency selection or PR lifecycle from the updater.
 
-## Use it in your repository
+v2 is a breaking replacement for the v1 composite action. Consumers that still
+want the standalone updater behavior can remain pinned to `@v1`.
 
-Paste this prompt into your coding agent and it will inspect your repository,
-tailor the workflow to it, and walk you through the rest:
+## Why a reusable workflow?
 
-> Read https://raw.githubusercontent.com/morinokami/depvisor/main/start.md and
-> set up depvisor in this repository.
+depvisor is a multi-job security boundary, not a bundle of steps. Target install
+and test code, the LLM credential, and the publisher credential must run on
+separate ephemeral runners with different permissions. A composite action runs
+inside one caller job and cannot create those boundaries. The small caller
+workflow is intentional: it lets depvisor own the isolated job graph while the
+repository explicitly owns the trigger and secret mapping.
 
-Setting it up by hand instead: add one workflow and one secret (your LLM API
-key):
+## How it works
+
+The trusted default-branch wrapper starts after one named aggregate CI workflow
+finishes. depvisor resolves that workflow's exact head to one open PR and
+attests Dependabot/Renovate from GitHub API actor and commit fields. It reads
+`.github/depvisor.yml` from the current base-tip SHA, computes the three-dot
+updater diff, and normalizes supported ecosystems.
+
+If CI is green, depvisor reviews without running target code. If CI is red and
+policy allows repair, separate ephemeral jobs verify a green base and stable red
+head. Only then does the one-shot fixer edit source/tests through bounded tools.
+A separate credential-free job verifies the exact patch. The publisher job
+rechecks base/head ownership, patch hash, and scope in a fresh clone before a
+normal push—never a force-push.
+
+JavaScript package manifests and Go modules are currently `repair-safe`.
+Unrecognized ecosystems still receive generic review when report policy selects
+`unknown`, but never automatic repair.
+
+## Setup
+
+### 1. Add trusted base-branch configuration
+
+Create `.github/depvisor.yml`:
 
 ```yaml
-# .github/workflows/depvisor.yml
+version: 2
+
+repair:
+  enabled: true
+  update_types: [patch, minor, major, digest]
+
+verification:
+  prepare:
+    - corepack enable
+    - pnpm install --frozen-lockfile
+  commands:
+    - pnpm run check
+
+updaters:
+  dependabot:
+    enabled: true
+  renovate:
+    enabled: true
+    trusted_actors: [renovate[bot]]
+    # Optional; otherwise stale Renovate branches require its retry checkbox.
+    rebase_label: rebase
+
+report:
+  enabled: true
+  update_types: [minor, major, unknown]
+  language: en
+  suggest_features: false
+
+cost:
+  max_dependencies_per_pr: 20
+  max_llm_calls_per_pr: 2
+```
+
+`prepare` and `commands` are ecosystem-neutral shell contracts. They may call
+`make`, `go test`, Cargo, Maven, a checked-in CI script, or any other toolchain.
+They are read from the base SHA, never from the updater-controlled head.
+
+### 2. Create a publisher GitHub App
+
+Install a GitHub App on the repository with Contents, Pull requests, Issues, and
+Checks write permissions. Store its Client ID and private key as
+`DEPVISOR_APP_CLIENT_ID` and `DEPVISOR_APP_PRIVATE_KEY`. The publisher creates a
+short-lived installation token only in its isolated job. A fine-grained PAT in
+`DEPVISOR_PUBLISHER_TOKEN` is the explicit fallback.
+
+The ordinary repository `GITHUB_TOKEN` is intentionally not used for repair
+pushes because those pushes need to trigger the repository's next CI run.
+
+### 3. Chain depvisor from one aggregate CI workflow
+
+Create `.github/workflows/depvisor.yml` on the default branch:
+
+```yaml
 name: depvisor
+
 on:
-  schedule:
-    - cron: "0 3 * * 1" # the schedule lives in YOUR workflow
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: Preview candidates, groups, and PR actions without changing anything
-        type: boolean
-        default: false
-  # Optional: uncomment to repair conflicted existing depvisor PRs after a
-  # dependency-state merge. This trigger never opens a new PR
-  # (conflict_refresh_only defaults to true on push events).
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - "**/package.json"
-  #     - package-lock.json
-  #     - pnpm-lock.yaml
-  #     - "bun.lock*"
-  #     - pnpm-workspace.yaml
+      pr_number:
+        description: Updater PR number
+        required: true
+        type: number
 
 permissions:
-  contents: write # push the update branch
-  pull-requests: write # open the PR (and create/apply its labels)
-
-concurrency:
-  group: depvisor # runs must not race on force-push
-  cancel-in-progress: false
+  actions: read # resolve the completed CI run
+  contents: read
+  pull-requests: read # resolve and attest the updater PR
 
 jobs:
-  update:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      # Recommended: block unexpected network egress. Add your LLM provider
-      # and any private package registries your repo needs.
-      - uses: step-security/harden-runner@v2
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            api.github.com:443
-            codeload.github.com:443
-            objects.githubusercontent.com:443
-            *.actions.githubusercontent.com:443
-            registry.npmjs.org:443
-            api.osv.dev:443
-            api.openai.com:443
-
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false # required — depvisor refuses persisted tokens
-
-      - uses: morinokami/depvisor@v1 # or pin a commit SHA for production; see Versioning below
-        with:
-          dry_run: ${{ inputs.dry_run }}
-          llm_api_key: ${{ secrets.LLM_API_KEY }}
-          llm_model: openai/gpt-5.5 # or anthropic/claude-sonnet-5, ... (BYOK)
+  aftercare:
+    uses: morinokami/depvisor/.github/workflows/depvisor.yml@v2
+    with:
+      workflow_run_id: ${{ github.event.workflow_run.id || 0 }}
+      pr_number: ${{ inputs.pr_number || 0 }}
+      llm_model: openai/gpt-5.5
+    secrets:
+      llm_api_key: ${{ secrets.OPENAI_API_KEY }}
+      publisher_app_client_id: ${{ secrets.DEPVISOR_APP_CLIENT_ID }}
+      publisher_private_key: ${{ secrets.DEPVISOR_APP_PRIVATE_KEY }}
 ```
 
-### Prerequisites
+Use one aggregate CI workflow name to avoid duplicate runs. Do not use
+`pull_request_target`, direct Dependabot PR secrets, or `secrets: inherit`.
 
-- **Repo setting**: enable "Allow GitHub Actions to create and approve pull requests"
-  (Settings → Actions → General → Workflow permissions), or PR creation fails.
-- The checkout must not persist credentials: set `persist-credentials: false` on
-  `actions/checkout` (the default is `true`). depvisor keeps tokens away from the
-  AI agent and from the target's install scripts, so it fails at startup if it
-  finds credentials in the checkout (an Authorization header in `.git/config`,
-  a token embedded in a remote URL or `insteadOf` rewrite, a persisted SSH key,
-  or a repo-local credential helper).
-- package.json defines at least one of `build` / `lint` / `test`, or the
-  `verify_commands` input names your checks explicitly. These checks must pass
-  on the base branch before depvisor runs.
-- The repo uses npm, pnpm, or bun, with a committed lockfile. bun repos also
-  need the bun binary on the runner (`oven-sh/setup-bun`, version pinned).
-- `.gitignore` covers `node_modules/` and build output (depvisor refuses dirty trees).
-- You pay for the LLM calls with your own API key.
-- Note: PRs opened with the default `GITHUB_TOKEN` do not trigger your other
-  workflows (GitHub's recursion guard) — pass a GitHub App / PAT token as
-  `github_token` if you want CI checks on depvisor PRs.
-
-Workspace monorepos, pnpm `catalog:` pins, bun specifics, and running without a
-committed lockfile (npm/pnpm only) are all supported with caveats — see
-[Repository requirements](./docs/configuration.md#repository-requirements).
-
-### Inputs
-
-| Input                         | Purpose                                                                                                                                                                                                                                                                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `llm_api_key`                 | Provider API key — reaches **only** a non-dry-run agent step; required unless `dry_run: true`                                                                                                                                                                                                                                                    |
-| `llm_model`                   | Model specifier the key belongs to, e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`; required unless `dry_run: true`                                                                                                                                                                                                                          |
-| `dry_run`                     | `true` to preview deterministic candidate filtering, grouping, and PR dispositions without applying updates, calling an LLM, pushing, or opening PRs (default `false`)                                                                                                                                                                           |
-| `conflict_refresh_only`       | `true` to rebuild only explicitly conflicted existing depvisor PRs and suppress every new/non-conflicted group. Defaults to `true` on `push` events and `false` otherwise, so a dependency-state `push` trigger repairs remaining PRs without replenishing the open-PR queue; set `false` explicitly if a push-triggered run should open new PRs |
-| `verify_commands`             | Newline-separated shell commands for the verification gate, replacing the automatic `build`/`lint`/`test` script detection                                                                                                                                                                                                                       |
-| `open_pull_requests_limit`    | Ceiling on the number of open depvisor PRs (default `5`, matching Dependabot's `open-pull-requests-limit`). A normal run opens new PRs up to this limit and refreshes existing ones whose targets drift or whose branch conflicts with base; raising it multiplies LLM calls and CI time roughly linearly                                        |
-| `minimum_release_age`         | Minimum number of days a version must have been public on the npm registry before depvisor updates to it (default `1` day). `0` disables the cooldown entirely                                                                                                                                                                                   |
-| `minimum_release_age_exclude` | Newline-separated package names exempted from the cooldown's age check — for private-registry packages the public npm registry cannot vouch for (they would otherwise fail the run). Exact names or trailing-`*` prefix globs (`@acme/*`); full-line `#` comments allowed                                                                        |
-| `ignore`                      | Newline-separated packages to never update. `name` skips a package entirely; `name@<major>` skips only updates whose target major is that number; `prefix*` skips every matching package; full-line `#` comments are allowed                                                                                                                     |
-| `groups`                      | Newline-separated package groups updated together in one PR, each line `<group-name>: <package> <package> …` (members separated by spaces or commas). Exact names or trailing-`*` prefix globs, each package in at most one group; ungrouped packages keep getting their own PR                                                                  |
-| `suggest_features`            | `true` to also surface newly added capabilities relevant to your code as a display-only PR-body section (default `false`). Opt-in because it costs extra tokens and widens the agent's engagement with untrusted release notes                                                                                                                   |
-| `language`                    | Restricted BCP-47-style language tag (e.g. `ja`, `pt-BR`) the agent writes the PR's narrative text in; empty (the default) means English. Only the LLM-written free text is localized — statuses, commit messages, branch names, PR titles, and section headings stay English                                                                    |
+The template follows the movable `v2` tag. For reviewed upgrades, pin the
+reusable workflow to a full 40-character commit SHA and keep the release tag in
+an end-of-line comment; Dependabot can update both the SHA and comment. Enable
+its GitHub Actions updater with:
 
 ```yaml
-# e.g. when your checks go by other names:
-verify_commands: |
-  npm run check
-  npm run test:unit
-
-# e.g. dependencies you have decided not to update:
-ignore: |
-  left-pad
-  lru-cache@11
-
-# e.g. packages that must move in lockstep, in one PR:
-groups: |
-  react: react react-dom @types/react
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
 ```
 
-To validate a new or edited configuration, open the workflow's **Run workflow**
-dialog, check `dry_run`, and inspect the step summary. The plan shows every
-detected and ignored candidate, cooldown clamp/hold-back, prioritized group,
-branch collision, and existing-PR decision. New-PR decisions are explicitly
-provisional: they assume every earlier planned new PR succeeds, while a real
-run gives a failed group's unused slot to a later group. Dry-run still installs
-the target (npm/pnpm collection reads the installed tree) and reads the open-PR
-snapshot, but it does not run the baseline/update checks or require
-`llm_api_key` / `llm_model`. See [Dry-run planning](./docs/configuration.md#dry-run-planning-dry_run).
+Whichever ref the caller selects, every job runs depvisor source from that exact
+called-workflow commit; there is no independent source-ref input.
 
-When several depvisor PRs share a lockfile, merging one can conflict the
-others. depvisor regenerates a conflicted branch from the current base and runs
-the complete deterministic bump/verification pipeline again; it never rebases
-an old fixer commit. The optional `push` recipe above needs no extra input:
-`conflict_refresh_only` defaults to `true` on push events, so that event
-repairs only already-open conflicted PRs and cannot create a new PR. See
-[Conflict refresh](./docs/configuration.md#refreshing-conflicted-prs-conflict_refresh_only).
+## Results
 
-Every input above is documented in depth — behavior, edge cases, and failure
-modes — in [docs/configuration.md](./docs/configuration.md). The remaining
-inputs (`llm_api_key_env`, `github_token`, `base_branch`, `install_command`,
-`node_version`) are documented with their defaults in
-[`action.yml`](./action.yml).
+The reusable workflow exposes `status`, `pr`, and `repair_applied`. It also
+upserts a marker-delimited PR comment, creates a `depvisor` Check, and stores the
+typed `result.json` artifact. See [results](docs/results.md) for every terminal
+status and [configuration](docs/configuration.md) for the complete schema.
 
-### Outputs
+## Security boundary
 
-The action exposes the run's result to the following steps of your workflow —
-`status`, `failed`, `prepared_count`, `pr_urls`, `total_tokens`, and
-`est_cost_usd` — so you can branch and notify on it. All values are deliberately
-machine-shaped (fixed-vocabulary statuses, numbers, and strictly validated
-URLs, never the agent's free text), so they are safe to consume. The output
-table, a consumption example, and the full status vocabulary are in
-[docs/results.md](./docs/results.md#action-outputs).
+| Job                  | Target code | LLM credential | GitHub write credential |
+| -------------------- | ----------- | -------------- | ----------------------- |
+| Resolve/normalize    | No          | No             | No                      |
+| Baseline/head verify | Yes         | No             | No                      |
+| Reviewer/fixer       | No          | Yes            | No                      |
+| Candidate verify     | Yes         | No             | No                      |
+| Publisher            | No          | No             | App/PAT only            |
 
-## Versioning
+Artifacts crossing jobs are bounded and schema-validated. Checkout credentials
+are never persisted. The reviewer is read-only; the fixer can only use jailed
+repo-relative tools and cannot reach `.git`, the depvisor source checkout, or a
+host shell.
 
-Pin depvisor the way you would any privileged third-party action — it handles
-your tokens and opens PRs, so a version swapped out from under you is a real
-supply-chain risk. **Pin to a full-length commit SHA** and keep the version in a
-trailing comment; a SHA is the only truly immutable reference (a Git tag, even
-`@v1.2.3`, can be force-moved — the vector behind recent Actions supply-chain
-attacks), and it is how depvisor pins its own dependencies:
+## Development
 
-```yaml
-- uses: morinokami/depvisor@<full-length-sha> # v1.2.3
+Node 24+ and pnpm are required.
+
+```bash
+pnpm test
+pnpm run check
+actionlint
+zizmor --persona=auditor --min-confidence=high .
 ```
 
-Let [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot)
-or Renovate (the `github-actions` ecosystem) bump that SHA for you, so you keep
-depvisor's own security fixes without giving up immutability.
-
-Prefer convenience over that guarantee? The movable major tag
-`morinokami/depvisor@v1` always points at the latest `v1.x` release — you get
-patches and backward-compatible features without editing the pin, and a breaking
-change bumps the major to `v2`, which you opt into deliberately (`@v1` never
-rolls forward to `v2` on its own). It trades the supply-chain immutability above
-for auto-updates.
-
-Releases are cut from [Conventional Commits](https://www.conventionalcommits.org)
-on `main` (`feat` → minor, `fix` → patch, `!`/`BREAKING CHANGE` → major), and the
-[CHANGELOG](CHANGELOG.md) is generated per release.
-
-## How depvisor works
-
-depvisor keeps the LLM and GitHub token in separate steps. Token-holding steps
-only snapshot existing PRs and push/open the final PR; the agent step gets only
-the LLM key. Because a checkout that persists credentials would defeat this
-separation from the outside, depvisor checks for persisted credentials first
-and refuses to start if it finds any.
-
-The agents also do not receive a host shell. Their built-in capabilities run in
-Flue's in-memory workspace, isolated from the host filesystem, and reach the
-target checkout only through bounded tools:
-the digest can list, search, and read repo-relative files; the failure-only
-fixer additionally gets repo-relative write/replace/remove operations. Paths are
-resolved below the real target root (including symlinks), `.git` is unavailable,
-and neither role can reach depvisor's own action checkout or rewrite the later
-token-holding entrypoint.
-
-Every PR updates exactly one package — majors, minors, and patches alike get
-their own PR, the model of Dependabot without `groups` (in a workspace monorepo,
-that one PR covers every workspace declaring the package). For each update,
-deterministic code verifies the base branch, applies the dependency bump and
-installs it, and runs your configured checks. When they pass, no fixer agent runs
-at all. When the update breaks them, an AI agent reads the release notes and your
-code and makes the minimal source fixes to get the checks passing again — it never
-touches manifests or lockfiles, which the deterministic bump already owns.
-Deterministic gates re-verify the final result before a PR is opened, reject any
-tracked or untracked repository change made by install/verification scripts
-outside their expected boundary, and repeat the fixer scope gate immediately
-before the fix commit. Either way, a separate read-only agent writes the PR's
-explanation.
-
-The update branch uses a stable name, so reruns update the same PR instead of
-creating duplicates. It contains up to two commits: `deps: bump …` for the manifest
-and lockfile changes (made before any AI runs), and `fix: adapt code to …` for the
-source fixes the AI made — present only when the update actually needed them.
-
-### Going deeper
-
-- [docs/configuration.md](./docs/configuration.md) — repository requirements in
-  detail, and every behavior-shaping input: verification commands, the
-  supply-chain cooldown (`minimum_release_age`), `ignore`, package grouping
-  (`groups`), dry-run planning (`dry_run`), the PR ceiling
-  (`open_pull_requests_limit`), security
-  prioritization, opt-in feature suggestions, and the PR narrative's output
-  language (`language`).
-- [docs/results.md](./docs/results.md) — the job summary and annotations, the
-  action outputs, PR labels, the test-change and license-change warnings, and
-  the full [status reference](./docs/results.md#status-reference).
+See [start.md](start.md) for the self-contained agent setup guide.

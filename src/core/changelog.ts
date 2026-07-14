@@ -1,7 +1,7 @@
 /**
  * Deterministic, LLM-free release-notes fetcher. The fixer agent reaches it
  * through a bounded tool (supplying only a package name and version window), and
- * the workflow calls it directly to feed the PR digest. Either way this code
+ * deterministic normalization calls it to enrich reviewer evidence. Either way this code
  * fixes the endpoints (npm registry, then GitHub Releases), so the model never
  * chooses a URL and untrusted text enters through one narrow path.
  *
@@ -19,6 +19,7 @@ const GITHUB_API = "https://api.github.com";
 // Bound the untrusted text handed to the model; changelogs can be huge.
 const MAX_RELEASES = 20;
 const PER_RELEASE_CHARS = 4_000;
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 // Hung upstreams degrade to "unavailable" instead of stalling the agent step.
 // One budget covers the whole lookup; both requests share the signal.
@@ -100,7 +101,10 @@ export function parseGithubSlug(repository: unknown): string | null {
  * defenses are egress blocking, token absence, and deterministic gates.
  */
 export function sanitizeReleaseText(raw: string): string {
-  const stripped = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+  const stripped = raw
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\p{Cc}/gu, (character) => ("\n\r\t".includes(character) ? character : " "))
+    .trim();
   if (stripped.length <= PER_RELEASE_CHARS) return stripped;
   return `${stripped.slice(0, PER_RELEASE_CHARS)}\n…(truncated)`;
 }
@@ -151,13 +155,39 @@ function requestInit(signal?: AbortSignal): RequestInit {
   };
 }
 
+async function boundedJson(response: Response): Promise<unknown> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    throw new Error("response exceeds evidence byte limit");
+  }
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    length += value.byteLength;
+    if (length > MAX_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error("response exceeds evidence byte limit");
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(body));
+}
+
 /**
  * Resolve a package to its GitHub "owner/repo" slug via npm registry metadata,
  * or null. Never throws — an invalid name, a non-GitHub source, or a network
  * failure all degrade to null, because the release-notes lookup below (its one
- * remaining caller — and only as the fallback when no `opts.slug` was supplied;
- * the PR body's releases/compare links and the workflow's digest notes both read
- * `parseGithubSlug` off the packument the run already fetched) treats the slug
+ * other callers use only the fallback when no `opts.slug` was supplied) treats the slug
  * as strictly optional. The endpoint is fixed here; callers only supply the
  * package name.
  */
@@ -170,7 +200,7 @@ export async function resolveSourceRepo(
   try {
     const res = await doFetch(`${NPM_REGISTRY}/${pkg}`, requestInit(opts.signal));
     if (!res.ok) return null;
-    const meta: unknown = await res.json();
+    const meta = await boundedJson(res);
     return parseGithubSlug(
       meta && typeof meta === "object" && "repository" in meta ? meta.repository : null,
     );
@@ -234,7 +264,7 @@ export async function fetchReleaseNotes(
           "unauthenticated requests are rate-limited).",
       );
     }
-    const releases = selectReleases(await res.json(), input.from, input.to);
+    const releases = selectReleases(await boundedJson(res), input.from, input.to);
     if (releases.length === 0) {
       return unavailable(
         pkg,

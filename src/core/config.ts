@@ -1,272 +1,98 @@
 /**
- * The run's configuration surface: every `DEPVISOR_*` knob the update workflow
- * reads, parsed and validated in one place.
- *
- * Each knob's own parser (`dry-run.ts`, `conflict-refresh-only.ts`, `budget.ts`, `release-age.ts`,
- * `ignore.ts`, `grouping.ts`, `suggest-features.ts`, `language.ts`) owns its
- * default and its grammar — see those headers.
- * This module only sequences them and turns the first rejection into the
- * run-level `bad-*` status the workflow reports. That sequencing is why it
- * lives in the core rather than inline in the workflow: the summaries a user
- * reads when a knob is mistyped are the product's error UI, and the core is the
- * half that can be unit-tested under plain node, without an API key.
- *
- * Two conventions hold for every field:
- *   - An empty string means "not set" (the composite action forwards unset
- *     inputs as empty strings), so every read is a falsy check, never `??`.
- *   - Values come from the workflow file / env and are therefore TRUSTED. None
- *     may ever be sourced from the agent-writable target tree.
- *
- * Validation is unconditional: a typo'd exclusion is rejected even when the
- * cooldown is disabled, so it fails loudly now rather than the day the feature
- * is re-enabled.
- *
- * `DEPVISOR_LLM_MODEL` is deliberately absent. It is the agent factory's input
- * (`agents/depvisor.ts`), not the workflow's, and it has no default.
+ * Trusted v2 configuration. The coordinator reads this file from the immutable
+ * PR base-tip SHA through the GitHub API; target checkouts are never consulted.
  */
 
-import { parseOpenPullRequestsLimit } from "./budget.ts";
-import { parseConflictRefreshOnly } from "./conflict-refresh-only.ts";
-import { parseDryRun } from "./dry-run.ts";
-import { type GroupRule, parseGroups } from "./grouping.ts";
-import { type IgnoreRule, parseIgnore } from "./ignore.ts";
-import { parseLanguage } from "./language.ts";
-import type { NamePattern } from "./name-pattern.ts";
-import { parseMinimumReleaseAge, parseMinimumReleaseAgeExclude } from "./release-age.ts";
-import { parseSuggestFeatures } from "./suggest-features.ts";
+import { createHash } from "node:crypto";
+import { parse as parseYaml } from "yaml";
+import * as v from "valibot";
+import { UpdateTypeSchema } from "./types.ts";
 
-/** The environment a run is configured from — `process.env` in production. */
-export type ConfigEnv = Record<string, string | undefined>;
+const UpdateTypesSchema = v.pipe(v.array(UpdateTypeSchema), v.maxLength(5));
+const CommandSchema = v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2_000));
+const CommandsSchema = v.pipe(v.array(CommandSchema), v.maxLength(50));
+const ActorSchema = v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(100));
+const MAX_CONFIG_BYTES = 64 * 1024;
 
-interface RunConfig {
-  /** Plan selection and PR disposition without modifying the target or calling an LLM. */
-  dryRun: boolean;
-  /** Rebuild only conflicted existing PRs; never open or plan a new PR. */
-  conflictRefreshOnly: boolean;
-  /**
-   * CI passes the default branch explicitly; local runs leave this unset and
-   * fall back to the current branch after preflight rejects HEAD or depvisor/*.
-   */
-  baseBranch: string | undefined;
-  /**
-   * Path to a JSON snapshot of open PRs (`{number, headRefName, body,
-   * mergeable, mergeStateStatus}[]`), written by a
-   * separate token-holding workflow step. Data flows in; credentials never do.
-   */
-  openPrsFile: string | undefined;
-  /**
-   * Newline-separated shell commands that REPLACE auto-detected verification.
-   * Consumed by preflight, which falls back to script auto-detection when empty.
-   */
-  verifyCommands: string;
-  /**
-   * The `install_command` input, forwarded for the group-boundary reset: a
-   * custom command is reused verbatim; `auto`/`skip`/unset fall back to the PM's
-   * lockfile-faithful install (`skip` skips only the pre-agent install step).
-   */
-  installCommand: string;
-  /**
-   * Ceiling on the number of open depvisor PRs (Dependabot's
-   * open-pull-requests-limit model). Refreshing an existing PR never consumes a
-   * slot.
-   */
-  openPullRequestsLimit: number;
-  /**
-   * Minimum age (days) a version must have been public on the npm registry
-   * before depvisor updates to it — the supply-chain cooldown. `0` disables it.
-   */
-  minimumReleaseAge: number;
-  /**
-   * Package names (or `@acme/*`-style prefix globs) exempted from the
-   * cooldown's age check — the escape hatch for packages the public npm
-   * registry cannot vouch for (private-registry packages), which would
-   * otherwise go red as `release-age-unavailable` every run.
-   */
-  releaseAgeExclude: NamePattern[];
-  /**
-   * Rules (`name`, `name@<major>`, or a `prefix*` glob) that drop candidates
-   * before grouping — the human-decided permanent counterpart to a fixer defer.
-   */
-  ignoreRules: IgnoreRule[];
-  /**
-   * User-declared package groups (`<group-name>: pkg pkg …`) updated together
-   * in one branch/PR — Dependabot's `groups`; members are exact names or
-   * `prefix*` globs. Empty = every package is its own group.
-   */
-  groupRules: GroupRule[];
-  /**
-   * When on, the digest prompt asks the agent to surface newly added
-   * capabilities relevant to the codebase, rendered display-only in the PR body.
-   * Off by default: it costs extra tokens and widens the agent's engagement with
-   * untrusted release notes.
-   */
-  suggestFeatures: boolean;
-  /**
-   * BCP-47-style tag for the language the fixer/digest write their narrative
-   * fields in (`""` = unset = English, adding nothing to the prompts). Only
-   * LLM free text is localized; deterministic strings are machine contracts.
-   */
-  language: string;
-}
+const RepairConfigSchema = v.strictObject({
+  enabled: v.boolean(),
+  update_types: v.optional(UpdateTypesSchema, ["patch", "minor", "major", "digest"]),
+});
 
-/**
- * A parsed config, or the first rejected knob — a run-level `bad-*` status the
- * workflow reports before it touches the target repository at all.
- */
-export type ParsedRunConfig =
-  | { ok: true; config: RunConfig }
-  | { ok: false; status: string; summary: string };
+const VerificationConfigSchema = v.strictObject({
+  prepare: v.optional(CommandsSchema, []),
+  commands: v.optional(CommandsSchema, []),
+});
 
-/** `entry`/`entries`, so the rejection summaries read as English. */
-function plural(count: number, singular: string, pluralForm: string): string {
-  return count === 1 ? singular : pluralForm;
-}
+const DependabotConfigSchema = v.strictObject({ enabled: v.optional(v.boolean(), true) });
+const RenovateConfigSchema = v.strictObject({
+  enabled: v.optional(v.boolean(), true),
+  trusted_actors: v.optional(v.pipe(v.array(ActorSchema), v.maxLength(50)), ["renovate[bot]"]),
+  rebase_label: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(100))),
+});
 
-/** Read a knob, treating an empty string as "not set". */
-function read(env: ConfigEnv, name: string): string {
-  return env[name] || "";
-}
+const ReportConfigSchema = v.strictObject({
+  enabled: v.boolean(),
+  update_types: v.optional(UpdateTypesSchema, ["minor", "major"]),
+  language: v.optional(v.pipe(v.string(), v.regex(/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/)), "en"),
+  suggest_features: v.optional(v.boolean(), false),
+});
 
-/**
- * Parse and validate every knob, in the order their `bad-*` statuses are
- * reported. The first rejection wins: a run with two mistyped knobs names only
- * the first, which is enough to send the user to their workflow file.
- */
-export function parseRunConfig(env: ConfigEnv): ParsedRunConfig {
-  const dryRunRaw = read(env, "DEPVISOR_DRY_RUN");
-  const dryRun = parseDryRun(dryRunRaw);
-  if (dryRun === null) {
-    return {
-      ok: false,
-      status: "bad-dry-run",
-      summary:
-        "The dry_run input must be 'true' or 'false' (empty means false); " +
-        `got '${dryRunRaw.trim()}'.`,
-    };
-  }
+const CostConfigSchema = v.strictObject({
+  max_dependencies_per_pr: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(100)),
+    20,
+  ),
+  max_llm_calls_per_pr: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(2)),
+    2,
+  ),
+});
 
-  const conflictRefreshOnlyRaw = read(env, "DEPVISOR_CONFLICT_REFRESH_ONLY");
-  const conflictRefreshOnly = parseConflictRefreshOnly(conflictRefreshOnlyRaw);
-  if (conflictRefreshOnly === null) {
-    return {
-      ok: false,
-      status: "bad-conflict-refresh-only",
-      summary:
-        "The conflict_refresh_only input must be 'true' or 'false' (empty means false); " +
-        `got '${conflictRefreshOnlyRaw.trim()}'.`,
-    };
-  }
-
-  const openPullRequestsLimitRaw = read(env, "DEPVISOR_OPEN_PULL_REQUESTS_LIMIT");
-  const openPullRequestsLimit = parseOpenPullRequestsLimit(openPullRequestsLimitRaw);
-  if (openPullRequestsLimit === null) {
-    return {
-      ok: false,
-      status: "bad-open-pull-requests-limit",
-      summary:
-        "The open_pull_requests_limit input must be a positive integer; " +
-        `got '${openPullRequestsLimitRaw.trim()}'.`,
-    };
-  }
-
-  const minimumReleaseAgeRaw = read(env, "DEPVISOR_MINIMUM_RELEASE_AGE");
-  const minimumReleaseAge = parseMinimumReleaseAge(minimumReleaseAgeRaw);
-  if (minimumReleaseAge === null) {
-    return {
-      ok: false,
-      status: "bad-minimum-release-age",
-      summary:
-        "The minimum_release_age input must be a non-negative integer (days); " +
-        `got '${minimumReleaseAgeRaw.trim()}'.`,
-    };
-  }
-
-  const releaseAgeExclude = parseMinimumReleaseAgeExclude(
-    read(env, "DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE"),
-  );
-  if (!releaseAgeExclude.ok) {
-    return {
-      ok: false,
-      status: "bad-minimum-release-age-exclude",
-      summary:
-        `The minimum_release_age_exclude input has ${releaseAgeExclude.invalid.length} unrecognized ` +
-        `${plural(releaseAgeExclude.invalid.length, "entry", "entries")}: ` +
-        `${releaseAgeExclude.invalid.join(", ")}. Each line must be a package name ` +
-        "or a trailing-'*' prefix glob like '@acme/*' (full-line '#' comments are " +
-        "allowed); majors, version ranges, and other patterns are not supported.",
-    };
-  }
-
-  const ignore = parseIgnore(read(env, "DEPVISOR_IGNORE"));
-  if (!ignore.ok) {
-    return {
-      ok: false,
-      status: "bad-ignore",
-      summary:
-        `The ignore input has ${ignore.invalid.length} unrecognized ` +
-        `${plural(ignore.invalid.length, "entry", "entries")}: ${ignore.invalid.join(", ")}. ` +
-        "Each line must be 'name' (never update it), 'name@<major>' (skip updates to " +
-        "that major), a trailing-'*' prefix glob like '@types/*' (no major suffix), or " +
-        "a full-line '#' comment; full version ranges and update-type rules are not " +
-        "supported yet.",
-    };
-  }
-
-  const groups = parseGroups(read(env, "DEPVISOR_GROUPS"));
-  if (!groups.ok) {
-    return {
-      ok: false,
-      status: "bad-groups",
-      summary:
-        `The groups input has ${groups.problems.length} invalid ` +
-        `${plural(groups.problems.length, "entry", "entries")}: ${groups.problems.join("; ")}. ` +
-        "Each line must be '<group-name>: <package> <package> …' — package names or " +
-        "trailing-'*' prefix globs like '@acme/*', separated by spaces or commas, each " +
-        "package in at most one group; full-line '#' comments are allowed. Other " +
-        "patterns, version ranges, and majors are not supported.",
-    };
-  }
-
-  const suggestFeaturesRaw = read(env, "DEPVISOR_SUGGEST_FEATURES");
-  const suggestFeatures = parseSuggestFeatures(suggestFeaturesRaw);
-  if (suggestFeatures === null) {
-    return {
-      ok: false,
-      status: "bad-suggest-features",
-      summary:
-        "The suggest_features input must be 'true' or 'false' (empty means false); " +
-        `got '${suggestFeaturesRaw.trim()}'.`,
-    };
-  }
-
-  const languageRaw = read(env, "DEPVISOR_LANGUAGE");
-  const language = parseLanguage(languageRaw);
-  if (language === null) {
-    return {
-      ok: false,
-      status: "bad-language",
-      summary:
-        "The language input must be a BCP-47-style language tag such as 'ja' or 'pt-BR'; " +
-        `got '${languageRaw.trim()}'.`,
-    };
-  }
-
-  return {
-    ok: true,
-    config: {
-      dryRun,
-      conflictRefreshOnly,
-      baseBranch: env.DEPVISOR_BASE_BRANCH || undefined,
-      openPrsFile: env.DEPVISOR_OPEN_PRS_FILE || undefined,
-      verifyCommands: read(env, "DEPVISOR_VERIFY_COMMANDS"),
-      installCommand: read(env, "DEPVISOR_INSTALL_COMMAND"),
-      openPullRequestsLimit,
-      minimumReleaseAge,
-      releaseAgeExclude: releaseAgeExclude.exclude,
-      ignoreRules: ignore.rules,
-      groupRules: groups.rules,
-      suggestFeatures,
-      language,
+export const DepvisorConfigSchema = v.strictObject({
+  version: v.literal(2),
+  repair: RepairConfigSchema,
+  verification: v.optional(VerificationConfigSchema, { prepare: [], commands: [] }),
+  updaters: v.optional(
+    v.strictObject({
+      dependabot: v.optional(DependabotConfigSchema, { enabled: true }),
+      renovate: v.optional(RenovateConfigSchema, {
+        enabled: true,
+        trusted_actors: ["renovate[bot]"],
+      }),
+    }),
+    {
+      dependabot: { enabled: true },
+      renovate: { enabled: true, trusted_actors: ["renovate[bot]"] },
     },
-  };
+  ),
+  report: ReportConfigSchema,
+  cost: v.optional(CostConfigSchema, {
+    max_dependencies_per_pr: 20,
+    max_llm_calls_per_pr: 2,
+  }),
+});
+
+export type DepvisorConfig = v.InferOutput<typeof DepvisorConfigSchema>;
+
+export type ConfigResult =
+  | { ok: true; config: DepvisorConfig; digest: string }
+  | { ok: false; error: string };
+
+export function parseConfig(source: string | null): ConfigResult {
+  if (source === null || source.trim() === "") {
+    return { ok: false, error: ".github/depvisor.yml is missing at the PR base tip" };
+  }
+  if (Buffer.byteLength(source) > MAX_CONFIG_BYTES) {
+    return { ok: false, error: ".github/depvisor.yml exceeds 64 KiB" };
+  }
+  try {
+    const raw: unknown = parseYaml(source);
+    const config = v.parse(DepvisorConfigSchema, raw);
+    const digest = createHash("sha256").update(source).digest("hex");
+    return { ok: true, config, digest };
+  } catch (error) {
+    const message = Error.isError(error) ? error.message : String(error);
+    return { ok: false, error: `invalid .github/depvisor.yml: ${message}` };
+  }
 }

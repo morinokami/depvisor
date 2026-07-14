@@ -1,0 +1,7 @@
+{
+  "name": "fixture-js",
+  "private": true,
+  "dependencies": {
+    "lru-cache": "^10.4.3"
+  }
+}

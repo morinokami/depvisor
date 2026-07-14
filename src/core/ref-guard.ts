@@ -1,13 +1,12 @@
 /**
- * A per-group guard for the target repository's complete ref namespace.
+ * A verification-stage guard for the target repository's complete ref namespace.
  *
  * Target lifecycle and verification scripts run with `.git` reachable, so a
- * group snapshots every ref before its first untrusted execution, records each
+ * job snapshots every ref before its first untrusted execution, records each
  * deliberate branch/commit write, and verifies both the ref set and HEAD after
  * every untrusted boundary. This class closes that bookkeeping into one place:
  * callers still own policy because the same restored drift is fatal after
- * target code, quietly discarded after an unusable fixer result, and fail-soft
- * after the read-only digest.
+ * target code and restored before any result crosses the job boundary.
  *
  * Expected values must come from trusted code immediately after its own write;
  * never call `expect` with a sha read after untrusted target code has run.
@@ -29,7 +28,7 @@ export class RefGuard {
     this.#expected = snapshotRefs(repo);
   }
 
-  /** Snapshot every ref before this group's first untrusted execution. */
+  /** Snapshot every ref before this job's first untrusted execution. */
   static capture(repo: string): RefGuard {
     return new RefGuard(repo);
   }
