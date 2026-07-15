@@ -5,41 +5,32 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   emitRunStatus,
+  emptyRunStatus,
+  type OpUsage,
   readRunStatus,
-  recordGroupOutcome,
+  recordPublishOutcome,
   renderStepSummary,
   runFailsJob,
   runLogLine,
+  type RunStatus,
   statusFailsJob,
   statusPath,
-  sumGroupUsage,
+  sumUsage,
   toActionOutputs,
   toRunOutput,
-  type GroupResult,
-  type GroupUsage,
-  type RunStatus,
 } from "../src/core/status.ts";
+import type { DependencyChange } from "../src/core/types.ts";
 
-const group = (patch: Partial<GroupResult> = {}): GroupResult => ({
-  status: "pr-prepared",
-  branch: "depvisor/dev-knip",
-  group: "dev/knip",
-  summary: "Updated knip. <!-- hidden --> @octocat\n::error:: nope",
-  packages: [
-    {
-      name: "knip",
-      current: "6.23.0",
-      latest: "6.24.0",
-      kind: "dev",
-      updateType: "minor",
-    },
-  ],
-  verification: [{ name: "pnpm run test", ok: true, code: 0 }],
-  prUrl: null,
-  ...patch,
+const change = (): DependencyChange => ({
+  name: "lru-cache",
+  from: "7.18.3",
+  to: "11.2.1",
+  kind: "prod",
+  updateType: "major",
+  locations: [""],
 });
 
-const usage = (patch: Partial<GroupUsage> = {}): GroupUsage => ({
+const usage = (patch: Partial<OpUsage> = {}): OpUsage => ({
   role: "fixer",
   input: 1000,
   output: 200,
@@ -52,540 +43,260 @@ const usage = (patch: Partial<GroupUsage> = {}): GroupUsage => ({
 });
 
 const run = (patch: Partial<RunStatus> = {}): RunStatus => ({
-  status: "completed",
-  base: "main",
-  summary: "Prepared 1 PR(s) from 1 group(s).",
-  groups: [group()],
+  status: "report-prepared",
+  baseRef: "main",
+  headRef: "dependabot/npm_and_yarn/lru-cache-11.2.1",
+  headSha: "a".repeat(40),
+  prNumber: 12,
+  summary: "Verification passes on this PR as-is.",
+  changes: [change()],
+  verification: [{ name: "test", ok: true, code: 0 }],
+  repaired: false,
+  commentUrl: null,
   ...patch,
 });
 
-test("status failure policy keeps benign outcomes green and fail-closed stops red", () => {
-  for (const status of [
-    "completed",
-    "dry-run-completed",
-    "no-updates",
-    "pr-prepared",
-    "pr-up-to-date",
-    "deferred",
-    "open-pr-blocked",
-    "held-back-by-limit",
-  ]) {
-    assert.equal(statusFailsJob(status), false);
-  }
-  for (const status of [
-    "in-progress",
-    "baseline-red",
-    "reset-failed",
-    "bad-conflict-refresh-only",
-    "bad-open-pull-requests-limit",
-    "reinstall-unavailable",
-    "branch-collision",
-    "verification-failed",
-    "scope-violation",
-    "unexpected-commits",
-    "no-structured-result",
-    "missing-base-branch",
-    "no-changes",
-    "open-pr-failed",
-    "bump-failed",
-  ]) {
-    assert.equal(statusFailsJob(status), true);
-  }
-});
+const tempDir = (): string => mkdtempSync(join(tmpdir(), "depvisor-status-"));
 
-test("toRunOutput projects the workflow output, dropping packages, prUrl, and usage", () => {
-  const output = toRunOutput(
-    run({ groups: [group({ prUrl: "https://github.com/o/r/pull/1", usage: [usage()] })] }),
-  );
-  assert.equal(output.status, "completed");
-  assert.equal(output.base, "main");
-  assert.equal(output.groups.length, 1);
-  const g = output.groups[0] as Record<string, unknown>;
-  assert.equal(g.status, "pr-prepared");
-  assert.equal(g.branch, "depvisor/dev-knip");
-  assert.deepEqual(g.verification, [{ name: "pnpm run test", ok: true, code: 0 }]);
-  assert.ok(!("packages" in g), "packages must be stripped from the workflow output");
-  assert.ok(!("prUrl" in g), "prUrl must be stripped from the workflow output");
-  assert.ok(!("usage" in g), "usage is record-only and must not appear in the workflow output");
-});
-
-test("toActionOutputs projects status, result counts, URLs, and zero usage", () => {
-  const outputs = toActionOutputs(
-    run({
-      groups: [
-        group({ prUrl: "https://github.com/o/r/pull/1" }),
-        group({
-          branch: "depvisor/prod-semver",
-          group: "prod/semver",
-          prUrl: "https://github.com/o/r/pull/2",
-        }),
-        group({ status: "held-back-by-limit", branch: "depvisor/dev-vitest", group: "dev/vitest" }),
-      ],
-    }),
-  );
-  assert.deepEqual(outputs, {
-    status: "completed",
-    failed: "false",
-    prepared_count: "2",
-    pr_urls: "https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/2",
-    total_tokens: "0",
-    est_cost_usd: "0.000000",
+test("emit/read round-trips a full status, record-only fields included", () => {
+  const dir = tempDir();
+  const original = run({
+    testChanges: [{ path: "test/a.test.ts", added: 3, removed: 1 }],
+    usage: [usage(), usage({ role: "digest", totalTokens: 500, input: 400, output: 100 })],
   });
+  const file = emitRunStatus(dir, original);
+  assert.equal(file, statusPath(dir));
+  assert.deepEqual(readRunStatus(file), original);
 });
 
-test("toActionOutputs fails closed on off-vocabulary statuses and unsafe URLs", () => {
-  const outputs = toActionOutputs(
-    run({
-      status: "Weird::status",
-      groups: [group({ prUrl: "https://github.com/o/r/pull/1?x=`whoami`" })],
-    }),
+test("a sparse status file reads back with safe defaults", () => {
+  const dir = tempDir();
+  writeFileSync(statusPath(dir), '{"status":"deferred"}');
+  assert.deepEqual(readRunStatus(statusPath(dir)), {
+    status: "deferred",
+    baseRef: null,
+    headRef: null,
+    headSha: null,
+    prNumber: null,
+    summary: "",
+    changes: [],
+    verification: [],
+    repaired: false,
+    commentUrl: null,
+  });
+  // a non-string status falls back to the (red) "unknown" vocabulary word
+  writeFileSync(statusPath(dir), '{"status":5}');
+  assert.equal(readRunStatus(statusPath(dir))?.status, "unknown");
+  assert.equal(statusFailsJob("unknown"), true);
+});
+
+test("missing or corrupt status files read as null, never throw", () => {
+  const dir = tempDir();
+  assert.equal(readRunStatus(join(dir, "absent.json")), null);
+  for (const corrupt of ["{ truncated", "null", '"a string"', "42"]) {
+    writeFileSync(statusPath(dir), corrupt);
+    assert.equal(readRunStatus(statusPath(dir)), null, corrupt);
+  }
+});
+
+test("illegible usage entries and empty record-only arrays are dropped on read", () => {
+  const dir = tempDir();
+  const file = statusPath(dir);
+  writeFileSync(
+    file,
+    JSON.stringify({ ...run(), usage: [{ role: "evil", totalTokens: 5 }], testChanges: [] }),
   );
-  assert.equal(outputs.status, "", "an off-vocabulary status is dropped, not escaped");
-  assert.equal(outputs.failed, "true", "failed derives from the raw status, not the gated one");
-  assert.equal(outputs.pr_urls, "", "a URL outside the strict charset is dropped");
-  assert.equal(outputs.prepared_count, "1");
+  // display-only data fails toward "render nothing": no usage, no testChanges
+  assert.deepEqual(readRunStatus(file), run());
 });
 
-test("bad-conflict-refresh-only survives the action-output vocabulary and stays red", () => {
-  const outputs = toActionOutputs(run({ status: "bad-conflict-refresh-only", groups: [] }));
-  assert.equal(outputs.status, "bad-conflict-refresh-only");
+test("recordPublishOutcome patches the outcome without disturbing the analysis record", () => {
+  const dir = tempDir();
+  const original = run({ usage: [usage()] });
+  const file = emitRunStatus(dir, original);
+  const url = "https://github.com/o/r/pull/12#issuecomment-9";
+  const next = recordPublishOutcome(file, { status: "publish-blocked", commentUrl: url });
+  assert.equal(next?.status, "publish-blocked");
+  assert.deepEqual(readRunStatus(file), {
+    ...original,
+    status: "publish-blocked",
+    commentUrl: url,
+  });
+  assert.equal(recordPublishOutcome(join(dir, "absent.json"), { status: "x" }), null);
+});
+
+test("only the benign statuses stay green", () => {
+  const green = [
+    "report-prepared",
+    "repair-prepared",
+    "not-an-update-pr",
+    "deferred",
+    "publish-blocked",
+  ];
+  for (const status of green) {
+    assert.equal(statusFailsJob(status), false, status);
+    const outputs = toActionOutputs(run({ status }));
+    assert.equal(outputs.failed, "false", status);
+    assert.equal(outputs.status, status);
+  }
+  // the crash marker and "analysis ran but the PR is still red" both fail
+  for (const status of ["in-progress", "verification-failed", "repair-failed", "unknown"]) {
+    assert.equal(statusFailsJob(status), true, status);
+    assert.equal(toActionOutputs(run({ status })).failed, "true", status);
+  }
+  assert.equal(runFailsJob(run()), false);
+});
+
+test("an off-vocabulary status is dropped from outputs but still fails", () => {
+  const outputs = toActionOutputs(run({ status: "Weird_Status;$(id)" }));
+  assert.equal(outputs.status, "");
   assert.equal(outputs.failed, "true");
 });
 
-test("toActionOutputs reports a missing status file (crash before reporting) as failed", () => {
+test("comment_url passes only strictly-shaped https URLs", () => {
+  const url = "https://github.com/o/r/pull/1#issuecomment-1";
+  assert.equal(toActionOutputs(run({ commentUrl: url })).comment_url, url);
+  for (const bad of [
+    "javascript:alert(1)",
+    "https://github.com/x`whoami`",
+    "http://github.com/o/r/pull/1",
+    "https://ghes.example.com:8443/o/r/pull/1", // port colon is outside the charset
+  ]) {
+    assert.equal(toActionOutputs(run({ commentUrl: bad })).comment_url, "", bad);
+  }
+});
+
+test("action outputs sum usage and blank the estimate for unpriced models", () => {
+  const two = toActionOutputs(
+    run({
+      usage: [
+        usage({ totalTokens: 1000, costUsd: 0.01 }),
+        usage({ role: "digest", totalTokens: 500, costUsd: 0.0025 }),
+      ],
+    }),
+  );
+  assert.equal(two.total_tokens, "1500");
+  assert.equal(two.est_cost_usd, "0.012500");
+  // Flue reports an unpriced model as cost 0; a token-bearing zero-cost entry
+  // makes the WHOLE estimate unavailable rather than understating the total.
+  const unpriced = toActionOutputs(
+    run({
+      usage: [
+        usage({ totalTokens: 1000, costUsd: 0.01 }),
+        usage({ role: "digest", totalTokens: 500, costUsd: 0 }),
+      ],
+    }),
+  );
+  assert.equal(unpriced.total_tokens, "1500");
+  assert.equal(unpriced.est_cost_usd, "");
+  // invalid token counts fail toward zero at the exit boundary
+  const invalid = toActionOutputs(run({ usage: [usage({ totalTokens: -5 })] }));
+  assert.deepEqual([invalid.total_tokens, invalid.est_cost_usd], ["0", ""]);
+  const none = toActionOutputs(run());
+  assert.deepEqual([none.total_tokens, none.est_cost_usd], ["0", "0.000000"]);
+});
+
+test("a never-written status file still yields failed=true outputs", () => {
   assert.deepEqual(toActionOutputs(null), {
     status: "",
     failed: "true",
-    prepared_count: "0",
-    pr_urls: "",
+    repaired: "false",
+    comment_url: "",
     total_tokens: "0",
     est_cost_usd: "",
   });
 });
 
-test("toActionOutputs reports a no-updates run as known zero usage", () => {
-  const outputs = toActionOutputs(run({ status: "no-updates", groups: [] }));
-  assert.equal(outputs.total_tokens, "0");
-  assert.equal(outputs.est_cost_usd, "0.000000");
+test("sumUsage totals the operations that ran and dedupes models", () => {
+  assert.equal(sumUsage(undefined), null);
+  assert.equal(sumUsage([]), null);
+  // identical numbers so the float sum is an exact doubling
+  assert.deepEqual(sumUsage([usage(), usage({ role: "digest" })]), {
+    totalTokens: 2520,
+    input: 2000,
+    output: 400,
+    cacheRead: 100,
+    cacheWrite: 20,
+    costUsd: 0.0246,
+    models: ["anthropic/claude-opus-4-8"],
+  });
 });
 
-test("toActionOutputs sums run usage and formats the provider-priced estimate", () => {
-  const outputs = toActionOutputs(
+test("runLogLine stays one line and defuses ::workflow-command forgery", () => {
+  const line = runLogLine(
     run({
-      groups: [
-        group({ usage: [usage()] }),
-        group({
-          usage: [
-            usage({
-              role: "digest",
-              input: 500,
-              output: 100,
-              cacheRead: 0,
-              cacheWrite: 0,
-              totalTokens: 600,
-              costUsd: 0.005,
-            }),
-          ],
-        }),
-      ],
+      repaired: true,
+      commentUrl: "https://github.com/o/r/pull/12#issuecomment-9",
+      usage: [usage()],
+      summary: "::error::pwn\nsecond <!-- hidden --> line",
     }),
   );
-  assert.equal(outputs.total_tokens, "1860");
-  assert.equal(outputs.est_cost_usd, "0.017300");
+  assert.ok(!line.includes("\n"));
+  assert.ok(line.startsWith("status=report-prepared"));
+  assert.ok(line.includes("head=dependabot/npm_and_yarn/lru-cache-11.2.1"));
+  assert.ok(line.includes("base=main"));
+  assert.ok(line.includes("pr=#12"));
+  assert.ok(line.includes("repaired=true"));
+  assert.ok(line.includes("comment=https://github.com/o/r/pull/12#issuecomment-9"));
+  assert.ok(line.includes("tokens=1260 cost=~$0.0123"));
+  assert.ok(line.includes(": :error::pwn second"));
+  assert.ok(!line.includes("hidden"));
 });
 
-test("toActionOutputs leaves cost empty when any token-bearing operation is unpriced", () => {
-  const unpriced = usage({ totalTokens: 600, costUsd: 0, model: "openai/unknown-model" });
-  const onlyUnpriced = toActionOutputs(run({ groups: [group({ usage: [unpriced] })] }));
-  assert.equal(onlyUnpriced.total_tokens, "600");
-  assert.equal(onlyUnpriced.est_cost_usd, "");
-
-  // Never expose the priced operation's partial subtotal as the whole run cost.
-  const mixed = toActionOutputs(
-    run({ groups: [group({ usage: [usage()] }), group({ usage: [unpriced] })] }),
-  );
-  assert.equal(mixed.total_tokens, "1860");
-  assert.equal(mixed.est_cost_usd, "");
-});
-
-test("toActionOutputs fails malformed token usage toward numeric zero and unavailable cost", () => {
-  for (const malformed of [
-    usage({ totalTokens: -1 }),
-    usage({ totalTokens: 1.5 }),
-    usage({ totalTokens: Number.MAX_SAFE_INTEGER, costUsd: 1 }),
-  ]) {
-    const groups =
-      malformed.totalTokens === Number.MAX_SAFE_INTEGER
-        ? [group({ usage: [malformed, usage({ totalTokens: 1 })] })]
-        : [group({ usage: [malformed] })];
-    const outputs = toActionOutputs(run({ groups }));
-    assert.equal(outputs.total_tokens, "0");
-    assert.equal(outputs.est_cost_usd, "");
-  }
-});
-
-test("toActionOutputs preserves valid tokens when only the cost is malformed", () => {
-  for (const malformed of [
-    usage({ costUsd: -0.01 }),
-    usage({ costUsd: Number.POSITIVE_INFINITY }),
-  ]) {
-    const outputs = toActionOutputs(run({ groups: [group({ usage: [malformed] })] }));
-    assert.equal(outputs.total_tokens, "1260");
-    assert.equal(outputs.est_cost_usd, "");
-  }
-  const impossibleCostWithoutTokens = toActionOutputs(
-    run({ groups: [group({ usage: [usage({ totalTokens: 0, costUsd: 0.01 })] })] }),
-  );
-  assert.equal(impossibleCostWithoutTokens.total_tokens, "0");
-  assert.equal(impossibleCostWithoutTokens.est_cost_usd, "");
-});
-
-test("toActionOutputs counts only pr-prepared groups; a red group flips failed", () => {
-  const outputs = toActionOutputs(
-    run({ groups: [group(), group({ status: "verification-failed", branch: "depvisor/x" })] }),
-  );
-  assert.equal(outputs.prepared_count, "1");
-  assert.equal(outputs.failed, "true", "a completed run with a failed group is still a failure");
-});
-
-test("runFailsJob fails a completed run when any group failed", () => {
-  assert.equal(runFailsJob(run()), false);
-  assert.equal(
-    runFailsJob(run({ groups: [group(), group({ status: "verification-failed" })] })),
-    true,
-    "a completed run with a failed group must fail the job (silent no-PR is surfaced)",
-  );
-  assert.equal(
-    runFailsJob(run({ status: "reset-failed", groups: [group()] })),
-    true,
-    "a run-level failure fails the job even when its groups succeeded",
-  );
-  assert.equal(
-    runFailsJob(run({ groups: [group({ status: "held-back-by-limit", prUrl: null })] })),
-    false,
-    "held-back-by-limit is a benign outcome",
-  );
-});
-
-test("dry-run-completed stays green unless its deterministic findings include a red group", () => {
-  const green = run({ status: "dry-run-completed", groups: [] });
-  assert.equal(runFailsJob(green), false);
-  assert.equal(toActionOutputs(green).prepared_count, "0");
-  assert.equal(toActionOutputs(green).pr_urls, "");
-
-  const red = run({
-    status: "dry-run-completed",
-    groups: [group({ status: "branch-collision" })],
-  });
-  assert.equal(runFailsJob(red), true);
-  assert.equal(toActionOutputs(red).failed, "true");
-});
-
-test("run status is emitted, read, and patched per group by branch", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = emitRunStatus(
-    dir,
-    run({
-      groups: [
-        group({ branch: "depvisor/dev-knip" }),
-        group({ branch: "depvisor/prod-semver", group: "prod/semver" }),
-      ],
-    }),
-  );
-  assert.equal(file, statusPath(dir));
-  assert.equal(readRunStatus(file)?.groups.length, 2);
-
-  const next = recordGroupOutcome(file, "depvisor/prod-semver", {
-    prUrl: "https://github.com/o/r/pull/2",
-  });
-  // Only the matching group is patched; nothing is appended.
-  assert.equal(next?.groups.length, 2);
-  assert.equal(
-    next?.groups.find((g) => g.branch === "depvisor/prod-semver")?.prUrl,
-    "https://github.com/o/r/pull/2",
-  );
-  assert.equal(next?.groups.find((g) => g.branch === "depvisor/dev-knip")?.prUrl, null);
-  assert.equal(
-    readRunStatus(file)?.groups.find((g) => g.branch === "depvisor/prod-semver")?.prUrl,
-    "https://github.com/o/r/pull/2",
-  );
-});
-
-test("recordGroupOutcome can flip a single group to a failed open-pr outcome", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = emitRunStatus(dir, run());
-  recordGroupOutcome(file, "depvisor/dev-knip", {
-    status: "open-pr-failed",
-    summary: "PR creation failed: boom",
-  });
-  const patched = readRunStatus(file);
-  assert.equal(patched?.status, "completed");
-  assert.equal(runFailsJob(patched), true);
-});
-
-test("recordGroupOutcome appends a synthetic entry for an unreadable payload (null branch)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = emitRunStatus(dir, run());
-  // The open-pr step cannot know the branch of a payload it failed to parse;
-  // the appended open-pr-failed entry is what keeps the report step's outputs
-  // consistent with the job the non-zero exit is about to fail.
-  recordGroupOutcome(file, null, {
-    status: "open-pr-failed",
-    summary: "Unreadable PR payload 01-x.json: boom",
-  });
-  const next = readRunStatus(file);
-  assert.equal(next?.groups.length, 2);
-  const synthetic = next?.groups[1];
-  assert.equal(synthetic?.status, "open-pr-failed");
-  assert.equal(synthetic?.branch, null);
-  assert.equal(runFailsJob(next), true);
-  const outputs = toActionOutputs(next);
-  assert.equal(outputs.failed, "true", "outputs must agree with the red job (review finding 1)");
-});
-
-test("recordGroupOutcome appends via fallback when a patched branch matches no entry", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = emitRunStatus(dir, run());
-  // The opened-PR path patches only prUrl; a branch with no status entry must
-  // not lose the URL (or, worse, silently no-op), so the fallback supplies the
-  // appended entry's identity. The PR genuinely exists, so it stays green.
-  const next = recordGroupOutcome(
-    file,
-    "depvisor/ghost",
-    { prUrl: "https://github.com/o/r/pull/9" },
-    { status: "pr-prepared", summary: "PR opened for a branch with no status entry." },
-  );
-  assert.equal(next?.groups.length, 2);
-  const appended = next?.groups[1];
-  assert.equal(appended?.status, "pr-prepared");
-  assert.equal(appended?.branch, "depvisor/ghost");
-  assert.equal(appended?.prUrl, "https://github.com/o/r/pull/9");
-  assert.equal(runFailsJob(next), false);
-  assert.equal(toActionOutputs(next).prepared_count, "2");
-  assert.ok(toActionOutputs(next).pr_urls.includes("https://github.com/o/r/pull/9"));
-});
-
-test("readRunStatus and recordGroupOutcome fail toward null on a corrupt status file", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = statusPath(dir);
-  writeFileSync(file, '{"status": "completed", "gro');
-  // A truncated write must not crash the reporter (review finding 2) nor
-  // open-pr's per-payload loop — both fail toward null, the same direction as
-  // a missing file, and toActionOutputs(null) reports failed=true.
-  assert.equal(readRunStatus(file), null);
-  assert.equal(recordGroupOutcome(file, "depvisor/dev-knip", { prUrl: "x" }), null);
-  assert.equal(toActionOutputs(readRunStatus(file)).failed, "true");
-});
-
-test("readRunStatus reads a non-object JSON root as null", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = statusPath(dir);
-  for (const root of ["null", "42", '"completed"']) {
-    writeFileSync(file, root);
-    assert.equal(readRunStatus(file), null, `root ${root} must read as no status`);
-  }
-});
-
-test("testChanges survives the open-pr read/rewrite round-trip (parseGroup preserves it)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = emitRunStatus(
-    dir,
-    run({
-      groups: [group({ testChanges: [{ path: "test/a.test.ts", added: 2, removed: 9 }] })],
-    }),
-  );
-  // open-pr patches the PR URL back in via read → rewrite; testChanges must not
-  // be dropped by parseGroup when that happens.
-  recordGroupOutcome(file, "depvisor/dev-knip", { prUrl: "https://github.com/o/r/pull/9" });
-  const g = readRunStatus(file)?.groups[0];
-  assert.equal(g?.prUrl, "https://github.com/o/r/pull/9");
-  assert.deepEqual(g?.testChanges, [{ path: "test/a.test.ts", added: 2, removed: 9 }]);
-});
-
-test("step summary surfaces a test-changes warning, validating and counting unsafe paths", () => {
+test("renderStepSummary renders the field table, changes, verification, and warnings", () => {
   const summary = renderStepSummary(
     run({
-      groups: [
-        group({
-          testChanges: [
-            { path: "test/a.test.ts", added: 2, removed: 9 },
-            { path: "snap.bin", added: null, removed: null },
-            { path: "test/ev`il.test.ts", added: 1, removed: 0 },
-          ],
-        }),
-      ],
+      testChanges: [{ path: "test/a.test.ts", added: 2, removed: 1 }],
+      usage: [usage()],
+      commentUrl: "https://github.com/o/r/pull/12#issuecomment-9",
     }),
   );
-  assert.ok(summary.includes("#### ⚠️ Tests modified in this update (3)"));
-  assert.ok(summary.includes("| `test/a.test.ts` | +2 / -9 |"));
-  assert.ok(summary.includes("| `snap.bin` | binary |"));
-  // The backtick-bearing path is dropped from the list but still counted.
-  assert.ok(!summary.includes("ev`il"));
-  assert.ok(summary.includes("1 file(s) with unsafe names omitted"));
-});
-
-test("sumGroupUsage sums agent-run groups, dedupes models, and is null when none ran", () => {
-  // Groups that never ran the agent carry no usage → nothing to sum.
-  assert.equal(sumGroupUsage([group(), group({ status: "held-back-by-limit" })]), null);
-  // An empty usage array counts as "no agent ran".
-  assert.equal(sumGroupUsage([group({ usage: [] })]), null);
-
-  const total = sumGroupUsage([
-    group({ usage: [usage()] }),
-    group({
-      usage: [usage({ input: 500, output: 100, cacheRead: 0, totalTokens: 600, costUsd: 0.005 })],
-    }),
-    // A held-back group ran no agent, so it contributes nothing to the totals.
-    group({ status: "held-back-by-limit" }),
-  ]);
-  assert.ok(total);
-  assert.equal(total.groupCount, 2);
-  assert.equal(total.input, 1500);
-  assert.equal(total.output, 300);
-  assert.equal(total.totalTokens, 1860);
-  assert.ok(Math.abs(total.costUsd - 0.0173) < 1e-9);
-  // Same model across both groups collapses to one entry.
-  assert.deepEqual(total.models, ["anthropic/claude-opus-4-8"]);
-});
-
-test("sumGroupUsage sums across both operations in a two-operation group", () => {
-  // A group that ran fixer AND digest carries two entries; both are summed, but
-  // the group still counts once toward groupCount.
-  const total = sumGroupUsage([
-    group({
-      usage: [
-        usage({ role: "fixer", totalTokens: 1260 }),
-        usage({
-          role: "digest",
-          input: 500,
-          output: 100,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 600,
-          costUsd: 0.005,
-        }),
-      ],
-    }),
-  ]);
-  assert.equal(total?.groupCount, 1, "one group, even though two operations ran");
-  assert.equal(total?.totalTokens, 1860);
-  assert.equal(total?.input, 1500);
-});
-
-test("sumGroupUsage keeps distinct models", () => {
-  const total = sumGroupUsage([
-    group({ usage: [usage({ model: "anthropic/claude-opus-4-8" })] }),
-    group({ usage: [usage({ model: "openai/gpt-5" })] }),
-  ]);
-  assert.deepEqual(total?.models, ["anthropic/claude-opus-4-8", "openai/gpt-5"]);
-});
-
-test("usage survives the open-pr read/rewrite round-trip (parseGroup preserves the list)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const usages = [usage({ role: "fixer" }), usage({ role: "digest", totalTokens: 600 })];
-  const file = emitRunStatus(dir, run({ groups: [group({ usage: usages })] }));
-  recordGroupOutcome(file, "depvisor/dev-knip", { prUrl: "https://github.com/o/r/pull/7" });
-  const g = readRunStatus(file)?.groups[0];
-  assert.equal(g?.prUrl, "https://github.com/o/r/pull/7");
-  assert.deepEqual(g?.usage, usages);
-});
-
-test("parseGroup drops a usage entry with no recognized role (untrusted read-back)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "depvisor-status-"));
-  const file = statusPath(dir);
-  // A hand-edited or truncated status file whose usage entry lacks a valid role
-  // must not crash the report; the illegible entry is dropped, the valid one kept.
-  writeFileSync(
-    file,
-    JSON.stringify({
-      status: "completed",
-      base: "main",
-      summary: "s",
-      groups: [
-        {
-          status: "pr-prepared",
-          branch: "b",
-          group: "g",
-          summary: "s",
-          packages: [],
-          verification: [],
-          prUrl: null,
-          usage: [{ totalTokens: 5 }, { role: "digest", totalTokens: 600, model: "m" }],
-        },
-      ],
-    }),
+  assert.ok(summary.includes("## depvisor"));
+  assert.ok(summary.includes("| Status | `report-prepared` |"));
+  assert.ok(summary.includes("| PR | #12 |"));
+  assert.ok(summary.includes("### Dependency changes"));
+  assert.ok(summary.includes("| lru-cache | 7.18.3 | 11.2.1 | prod | major |"));
+  assert.ok(summary.includes("### Verification"));
+  assert.ok(summary.includes("| pass | test | 0 |"));
+  assert.ok(summary.includes("Tests modified by the repair (1)"));
+  assert.ok(summary.includes("| `test/a.test.ts` | +2 / -1 |"));
+  assert.ok(summary.includes("LLM usage"));
+  assert.ok(
+    renderStepSummary(emptyRunStatus("in-progress", "")).includes("No summary was emitted."),
   );
-  const g = readRunStatus(file)?.groups[0];
-  assert.equal(g?.usage?.length, 1);
-  assert.equal(g?.usage?.[0]?.role, "digest");
 });
 
-test("step summary renders run-total and per-group LLM usage rows", () => {
-  const summary = renderStepSummary(run({ groups: [group({ usage: [usage()] })] }));
-  // Both the run header and the group table carry a usage row.
-  assert.equal(summary.split("| LLM usage |").length - 1, 2);
-  // The breakdown names every additive bucket (in + out + cache read + cache
-  // write = 1,000 + 200 + 50 + 10 = 1,260), so it sums to the displayed total —
-  // cache write is billed and must not be silently dropped.
-  assert.ok(summary.includes("1,260 tokens (in 1,000 · out 200 · cache read 50 · cache write 10)"));
-  assert.ok(summary.includes("est. ~$0.0123"));
-  assert.ok(summary.includes("`anthropic/claude-opus-4-8`"));
-});
-
-test("step summary shows the group total plus a per-role breakdown", () => {
-  const summary = renderStepSummary(
+test("toRunOutput strips the record-only fields", () => {
+  const out = toRunOutput(
     run({
-      groups: [
-        group({
-          usage: [
-            usage({ role: "fixer", totalTokens: 12345 }),
-            usage({
-              role: "digest",
-              input: 2000,
-              output: 111,
-              cacheRead: 0,
-              cacheWrite: 0,
-              totalTokens: 2111,
-              costUsd: 0.004,
-            }),
-          ],
-        }),
-      ],
+      testChanges: [{ path: "test/a.test.ts", added: 1, removed: 1 }],
+      usage: [usage()],
     }),
   );
-  // Group total sums both operations …
-  assert.ok(summary.includes("14,456 tokens"), "group total sums fixer + digest tokens");
-  // … and the compact per-role breakdown shows where they went.
-  assert.ok(summary.includes("fixer 12,345 + digest 2,111"));
+  // usage/testChanges (record-only) and changes are not part of the workflow view
+  assert.deepEqual(out, {
+    status: "report-prepared",
+    baseRef: "main",
+    headRef: "dependabot/npm_and_yarn/lru-cache-11.2.1",
+    headSha: "a".repeat(40),
+    prNumber: 12,
+    summary: "Verification passes on this PR as-is.",
+    repaired: false,
+    verification: [{ name: "test", ok: true, code: 0 }],
+  });
 });
 
-test("step summary omits the usage row when no group ran the agent", () => {
-  const summary = renderStepSummary(run({ groups: [group({ status: "held-back-by-limit" })] }));
-  assert.ok(!summary.includes("| LLM usage |"), "no agent ran, so no usage row is rendered");
-});
-
-test("runLogLine reports summed tokens and estimated cost", () => {
-  const line = runLogLine(run({ groups: [group({ usage: [usage()] })] }));
-  assert.ok(line.includes("tokens=1260"));
-  assert.ok(line.includes("cost=~$0.0123"));
-});
-
-test("step summary renders run header, per-group sections, and sanitizes agent text", () => {
-  const summary = renderStepSummary(
-    run({
-      groups: [
-        group(),
-        group({ status: "held-back-by-limit", branch: "depvisor/dev-vitest", group: "dev/vitest" }),
-      ],
-    }),
-  );
-  assert.ok(summary.includes("| Status | `completed` |"));
-  assert.ok(summary.includes("| Groups | 2 |"));
-  assert.ok(summary.includes("Group `dev/knip` — `pr-prepared`"));
-  assert.ok(summary.includes("Group `dev/vitest` — `held-back-by-limit`"));
-  assert.ok(summary.includes("| knip | 6.23.0 | 6.24.0 | dev | minor |"));
-  assert.ok(summary.includes("| pass | pnpm run test | 0 |"));
-  assert.ok(!summary.includes("<!-- hidden -->"));
-  assert.ok(!summary.includes("@octocat"));
-  assert.ok(!summary.includes("\n::error::"));
+test("emptyRunStatus is a fresh shell with nothing resolved", () => {
+  assert.deepEqual(emptyRunStatus("in-progress", "run started"), {
+    status: "in-progress",
+    baseRef: null,
+    headRef: null,
+    headSha: null,
+    prNumber: null,
+    summary: "run started",
+    changes: [],
+    verification: [],
+    repaired: false,
+    commentUrl: null,
+  });
 });

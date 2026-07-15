@@ -1,25 +1,27 @@
 # Set Up depvisor in a Repository
 
-You are helping the user add depvisor to their repository. depvisor is a GitHub
-Action that updates a repository's dependencies and verifies each update with the
-repository's own checks deterministically; when an update breaks those checks, an
-AI agent makes the code fixes needed to get them passing again, and a read-only
-agent explains the change in the PR body. It is a Dependabot/Renovate-style updater
-that also does the code-fixing work. It is BYOK (the user pays for LLM calls with
-their own API key) and never merges anything itself.
+You are helping the user add depvisor to their repository. depvisor is a
+GitHub Action that provides **aftercare for dependency-update PRs**: it
+consumes the PRs an updater (Dependabot, Renovate, or similar) already opens,
+verifies each one with the repository's own checks deterministically, repairs
+source/test breakage with a bounded AI fixer when the update caused it, proves
+the repair passes, and publishes a repair commit plus a reviewer report
+comment on the PR. It never opens PRs, never chooses versions, never edits
+dependency state, and never merges anything itself. It is BYOK (the user pays
+for LLM calls with their own API key).
 
-Both agent roles run in an in-memory workspace without a host shell. The digest
-gets bounded read/search access to the target repository; only the failure-path
-fixer gets bounded repo-relative edit tools. Neither can reach depvisor's action
-checkout or the later GitHub-token step.
+Both agent roles run in an in-memory workspace without a host shell. The
+digest gets bounded read/search access to the target repository; only the
+failure-path fixer gets bounded repo-relative edit tools. Neither can reach
+depvisor's action checkout or the later GitHub-token step.
 
-The finished setup is small: **one workflow file, one repository secret, and
-one repository setting**. Your job is to inspect the repository first, tailor
-the workflow to what you find, and hand the user only the steps you cannot
-perform. This file is self-contained — you do not need to fetch anything else.
-The README (https://github.com/morinokami/depvisor#readme) and its reference
-pages (https://github.com/morinokami/depvisor/tree/main/docs) document every
-input, output, and status in depth if the user asks for more.
+The finished setup is small: **one workflow file and one or two secrets**.
+Your job is to inspect the repository first, tailor the workflow to what you
+find, and hand the user only the steps you cannot perform. This file is
+self-contained — you do not need to fetch anything else. The README
+(https://github.com/morinokami/depvisor#readme) and its reference pages
+(https://github.com/morinokami/depvisor/tree/main/docs) document every input,
+output, and status in depth if the user asks for more.
 
 ## Step 1: Inspect the repository
 
@@ -27,315 +29,154 @@ Use your filesystem tools on the repository being set up (if the current
 directory is not a repository, ask the user which one they mean). Determine
 all of the following before writing anything:
 
-1. **Package manager** — from lockfiles and the `packageManager` field in
+1. **An updater must already be running** — look for `.github/dependabot.yml`
+   (Dependabot) or `renovate.json`/`.github/renovate.json5`/a Renovate app
+   (Renovate). depvisor only consumes updater PRs; without an updater there is
+   nothing for it to do. If none exists, offer to set up Dependabot first (a
+   minimal `.github/dependabot.yml` with `package-ecosystem: npm` is enough)
+   and note which bot login the workflow must filter on:
+   - Dependabot → `dependabot[bot]`
+   - Renovate (GitHub App) → `renovate[bot]` (self-hosted setups may use a
+     custom bot account — ask the user).
+2. **Package manager** — from lockfiles and the `packageManager` field in
    package.json:
    - `package-lock.json` → npm, `pnpm-lock.yaml` → pnpm, `bun.lock` or
      `bun.lockb` → bun. All three are supported, including their workspace
-     monorepos; pnpm's `catalog:`-pinned dependencies are supported too
-     (bun's package.json catalogs are not yet).
+     monorepos and pnpm's `catalog:`-pinned dependencies.
    - `yarn.lock` → **stop**: depvisor does not support yarn. Tell the user and
      do not set anything up.
    - Lockfiles of several package managers at once: the `packageManager` field
      decides; without it depvisor stops with `ambiguous-package-manager`.
-     Resolve the ambiguity with the user (usually by deleting the stale
-     lockfile) before continuing.
-2. **Committed lockfile** — check with `git ls-files`, not just the
-   filesystem:
-   - npm/pnpm without a committed lockfile: possible but degraded — the
-     `install_command` input must be set to a command that does not create one
-     (a bare `npm install` would dirty the tree), and multi-group runs (the
-     norm: every package is its own group and `open_pull_requests_limit` defaults to 5)
-     lose the reinstall between dependency groups.
-     Recommend committing a lockfile instead.
-   - bun without a committed lockfile: **stop** — bun computes updates from
-     the committed lockfile, so depvisor cannot update the repository at all.
-3. **Verification scripts** — depvisor refuses to open a PR it cannot verify:
-   - If package.json defines at least one of `build` / `lint` / `test`, those
-     are auto-detected and no configuration is needed. depvisor runs them in
-     the fixed order **build → lint → test** — build first because tests may
-     consume its artifacts (e.g. a test that requires `dist/`).
-   - Otherwise, ask the user which commands verify this repository (e.g.
-     `npm run check`) and set them as the `verify_commands` input, listed in
-     dependency order — a build before the tests that consume its output,
-     since the commands run in the order given. Do not invent commands —
-     without real ones the run fails with `no-verify-scripts`.
-   - Workspace monorepos: verification must run from the repository root and
-     exercise the workspaces (root scripts fanning out via `--workspaces`,
-     turbo/nx, `bun run --filter`, …). If the root scripts do not reach the
-     workspaces, set `verify_commands` to commands that do.
-4. **.gitignore** — must cover `node_modules/` and build output; depvisor
-   refuses to run on a dirty tree. If installing or building writes files git
-   does not ignore, extend `.gitignore` as part of this setup.
-5. **Private-registry packages** — look for dependencies that are not on
-   registry.npmjs.org (e.g. internal scoped packages behind an `.npmrc`
-   registry override). depvisor's supply-chain cooldown checks publish ages
-   against the public npm registry and fails closed, so each private package
-   must be listed under `minimum_release_age_exclude` — otherwise every run
-   goes red with `release-age-unavailable`.
+     Resolve the ambiguity with the user before continuing.
+3. **Committed lockfile** — check with `git ls-files`, not just the
+   filesystem. depvisor's failure attribution reinstalls dependencies at the
+   PR's merge base and head, which needs a committed lockfile. No lockfile →
+   recommend committing one before setup.
+4. **Verification scripts** — read package.json `scripts`. depvisor
+   auto-detects `build`, `lint`, and `test` (in that order; `typecheck` is
+   deliberately not auto-detected). If the repository's real checks go by
+   other names (`typecheck`, `check`, `ci`, workspace fan-outs), plan an
+   explicit `verify_commands` input listing them one per line. These checks
+   must pass on the default branch — depvisor stops with `baseline-red` when
+   the base itself is broken.
+5. **`.gitignore`** — must cover `node_modules/` and build output; depvisor
+   refuses dirty trees.
+6. **LLM provider** — ask the user which provider/model to use
+   (e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`). The key becomes a
+   secret; never write it into a file.
 
-## Step 2: Discover requirements
+## Step 2: Write the workflow
 
-Ask the user only for what the inspection could not answer. If they already
-made a choice in the conversation, treat it as binding.
-
-1. **LLM provider and model** (required):
-   - Suggested specifiers: `openai/gpt-5.5`, `anthropic/claude-sonnet-5`.
-     OpenRouter works too (`openrouter/<vendor>/<model>`); any other provider
-     additionally needs the `llm_api_key_env` input set to the environment
-     variable name that provider's SDK expects.
-   - The provider determines the API-endpoint host the workflow allows:
-     openai → `api.openai.com`, anthropic → `api.anthropic.com`,
-     openrouter → `openrouter.ai`.
-   - **Secret name**: check `gh secret list` for an existing secret that
-     plausibly holds the chosen provider's key (`OPENAI_API_KEY`,
-     `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, …). You cannot read secret
-     values, so never assume — ask the user whether it is that provider's API
-     key, and only on their confirmation reference it from the workflow
-     instead of creating a new one. No match, no confirmation, or
-     `gh secret list` fails (unauthenticated `gh`, insufficient access):
-     default to `LLM_API_KEY`.
-2. **Schedule** — when should depvisor run? Default to weekly (e.g. Monday
-   03:00 UTC) if the user has no preference; `workflow_dispatch` is always
-   included for manual runs.
-3. **CI on depvisor's PRs** — PRs opened with the default `GITHUB_TOKEN` do
-   not trigger the repository's other workflows (GitHub's recursion guard).
-   If the user wants their CI checks to run on depvisor's PRs, they must
-   provide a GitHub App or PAT token via the `github_token` input; otherwise
-   omit it.
-4. **Optional inputs** — keep the defaults unless the user asks:
-   `dry_run` (default false — a manual plan-only run needs no LLM credentials,
-   commit, push, or PR),
-   `conflict_refresh_only` (defaults to true on `push` events, false on every
-   other trigger — a dependency-state `push` trigger therefore rebuilds
-   explicitly conflicted existing depvisor PRs and can never open a new PR,
-   with no input to write; set `"false"` explicitly only if the user wants a
-   push-triggered run to open new PRs),
-   `open_pull_requests_limit` (default: at most 5 open depvisor PRs; every PR updates
-   exactly one package or one declared group), `minimum_release_age`
-   (default: 1-day supply-chain cooldown — keep it enabled), `ignore`
-   (packages never to update), `groups` (packages updated together in one PR —
-   newline-separated `<group-name>: <package> <package> …` lines, exact names
-   or trailing-`*` prefix globs like `@acme/*`, each package in at most one
-   group; e.g.
-   `react: react react-dom @types/react`), `suggest_features` (default off — set `"true"`
-   to add a display-only "new features that may be relevant" section to PRs;
-   costs extra tokens and widens the agent's exposure to untrusted release
-   notes, so leave off unless the user asks), `language` (default empty =
-   English — a BCP-47-style tag like `ja` or `pt-BR` makes the agent write the PR's
-   narrative text in that language; statuses, commit messages, branch names,
-   and PR titles stay English).
-
-Before implementing, restate the choices to yourself as a contract:
-
-- Package manager: `<npm | pnpm | bun>`
-- Verification: `auto-detected (<scripts>)` or `verify_commands: <commands>`
-- Model: `<exact specifier>` → secret `<LLM_API_KEY | confirmed existing name>`, endpoint `<host>`
-- Schedule: `<cron>`
-- Extras: `<none | github_token | minimum_release_age_exclude | install_command | …>`
-
-## Step 3: Write the workflow
-
-Create `.github/workflows/depvisor.yml` from this template (if a file with
-that name already exists, show the user a diff and ask before overwriting):
+Create `.github/workflows/depvisor.yml`. Template — adjust the actor filter,
+model, and `verify_commands` to what you found:
 
 ```yaml
 name: depvisor
 on:
-  schedule:
-    - cron: "0 3 * * 1" # ← the user's chosen schedule
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Preview candidates, groups, and PR actions without changing anything
-        type: boolean
-        default: false
-  # Optional: uncomment to repair conflicted existing depvisor PRs after a
-  # dependency-state merge. This trigger never opens a new PR
-  # (conflict_refresh_only defaults to true on push events).
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - "**/package.json"
-  #     - package-lock.json
-  #     - pnpm-lock.yaml
-  #     - "bun.lock*"
-  #     - pnpm-workspace.yaml
+  pull_request:
+    types: [opened, synchronize, reopened]
 
-permissions:
-  contents: write # push the update branch
-  pull-requests: write # open the PR (and create/apply its labels)
+permissions: {}
 
 concurrency:
-  group: depvisor # runs must not race on force-push
-  cancel-in-progress: false
+  group: depvisor-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  update:
+  aftercare:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write # push the repair commit onto the PR head branch
+      pull-requests: write # create/update the report comment
     steps:
-      # Recommended: block unexpected network egress.
-      - uses: step-security/harden-runner@v2
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            api.github.com:443
-            codeload.github.com:443
-            objects.githubusercontent.com:443
-            *.actions.githubusercontent.com:443
-            registry.npmjs.org:443
-            api.osv.dev:443
-            api.openai.com:443
-
       - uses: actions/checkout@v7
         with:
+          # The PR head branch itself (not the merge ref): the repair commit
+          # is published onto it. fetch-depth: 0 so the merge base with the
+          # base branch is computable.
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
           persist-credentials: false # required — depvisor refuses persisted tokens
 
-      - uses: morinokami/depvisor@v1 # or pin a commit SHA for production (immutable; the recommended pin)
+      - uses: morinokami/depvisor@v2
         with:
-          dry_run: ${{ inputs.dry_run }}
-          llm_api_key: ${{ secrets.LLM_API_KEY }} # ← the Step 2 secret name
-          llm_model: openai/gpt-5.5 # ← the user's chosen model
+          llm_api_key: ${{ secrets.LLM_API_KEY }}
+          llm_model: openai/gpt-5.5
+          # verify_commands: |            # only when auto-detection is wrong
+          #   npm run typecheck
+          #   npm run test
 ```
 
-Tailor it per the Step 2 contract:
+Tailoring rules:
 
-- **Conflict repair trigger** (optional): uncomment the `push` block and change
-  `main` to the chosen base branch. These paths cover committed lockfiles,
-  lockfileless npm/pnpm repositories, and workspace manifests. No extra input
-  is needed: `conflict_refresh_only` defaults to `true` on push events, so push
-  runs regenerate explicitly conflicted existing branches from the current base
-  and run every normal gate, but suppress non-conflicted and new groups before
-  advisory/agent work. Thus a merge cannot refill the newly freed
-  `open_pull_requests_limit` slot. Scheduled and manual runs remain normal and
-  may open new PRs. Recommend `groups` for
-  related packages or `open_pull_requests_limit: 1` when the user would rather
-  prevent shared-lockfile conflicts than repair them.
+- **bun repos**: add `oven-sh/setup-bun` (with a pinned `bun-version`) before
+  the depvisor step.
+- **Custom install**: if installing needs flags or a different tool, set
+  `install_command`; if an earlier step in the same job already installed,
+  set `install_command: skip`.
+- **Localized reports**: `language: ja` (BCP-47 tag) localizes only the
+  LLM-written narrative in the report comment.
+- **Renovate**: change the `if:` login accordingly, and consider both bots
+  with `contains(fromJSON('["dependabot[bot]","renovate[bot]"]'),
+github.event.pull_request.user.login)`.
 
-- **Egress allowlist**: replace `api.openai.com:443` with the chosen
-  provider's host, and add any private package registries the repository
-  installs from. If the verification commands need further endpoints you
-  cannot predict, start with `egress-policy: audit` and tighten to `block`
-  after a green run — a first run red from blocked egress is confusing.
-- **verify_commands** (only when scripts are not auto-detectable):
+## Step 3: Secrets and settings (the user does these)
 
-  ```yaml
-  verify_commands: |
-    npm run check
-  ```
+Tell the user, concretely:
 
-- **minimum_release_age_exclude** (only when Step 1 found private packages):
+1. **Add the LLM API key secret** — Settings → Secrets and variables →
+   Actions → New repository secret, name `LLM_API_KEY`.
+2. **Dependabot only**: add the SAME secret again under Settings → Secrets
+   and variables → **Dependabot** — workflows triggered by Dependabot PRs read
+   the Dependabot secrets store, not the Actions one. (The job-level
+   `permissions:` block in the workflow elevates Dependabot's default
+   read-only token; no extra setting is needed for that.)
+3. Optional: if they want their CI to re-run on depvisor's repair commits,
+   they need a GitHub App or PAT passed as `github_token` — pushes made with
+   the default `GITHUB_TOKEN` do not trigger other workflows.
 
-  ```yaml
-  minimum_release_age_exclude: |
-    # private packages — not on registry.npmjs.org
-    @acme/*
-  ```
+## Step 4: Explain what will happen
 
-  One entry per line: an exact package name or a trailing-`*` prefix glob
-  like `@acme/*` — use the glob for a private scope so new packages are
-  covered automatically, and never one broader than the private scope (every
-  match skips a real supply-chain defense). Full-line `#` comments are
-  allowed; version ranges, majors, and other pattern forms are not supported.
-  (pnpm's similarly named `minimumReleaseAgeExclude` accepts richer globs;
-  only the trailing-`*` form carries over from `pnpm-workspace.yaml` as-is.)
+On each updater PR, depvisor ends in exactly one status (the job fails on red
+so nothing is silent):
 
-- **bun repositories**: insert before the depvisor step, pinning
-  `bun-version` (depvisor parses `bun outdated`'s text output, so an unpinned
-  bun that drifts with releases is a breakage risk — pin the version the
-  repository already uses):
+- `report-prepared` (green): the update verifies clean as-is; a reviewer
+  report comment was posted/updated.
+- `repair-prepared` (green): the update broke verification, the merge base
+  verified green, and a bounded `fix: adapt code to <package> update` commit
+  (source and tests only, committed by `depvisor[bot]`) was pushed to the PR
+  with the report.
+- `not-an-update-pr` (green): the PR carries human commits or no dependency
+  change; skipped.
+- `deferred` (green): the fixer judged the repair unsafe to make (e.g. it
+  would need a manifest change); the report explains — a human should take
+  over.
+- `publish-blocked` (green): the PR merged/closed or its head moved mid-run;
+  nothing was pushed; the next PR event re-runs.
+- `verification-failed` (red): no passing repair could be produced; the
+  report explains what is broken.
+- `baseline-red` (red): the base itself fails the checks — fix the base
+  first.
+- Setup-shaped reds worth knowing: `persisted-credentials` (checkout kept its
+  token), `missing-base-ref` (checkout too shallow — needs `fetch-depth: 0`),
+  `no-verify-scripts` (no checks found — set `verify_commands`),
+  `unsupported-package-manager` / `ambiguous-package-manager`,
+  `reinstall-unavailable` (no committed lockfile with
+  `install_command: skip`).
 
-  ```yaml
-  - uses: oven-sh/setup-bun@v2
-    with:
-      bun-version: "1.3.14" # ← match the repo's bun version
-  ```
+The full status and outputs reference:
+https://github.com/morinokami/depvisor/blob/main/docs/results.md
 
-- **Do not** remove `persist-credentials: false`, the `permissions` block, or
-  the `concurrency` group. depvisor keeps GitHub tokens away from its AI agent
-  and from the target's install scripts; the agents themselves have no host
-  shell and cannot reach the later token-holding entrypoint. depvisor fails at
-  startup if the checkout persists credentials.
+## Step 5: Verify the setup
 
-## Step 4: Hand the human-only steps to the user
+Ask the user to wait for (or trigger) the next updater PR — Dependabot:
+Insights → Dependency graph → Dependabot → "Check for updates", or just
+re-open an existing Dependabot PR to fire the workflow. Then check:
 
-Before asking the user to do anything, check what already exists. Both checks
-are best-effort — they need an authenticated `gh` with access to the repo, and
-when one fails you simply ask the user instead:
-
-```sh
-gh secret list # is the Step 2 secret already there?
-gh api repos/{owner}/{repo}/actions/permissions/workflow \
-  --jq .can_approve_pull_request_reviews # true → item 2 below is already done
-```
-
-Then hand over whatever remains. **Never ask the user to paste the API key
-into the chat** — `gh secret set` prompts for the value directly:
-
-1. Create the repository secret (skip when Step 2 confirmed an existing one):
-
-   ```sh
-   gh secret set LLM_API_KEY
-   ```
-
-   (or Settings → Secrets and variables → Actions → New repository secret),
-   with the API key of the provider chosen in Step 2.
-
-2. Enable **"Allow GitHub Actions to create and approve pull requests"**
-   (Settings → Actions → General → Workflow permissions) — skip when the
-   check above already returned `true`. Without it, PR creation fails with
-   `open-pr-failed`.
-
-## Step 5: Verify
-
-1. Run the Step 1 verification commands locally on the base branch, in the
-   same order depvisor will: **build → lint → test** for auto-detected
-   scripts, the given order for `verify_commands`. Running tests without the
-   build they consume produces a spurious failure, not a real baseline
-   problem. If a command still fails in the right order, tell the user now:
-   depvisor stops with `baseline-red` until the base branch is green.
-2. Re-check what you wrote: the checkout sets `persist-credentials: false`;
-   the `permissions` block grants `contents: write` and
-   `pull-requests: write`; the egress allowlist matches the chosen provider.
-3. After committing the workflow, run its plan mode first. It uses the same
-   candidate filtering, cooldown, grouping, advisory ordering, branch-collision,
-   and open-PR classification as production, but does not run baseline/update
-   verification, call an LLM, commit, push, or open a PR. New-PR dispositions
-   are provisional because they assume every earlier planned group succeeds:
-
-   ```sh
-   gh workflow run depvisor.yml -f dry_run=true && gh run watch
-   ```
-
-   A successful preview ends with `dry-run-completed`; `prepared_count` is 0.
-   It may still be red for a real deterministic finding such as
-   `release-age-unavailable` or `branch-collision`. Input typos fail before the
-   target install (`bad-dry-run`, `bad-conflict-refresh-only`, `bad-groups`, and
-   the other `bad-*` statuses).
-
-4. Once the user confirms the secret and the repository setting, trigger the
-   workflow (on the default branch, or via the user's usual PR flow), then
-   watch the first real run:
-
-   ```sh
-   gh workflow run depvisor.yml && gh run watch
-   ```
-
-   A successful first run ends green with either a PR labeled `depvisor` or a
-   `no-updates` summary.
-
-Common first-run failures and their fixes:
-
-| Status                    | Fix                                                                                                                                                                     |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `persisted-credentials`   | Set `persist-credentials: false` on `actions/checkout`.                                                                                                                 |
-| `no-verify-scripts`       | package.json defines none of `build`/`lint`/`test` — set `verify_commands`.                                                                                             |
-| `baseline-red`            | The checks already fail on the base branch; fix the base first.                                                                                                         |
-| `dirty-tree`              | An install/build wrote files git does not ignore — extend `.gitignore` or fix `install_command`.                                                                        |
-| `release-age-unavailable` | A private-registry package the public npm registry cannot vouch for — list it in `minimum_release_age_exclude`.                                                         |
-| `bump-failed`             | A dependency conflict blocked the deterministic bump (e.g. npm `ERESOLVE`); the summary names the failing step. Resolve the conflict upstream, or `ignore` the package. |
-| `open-pr-failed`          | Enable "Allow GitHub Actions to create and approve pull requests", and check the `permissions` block.                                                                   |
-
-Every other status is documented in the status reference:
-https://github.com/morinokami/depvisor/blob/main/docs/results.md#status-reference
+- the depvisor job ran and ended green with `report-prepared` or
+  `repair-prepared`;
+- the PR carries one "depvisor aftercare" comment;
+- when a repair happened, the PR gained a `fix: adapt code to …` commit and
+  the checks pass with it.

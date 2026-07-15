@@ -4,28 +4,19 @@
  * this entrypoint exists only to reject typos before waiting for target setup.
  */
 
-import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseRunConfig } from "./core/config.ts";
-import { clearPrPreview } from "./core/pr.ts";
-import { emitRunStatus } from "./core/status.ts";
+import { clearPrPreview } from "./core/report.ts";
+import { emitRunStatus, emptyRunStatus } from "./core/status.ts";
 
 const OUT_DIR = fileURLToPath(new URL("../pr-preview", import.meta.url));
 
 // Clear before parsing too: a later setup/model failure must not let the final
-// always() reporter mistake a previous local invocation's status/plan for this run.
+// always() reporter mistake a previous local invocation's status for this run.
 clearPrPreview(OUT_DIR);
 const parsed = parseRunConfig(process.env);
 if (!parsed.ok) {
-  emitRunStatus(OUT_DIR, {
-    status: parsed.status,
-    base: null,
-    summary: parsed.summary,
-    groups: [],
-  });
+  emitRunStatus(OUT_DIR, emptyRunStatus(parsed.status, parsed.summary));
   console.error(`depvisor config invalid: ${parsed.status}`);
   process.exit(1);
 }
-
-const output = process.env.GITHUB_OUTPUT;
-if (output) appendFileSync(output, `dry_run=${parsed.config.dryRun}\n`);

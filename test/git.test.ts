@@ -6,16 +6,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   changedPaths,
-  commitPaths,
+  changedPathsInCommit,
+  checkoutDetached,
+  checkoutForce,
   commitAll,
+  commitsInRange,
+  currentBranch,
   diffNumstat,
   discardWorkPast,
   isRepoRoot,
-  manifestBumpPaths,
+  localConfigEntries,
+  lsTreePaths,
   manifestDiff,
+  mergeBase,
   refDrift,
   refExists,
-  resetToBase,
   restoreRefs,
   revParse,
   snapshotRefs,
@@ -52,21 +57,39 @@ test("refExists probes branches without throwing", () => {
   assert.equal(refExists(repo, "missing-base"), true);
 });
 
+test("localConfigEntries reads matching repo-local keys, including include.path files", () => {
+  const repo = tempRepo();
+  assert.deepEqual(localConfigEntries(repo, "^http\\."), []);
+  execSync('git config --local http.extraheader "AUTHORIZATION: basic abc"', { cwd: repo });
+  assert.deepEqual(localConfigEntries(repo, "^http\\."), [
+    { key: "http.extraheader", value: "AUTHORIZATION: basic abc" },
+  ]);
+  // actions/checkout v6+ persists the token in a separate file referenced via
+  // include.path; --includes must expand it or the credential stays hidden.
+  writeFileSync(
+    join(repo, ".git/extra-config"),
+    "[http]\n\textraheader = AUTHORIZATION: basic xyz\n",
+  );
+  execSync("git config --local include.path extra-config", { cwd: repo });
+  const values = localConfigEntries(repo, "^http\\.").map((e) => e.value);
+  assert.ok(values.includes("AUTHORIZATION: basic xyz"), "included credential must surface");
+});
+
 test("changedPaths does not truncate the first entry (leading-space status)", () => {
   const repo = tempRepo();
   writeFileSync(join(repo, "package-lock.json"), '{"changed":1}\n');
   writeFileSync(join(repo, "package.json"), '{"changed":1}\n');
   // package-lock.json sorts first; a trimmed porcelain parse used to return
-  // 'ackage-lock.json' here and silently drop it from the bump commit.
+  // 'ackage-lock.json' here and silently drop it from the commit.
   assert.deepEqual(changedPaths(repo), ["package-lock.json", "package.json"]);
 });
 
 test("changedPaths reports quoting-triggering paths verbatim and they stay committable", () => {
   const repo = tempRepo();
   // Non-ASCII and embedded-quote names make non-`-z` porcelain C-quote the path
-  // (`"\346…"`); the escaped string no longer names the real file, so a bump
-  // commit's `git add` pathspec failed and a scope read saw nothing on either
-  // side. `-z` prints paths verbatim.
+  // (`"\346…"`); the escaped string no longer names the real file, so a commit
+  // pathspec built from it failed and a scope read saw nothing on either side.
+  // `-z` prints paths verbatim.
   mkdirSync(join(repo, "ワークスペース"));
   writeFileSync(join(repo, "ワークスペース/package.json"), '{"name":"ws"}\n');
   writeFileSync(join(repo, 'has"quote.txt'), "x\n");
@@ -77,12 +100,10 @@ test("changedPaths reports quoting-triggering paths verbatim and they stay commi
   writeFileSync(join(repo, 'has"quote.txt'), "y\n");
   assert.deepEqual(changedPaths(repo).toSorted(), ['has"quote.txt', "ワークスペース/package.json"]);
 
-  // The mechanical bump path must reach the commit, not die on a pathspec.
-  const bump = manifestBumpPaths(repo, ["package-lock.json"]);
-  assert.deepEqual(bump, ["ワークスペース/package.json"]);
-  const sha = commitPaths(repo, bump, "deps: bump");
+  // The repair path must reach the commit, not die on a pathspec.
+  const sha = commitAll(repo, "fix: adapt");
   assert.ok(sha);
-  assert.deepEqual(changedPaths(repo).toSorted(), ['has"quote.txt']);
+  assert.deepEqual(changedPaths(repo), []);
 });
 
 test("changedPaths lists files under a new untracked directory individually, not collapsed", () => {
@@ -102,28 +123,17 @@ test("changedPaths keeps only the destination of a staged rename (-z ORIG_PATH d
   assert.deepEqual(changedPaths(repo).toSorted(), ["package.json", "renamed.ts"]);
 });
 
-test("commitPaths/commitAll split manifests from code fixes", () => {
+test("commitAll commits everything remaining and returns null on a clean tree", () => {
   const repo = tempRepo();
-  writeFileSync(join(repo, "package.json"), '{"v":2}\n');
-  writeFileSync(join(repo, "package-lock.json"), '{"v":2}\n');
   writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
-
-  const bump = commitPaths(repo, ["package.json", "package-lock.json"], "deps: bump");
-  assert.ok(bump);
-  const bumpFiles = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
-    .trim()
-    .split("\n");
-  assert.deepEqual(bumpFiles.toSorted(), ["package-lock.json", "package.json"]);
-
+  writeFileSync(join(repo, "stray.ts"), "export {};\n");
   const fix = commitAll(repo, "fix: adapt");
   assert.ok(fix);
-  const fixFiles = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
+  const files = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
     .trim()
     .split("\n");
-  assert.deepEqual(fixFiles, ["src.ts"]);
-
-  // Nothing left → both are null on a second call.
-  assert.equal(commitPaths(repo, ["package.json"], "x"), null);
+  assert.deepEqual(files.toSorted(), ["src.ts", "stray.ts"]);
+  // Nothing left → null on a second call.
   assert.equal(commitAll(repo, "x"), null);
 });
 
@@ -146,73 +156,173 @@ test("commits split identity: resolvable author, unclaimable sentinel committer"
   assert.equal(committerEmail, "depvisor[bot]@users.noreply.github.com");
 });
 
-test("manifestBumpPaths selects every package.json and lockfile by basename (workspaces)", () => {
+test("mergeBase resolves the fork point of a branchy repo and null for unrelated histories", () => {
   const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  const base = revParse(repo, "HEAD");
+  const main = currentBranch(repo);
+  // The updater-PR shape: base advances while the PR branch diverges from the
+  // fork point — the aftercare baseline anchor.
+  sh("git checkout -qb dependabot/npm_and_yarn/lru-cache-11.0.0");
+  writeFileSync(join(repo, "src.ts"), "export const updated = true;\n");
+  sh("git -c user.email=t@t -c user.name=t commit -aqm bump");
+  sh(`git checkout -q ${main}`);
+  writeFileSync(join(repo, "package.json"), '{"advanced":true}\n');
+  sh("git -c user.email=t@t -c user.name=t commit -aqm advance");
+
+  assert.equal(mergeBase(repo, main, "dependabot/npm_and_yarn/lru-cache-11.0.0"), base);
+
+  // An orphan branch shares no history — unrelated must be null, not a throw.
+  sh("git checkout -q --orphan lonely");
+  sh("git rm -rfq .");
+  writeFileSync(join(repo, "other.ts"), "export {};\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm orphan");
+  assert.equal(mergeBase(repo, main, "lonely"), null);
+  assert.equal(mergeBase(repo, main, "no-such-ref"), null);
+});
+
+test("commitsInRange lists newest first with per-commit committer emails and parent counts", () => {
+  const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  const base = revParse(repo, "HEAD");
+
+  // The committer email is set at commit time (-c user.email) — the field the
+  // ownership classification keys on, never the author.
+  writeFileSync(join(repo, "src.ts"), "export const one = 1;\n");
+  sh("git -c user.email=one@example.com -c user.name=one commit -aqm c1");
+  const c1 = revParse(repo, "HEAD");
+  writeFileSync(join(repo, "src.ts"), "export const two = 2;\n");
+  sh("git -c user.email=two@example.com -c user.name=two commit -aqm c2");
+  const c2 = revParse(repo, "HEAD");
+
+  const range = commitsInRange(repo, base, "HEAD");
+  assert.deepEqual(range, [
+    { sha: c2, committerEmail: "two@example.com", parents: [c1] },
+    { sha: c1, committerEmail: "one@example.com", parents: [base] },
+  ]);
+  // An empty range is [], not a parse artifact.
+  assert.deepEqual(commitsInRange(repo, "HEAD", "HEAD"), []);
+});
+
+test("commitsInRange reports a merge commit with both parents", () => {
+  const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  const base = revParse(repo, "HEAD");
+  const main = currentBranch(repo);
+  sh("git checkout -qb feature");
+  writeFileSync(join(repo, "feature.ts"), "export {};\n");
+  sh("git add -A && git -c user.email=f@example.com -c user.name=f commit -qm feature");
+  sh(`git checkout -q ${main}`);
+  writeFileSync(join(repo, "src.ts"), "export const main = 1;\n");
+  sh("git -c user.email=m@example.com -c user.name=m commit -aqm main-work");
+  sh("git -c user.email=merger@example.com -c user.name=m merge -q --no-ff --no-edit feature");
+
+  const range = commitsInRange(repo, base, "HEAD");
+  assert.equal(range.length, 3);
+  // Newest first: the merge tops the list; >1 parents is the merge signal.
+  const [merge] = range;
+  assert.ok(merge);
+  assert.equal(merge.sha, revParse(repo, "HEAD"));
+  assert.equal(merge.committerEmail, "merger@example.com");
+  assert.equal(merge.parents.length, 2);
+  assert.deepEqual(
+    range.slice(1).map((c) => c.parents.length),
+    [1, 1],
+  );
+});
+
+test("changedPathsInCommit lists a commit's paths verbatim relative to its first parent", () => {
+  const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  writeFileSync(join(repo, "src.ts"), "export const changed = true;\n");
+  writeFileSync(join(repo, "a b.txt"), "space in name\n"); // -z keeps it verbatim
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm change");
+  assert.deepEqual(changedPathsInCommit(repo, revParse(repo, "HEAD")).toSorted(), [
+    "a b.txt",
+    "src.ts",
+  ]);
+});
+
+test("changedPathsInCommit on a root commit lists everything (--root, not empty)", () => {
+  // Without `--root`, git diff-tree prints NOTHING for a parentless commit —
+  // which would vacuously pass the "touches only dependency-state paths"
+  // classification (fail-open). The flag makes a root commit list its whole
+  // tree instead.
+  const repo = tempRepo();
+  const root = execSync("git rev-list --max-parents=0 HEAD", {
+    cwd: repo,
+    encoding: "utf8",
+  }).trim();
+  assert.deepEqual(changedPathsInCommit(repo, root).toSorted(), [
+    "package-lock.json",
+    "package.json",
+    "src.ts",
+  ]);
+});
+
+test("lsTreePaths lists every tracked path at a ref, nested and non-ASCII included", () => {
+  const repo = tempRepo();
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  const first = revParse(repo, "HEAD");
   mkdirSync(join(repo, "packages/a"), { recursive: true });
   writeFileSync(join(repo, "packages/a/package.json"), "{}\n");
-  execSync("git add -A && git -c user.email=t@t -c user.name=t commit -qm ws", { cwd: repo });
+  mkdirSync(join(repo, "ワークスペース"));
+  writeFileSync(join(repo, "ワークスペース/index.ts"), "export {};\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm ws");
 
-  // A monorepo bump touches the root manifest + lockfile AND a workspace manifest,
-  // plus source the agent fixed.
-  writeFileSync(join(repo, "package.json"), '{"v":2}\n');
-  writeFileSync(join(repo, "package-lock.json"), '{"v":2}\n');
-  writeFileSync(join(repo, "packages/a/package.json"), '{"v":2}\n');
-  writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
-
-  // Nested workspace manifest is picked up; src.ts is not.
-  assert.deepEqual(
-    manifestBumpPaths(repo, ["package-lock.json", "npm-shrinkwrap.json"]).toSorted(),
-    ["package-lock.json", "package.json", "packages/a/package.json"],
-  );
-
-  const bump = commitPaths(
-    repo,
-    manifestBumpPaths(repo, ["package-lock.json", "npm-shrinkwrap.json"]),
-    "deps: bump",
-  );
-  assert.ok(bump);
-  const bumpFiles = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
-    .trim()
-    .split("\n");
-  assert.deepEqual(bumpFiles.toSorted(), [
+  assert.deepEqual(lsTreePaths(repo, "HEAD").toSorted(), [
     "package-lock.json",
     "package.json",
     "packages/a/package.json",
+    "src.ts",
+    "ワークスペース/index.ts",
   ]);
-  // The agent's code fix stays in the second commit.
-  const fix = commitAll(repo, "fix: adapt");
-  assert.ok(fix);
-  const fixFiles = execSync("git show --name-only --format=", { cwd: repo, encoding: "utf8" })
-    .trim()
-    .split("\n");
-  assert.deepEqual(fixFiles, ["src.ts"]);
+  // Older refs answer for their own tree, not the working tree.
+  assert.deepEqual(lsTreePaths(repo, first).toSorted(), [
+    "package-lock.json",
+    "package.json",
+    "src.ts",
+  ]);
 });
 
-test("manifestBumpPaths includes extra root manifests exactly, not by basename", () => {
+test("checkoutDetached/checkoutForce round-trip: detach onto the base, return to the branch", () => {
   const repo = tempRepo();
-  mkdirSync(join(repo, "packages/a"), { recursive: true });
-  writeFileSync(join(repo, "pnpm-workspace.yaml"), "catalog:\n  semver: ^7.3.0\n");
-  writeFileSync(join(repo, "packages/a/pnpm-workspace.yaml"), "x: 1\n");
-  execSync("git add -A && git -c user.email=t@t -c user.name=t commit -qm ws", { cwd: repo });
+  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
+  const branch = currentBranch(repo);
+  // node_modules is ignored; no -x in the clean, so install trees survive.
+  writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
+  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm gitignore");
+  const baseline = revParse(repo, "HEAD");
+  writeFileSync(join(repo, "src.ts"), "export const tip = true;\n");
+  sh("git -c user.email=t@t -c user.name=t commit -aqm tip");
+  const tip = revParse(repo, "HEAD");
 
-  // A catalog bump touches pnpm-workspace.yaml + lockfile, plus a source fix —
-  // and a (meaningless-to-pnpm) nested same-named file the agent also touched.
-  writeFileSync(join(repo, "pnpm-workspace.yaml"), "catalog:\n  semver: ^7.7.3\n");
-  writeFileSync(join(repo, "pnpm-lock.yaml"), "v: 2\n");
-  writeFileSync(join(repo, "packages/a/pnpm-workspace.yaml"), "x: 2\n");
-  writeFileSync(join(repo, "src.ts"), "export const fixed = true;\n");
+  // Leftovers a baseline run must not carry: a dirty tracked file, an untracked
+  // stray, and an ignored install tree (which must be KEPT for the reinstall).
+  writeFileSync(join(repo, "src.ts"), "export const dirty = true;\n");
+  writeFileSync(join(repo, "stray.ts"), "export {};\n");
+  mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
+  writeFileSync(join(repo, "node_modules/pkg/index.js"), "module.exports = 1;\n");
 
-  assert.deepEqual(
-    manifestBumpPaths(repo, ["pnpm-lock.yaml"], ["pnpm-workspace.yaml"]).toSorted(),
-    ["pnpm-lock.yaml", "pnpm-workspace.yaml"],
-  );
+  checkoutDetached(repo, baseline);
+  assert.equal(revParse(repo, "HEAD"), baseline);
+  // Detached — no branch ref moved to reach the baseline.
+  assert.equal(sh("git rev-parse --abbrev-ref HEAD").trim(), "HEAD");
+  assert.equal(sh("git status --porcelain").trim(), "");
+  assert.ok(!existsSync(join(repo, "stray.ts")), "untracked files are cleaned");
+  assert.ok(existsSync(join(repo, "node_modules/pkg/index.js")), "ignored files are kept");
+
+  checkoutForce(repo, branch);
+  assert.equal(sh("git rev-parse --abbrev-ref HEAD").trim(), branch);
+  assert.equal(revParse(repo, "HEAD"), tip);
+  assert.equal(sh("git status --porcelain").trim(), "");
 });
 
 test("discardWorkPast drops commits, tracked edits, and untracked files", () => {
   const repo = tempRepo();
   const head = execSync("git rev-parse HEAD", { cwd: repo, encoding: "utf8" }).trim();
 
-  // A deferred agent attempt may leave all three kinds of leftovers behind.
+  // A deferred repair attempt may leave all three kinds of leftovers behind.
   writeFileSync(join(repo, "src.ts"), "export const halfDone = true;\n");
   execSync("git add -A && git -c user.email=t@t -c user.name=t commit -qm leftover", {
     cwd: repo,
@@ -226,36 +336,6 @@ test("discardWorkPast drops commits, tracked edits, and untracked files", () => 
   assert.equal(execSync("git status --porcelain", { cwd: repo, encoding: "utf8" }).trim(), "");
 });
 
-test("resetToBase returns to base, discards work, and keeps ignored files + the branch ref", () => {
-  const repo = tempRepo();
-  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
-  // Capture the init default branch name; it varies (main vs master) by git config.
-  const base = sh("git rev-parse --abbrev-ref HEAD").trim();
-  // node_modules is ignored; the reinstall (not resetToBase) is what restores it.
-  writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
-  sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm gitignore");
-
-  // A previous group: commit on its own branch, then a dirty tree + untracked file.
-  sh("git checkout -q -b depvisor/prod-x");
-  writeFileSync(join(repo, "src.ts"), "export const changed = true;\n");
-  sh("git -c user.email=t@t -c user.name=t commit -aqm 'group work'");
-  writeFileSync(join(repo, "src.ts"), "export const uncommittedEdit = true;\n"); // dirty tracked
-  writeFileSync(join(repo, "stray.ts"), "export {};\n"); // untracked
-  mkdirSync(join(repo, "node_modules/pkg"), { recursive: true });
-  writeFileSync(join(repo, "node_modules/pkg/index.js"), "module.exports = 1;\n"); // ignored
-
-  resetToBase(repo, base);
-
-  // Back on base, tree clean, untracked removed.
-  assert.equal(sh("git rev-parse --abbrev-ref HEAD").trim(), base);
-  assert.equal(sh("git status --porcelain").trim(), "");
-  assert.ok(!existsSync(join(repo, "stray.ts")), "untracked files are removed");
-  // Ignored files survive (the reinstall restores them, not the reset).
-  assert.ok(existsSync(join(repo, "node_modules/pkg/index.js")), "ignored files are kept");
-  // The group's branch ref still exists so open-pr can push it.
-  assert.equal(refExists(repo, "depvisor/prod-x"), true);
-});
-
 test("diffNumstat parses normal, binary and awkward filenames, decomposing moves (--no-renames)", () => {
   const repo = tempRepo();
   const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
@@ -265,7 +345,7 @@ test("diffNumstat parses normal, binary and awkward filenames, decomposing moves
   writeFileSync(join(repo, "blob.bin"), Buffer.from([0, 1, 2, 3, 0]));
   sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm seed");
 
-  sh("git checkout -q -b depvisor/prod-x");
+  sh("git checkout -q -b dependabot/npm_and_yarn/x");
   // Normal edit (2 added, 1 removed), a move with an edit, a binary change, and
   // filenames git can legitimately produce that would break naive markdown parsing.
   writeFileSync(join(repo, "src.ts"), "export const a = 1;\nexport const b = 2;\n");
@@ -302,7 +382,7 @@ test("diffNumstat surfaces a test moved out of the test dir via its old path", (
   writeFileSync(join(repo, "test/x.test.ts"), "assert(true);\n");
   sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm seed");
 
-  sh("git checkout -q -b depvisor/prod-x");
+  sh("git checkout -q -b dependabot/npm_and_yarn/x");
   mkdirSync(join(repo, "src"), { recursive: true });
   sh("git mv test/x.test.ts src/x.ts");
   sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm 'move test out'");
@@ -322,7 +402,7 @@ test("manifestDiff returns hunks for manifests only, never lockfiles or source",
   writeFileSync(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm ws");
 
-  // A bump touches root + nested manifests, pnpm-workspace.yaml, the lockfile,
+  // An update touches root + nested manifests, pnpm-workspace.yaml, the lockfile,
   // and (say) source — only the first three should appear in the hunks.
   writeFileSync(join(repo, "package.json"), `{"dependencies":{"x":"2.0.0"}}\n`);
   writeFileSync(
@@ -388,39 +468,39 @@ test("snapshotRefs/refDrift detect moved, created, and deleted refs", () => {
 test("restoreRefs restores every ref, deletes extras, and reattaches the branch", () => {
   const repo = tempRepo();
   execSync("git branch -m main", { cwd: repo });
-  execSync("git branch previous-group", { cwd: repo });
-  execSync("git checkout -qb depvisor/group", { cwd: repo });
+  execSync("git branch other-pr", { cwd: repo });
+  execSync("git checkout -qb dependabot/npm_and_yarn/x", { cwd: repo });
   const snapshot = snapshotRefs(repo);
   const sealed = revParse(repo, "HEAD");
 
-  // A hostile session: moves ANOTHER group's branch, creates a ref, checks out
-  // main (so a naive `reset --hard` would clobber main, not the group branch),
-  // and dirties the tree.
+  // A hostile session: moves ANOTHER branch, creates a ref, checks out main
+  // (so a naive `reset --hard` would clobber main, not the PR branch), and
+  // dirties the tree.
   writeFileSync(join(repo, "src.ts"), "export const evil = true;\n");
   execSync("git -c user.email=t@t -c user.name=t commit -qam evil", { cwd: repo });
-  execSync("git branch -f previous-group HEAD", { cwd: repo });
+  execSync("git branch -f other-pr HEAD", { cwd: repo });
   execSync("git checkout -q main", { cwd: repo });
   writeFileSync(join(repo, "stray.txt"), "dirt\n");
 
-  restoreRefs(repo, snapshot, "depvisor/group");
+  restoreRefs(repo, snapshot, "dependabot/npm_and_yarn/x");
   assert.deepEqual(refDrift(repo, snapshot), []);
   assert.equal(revParse(repo, "HEAD"), sealed);
   assert.equal(
     execSync("git rev-parse --abbrev-ref HEAD", { cwd: repo }).toString().trim(),
-    "depvisor/group",
+    "dependabot/npm_and_yarn/x",
   );
   assert.equal(existsSync(join(repo, "stray.txt")), false);
 });
 
 test("restoreRefs recreates a deleted checkout branch before checking it out", () => {
   const repo = tempRepo();
-  execSync("git checkout -qb depvisor/group", { cwd: repo });
+  execSync("git checkout -qb dependabot/npm_and_yarn/x", { cwd: repo });
   const snapshot = snapshotRefs(repo);
   const sealed = revParse(repo, "HEAD");
-  // The session deletes the group branch out from under itself via a detour.
+  // The session deletes the PR branch out from under itself via a detour.
   execSync("git checkout -q --detach", { cwd: repo });
-  execSync("git branch -D depvisor/group", { cwd: repo });
-  restoreRefs(repo, snapshot, "depvisor/group");
+  execSync("git branch -D dependabot/npm_and_yarn/x", { cwd: repo });
+  restoreRefs(repo, snapshot, "dependabot/npm_and_yarn/x");
   assert.deepEqual(refDrift(repo, snapshot), []);
   assert.equal(revParse(repo, "HEAD"), sealed);
 });

@@ -98,10 +98,6 @@ export function localConfigEntries(
   return entries;
 }
 
-function branchExists(repo: string, name: string): boolean {
-  return probe(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]).code === 0;
-}
-
 export function refExists(repo: string, ref: string): boolean {
   return probe(repo, ["rev-parse", "--verify", "--quiet", ref]).code === 0;
 }
@@ -120,15 +116,14 @@ export function fileAtRef(repo: string, ref: string, path: string): string | nul
  * Snapshot of every ref under refs/ (heads, tags, remotes) → object sha. The
  * target's own scripts (install lifecycle, verification) run with the checkout's
  * .git reachable, so they can move ANY ref —
- * `git branch -f`, a tag, `update-ref` — not just HEAD. A moved ref is exactly
- * what the token-holding open-pr step would later push: it pushes every
- * payload's branch at the END of the run, so even an already-processed group's
- * branch is a live target. The workflow snapshots refs from trusted code
- * before each group's first untrusted execution (the group-boundary reinstall,
- * the baseline verification, and the bump's install all predate any agent),
- * maintains the snapshot across its own deliberate ref writes, and
- * verifies/restores against it at every boundary where untrusted code ran —
- * failure paths included (refDrift / restoreRefs).
+ * `git branch -f`, a tag, `update-ref` — not just HEAD. A moved head branch is
+ * exactly what the token-holding publish step would later push from. The
+ * workflow snapshots refs from trusted code before the run's first untrusted
+ * execution (head verification, the baseline install, and both reinstalls all
+ * predate any agent), maintains the snapshot across its own deliberate ref
+ * writes (the repair commit), and verifies/restores against it at every
+ * boundary where untrusted code ran — failure paths included
+ * (refDrift / restoreRefs).
  */
 export function snapshotRefs(repo: string): Map<string, string> {
   const refs = new Map<string, string>();
@@ -182,17 +177,98 @@ export function tryCheckout(repo: string, ref: string): boolean {
 }
 
 /**
- * Create (or reset) `name` off `base` and check it out — a re-run rebuilds the
- * same branch rather than duplicating.
+ * The merge base of `a` and `b`, or null when unrelated/unresolvable — the
+ * aftercare baseline anchor: the tree the updater applied its change to.
  */
-export function ensureBranch(repo: string, name: string, base: string): void {
-  git(repo, ["checkout", base]);
-  if (branchExists(repo, name)) {
-    git(repo, ["checkout", name]);
-    git(repo, ["reset", "--hard", base]);
-  } else {
-    git(repo, ["checkout", "-b", name, base]);
+export function mergeBase(repo: string, a: string, b: string): string | null {
+  const res = probe(repo, ["merge-base", a, b]);
+  const sha = res.out.trim();
+  return res.code === 0 && sha ? sha : null;
+}
+
+/**
+ * Detach HEAD onto `sha`, discarding tracked modifications and untracked files
+ * (no `-x`, so gitignored install trees survive for the reinstall that
+ * follows). Used to run the baseline verification on the merge base without
+ * moving any branch ref; the caller returns with `checkoutForce`.
+ */
+export function checkoutDetached(repo: string, sha: string): void {
+  git(repo, ["checkout", "-f", "--detach", sha]);
+  git(repo, ["clean", "-fd"]);
+}
+
+/** Force-checkout a ref and clean untracked files (see checkoutDetached). */
+export function checkoutForce(repo: string, ref: string): void {
+  git(repo, ["checkout", "-f", ref]);
+  git(repo, ["clean", "-fd"]);
+}
+
+/** One commit of the PR range, with what the push-boundary guards key on. */
+export interface RangeCommit {
+  sha: string;
+  /** Committer email (%ce) — the takeover/ownership signal, never the author. */
+  committerEmail: string;
+  /** Parent shas; >1 means a merge commit. */
+  parents: string[];
+}
+
+/**
+ * The commits in `from..to`, newest first. Used to classify an updater PR:
+ * every commit must either touch only dependency-state paths or carry
+ * depvisor's own committer sentinel. Format fields are NUL-separated so a
+ * crafted committer email cannot forge extra records.
+ */
+export function commitsInRange(repo: string, from: string, to: string): RangeCommit[] {
+  const out = git(repo, ["log", "--format=%H%x00%ce%x00%P%x01", `${from}..${to}`]);
+  const commits: RangeCommit[] = [];
+  for (const record of out.split("\u0001")) {
+    const trimmed = record.trim();
+    if (!trimmed) continue;
+    const [sha, committerEmail, parentsRaw] = trimmed.split("\u0000");
+    if (!sha || committerEmail === undefined) continue;
+    commits.push({
+      sha,
+      committerEmail,
+      parents: (parentsRaw ?? "").split(" ").filter(Boolean),
+    });
   }
+  return commits;
+}
+
+/**
+ * Paths one commit changed relative to its FIRST parent (`-m` lists a merge's
+ * combined first-parent diff; a root commit lists everything). `-z` keeps
+ * paths verbatim, matching changedPaths.
+ */
+export function changedPathsInCommit(repo: string, sha: string): string[] {
+  const res = run(repo, [
+    "diff-tree",
+    "--no-commit-id",
+    "--name-only",
+    "--no-renames",
+    "-r",
+    "-m",
+    "--first-parent",
+    // --root is load-bearing: without it a parentless commit diffs as EMPTY,
+    // which would vacuously pass the "touches only dependency-state paths"
+    // classification — a fail-open.
+    "--root",
+    "-z",
+    sha,
+  ]);
+  if (res.code !== 0) {
+    throw new GitError(`git diff-tree ${sha} failed (exit ${res.code}): ${res.err}`);
+  }
+  return res.out.split("\0").filter(Boolean);
+}
+
+/** Every path present in the tree at `ref` (repo-relative, verbatim). */
+export function lsTreePaths(repo: string, ref: string): string[] {
+  const res = run(repo, ["ls-tree", "-r", "--name-only", "-z", ref]);
+  if (res.code !== 0) {
+    throw new GitError(`git ls-tree ${ref} failed (exit ${res.code}): ${res.err}`);
+  }
+  return res.out.split("\0").filter(Boolean);
 }
 
 export function hasChanges(repo: string): boolean {
@@ -206,22 +282,6 @@ export function hasChanges(repo: string): boolean {
  */
 export function discardWorkPast(repo: string, ref: string): void {
   git(repo, ["reset", "--hard", ref]);
-  git(repo, ["clean", "-fd"]);
-}
-
-/**
- * Reset the working tree to `base` between groups in a multi-PR run: force back
- * to the base commit and remove untracked files, discarding whatever the
- * previous group left behind (commits on its own branch — which stay reachable
- * via that branch ref — or a dirty tree after a failed verification). `-f`
- * because a failed group can leave conflicting tracked changes that a plain
- * `checkout` would refuse; `clean -fd` (no `-x`) removes untracked files but
- * keeps ignored ones like node_modules, which the reinstall that follows
- * restores to the base lockfile state. Goes through `git()` so `NO_HOOKS`
- * applies — `.git/` is attacker-writable.
- */
-export function resetToBase(repo: string, base: string): void {
-  git(repo, ["checkout", "-f", base]);
   git(repo, ["clean", "-fd"]);
 }
 
@@ -379,22 +439,22 @@ export function diffNumstat(repo: string, from: string, to: string): NumstatEntr
 /**
  * The textual diff (hunks) of `from..to` restricted to dependency MANIFESTS —
  * every package.json (root or workspace) plus the PM's extra root manifests
- * (`extraBumpFiles`, the same seam `manifestBumpPaths` uses: pnpm's
- * pnpm-workspace.yaml) — and nothing else. The fixer is shown these hunks so it
- * knows exactly what the deterministic bump changed, WITHOUT the lockfile hunks:
- * a pnpm-lock.yaml diff runs to thousands of lines and would swamp the fixer's
- * context (lockfiles reach it as numstat lines only, never hunks). The `:(glob)`
- * pathspec matches nested and root manifests alike. Goes through `run()` (not
- * `git()`, which trims) so hunk whitespace survives, and throws on a non-zero
- * exit so a failed diff cannot masquerade as an empty one.
+ * (`extraManifestFiles`: pnpm's pnpm-workspace.yaml) — and nothing else. The
+ * fixer is shown these hunks so it knows exactly what the updater's PR changed,
+ * WITHOUT the lockfile hunks: a pnpm-lock.yaml diff runs to thousands of lines
+ * and would swamp the fixer's context (lockfiles reach it as numstat lines
+ * only, never hunks). The `:(glob)` pathspec matches nested and root manifests
+ * alike. Goes through `run()` (not `git()`, which trims) so hunk whitespace
+ * survives, and throws on a non-zero exit so a failed diff cannot masquerade
+ * as an empty one.
  */
 export function manifestDiff(
   repo: string,
   from: string,
   to: string,
-  extraBumpFiles: readonly string[] = [],
+  extraManifestFiles: readonly string[] = [],
 ): string {
-  const res = run(repo, ["diff", from, to, "--", ":(glob)**/package.json", ...extraBumpFiles]);
+  const res = run(repo, ["diff", from, to, "--", ":(glob)**/package.json", ...extraManifestFiles]);
   if (res.code !== 0) {
     throw new GitError(`git diff ${from} ${to} (manifests) failed (exit ${res.code}): ${res.err}`);
   }
@@ -419,42 +479,6 @@ function commitStaged(repo: string, message: string): string {
     message,
   ]);
   return revParse(repo, "HEAD");
-}
-
-/**
- * The changed paths that make up the mechanical dependency bump: every
- * `package.json` (root or workspace) and the given package-manager lockfile(s),
- * matched by basename so nested workspace manifests are included without
- * enumerating workspaces — plus the PM's extra root manifests (`extraBumpFiles`,
- * exact root paths: pnpm's pnpm-workspace.yaml, whose catalog entries a
- * catalog-pinned bump rewrites). Feeds `commitPaths` for the first of the two
- * commits; the split is cosmetic (both commits land in the same PR), so this
- * carries no trust boundary.
- */
-export function manifestBumpPaths(
-  repo: string,
-  lockfiles: readonly string[],
-  extraBumpFiles: readonly string[] = [],
-): string[] {
-  const lock = new Set(lockfiles);
-  const extra = new Set(extraBumpFiles);
-  return changedPaths(repo).filter((p) => {
-    const base = p.slice(p.lastIndexOf("/") + 1);
-    return base === "package.json" || lock.has(base) || extra.has(p);
-  });
-}
-
-/**
- * Stage changed paths from the given list and commit. The split keeps the
- * mechanical manifest bump separate from source fixes.
- */
-export function commitPaths(repo: string, paths: string[], message: string): string | null {
-  const changed = new Set(changedPaths(repo));
-  const present = paths.filter((p) => changed.has(p));
-  if (present.length === 0) return null;
-  git(repo, ["add", "-A", "--", ...present]);
-  if (!hasStaged(repo)) return null;
-  return commitStaged(repo, message);
 }
 
 /** Stage everything remaining and commit. Returns sha, or null if tree was clean. */

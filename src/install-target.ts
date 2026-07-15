@@ -4,8 +4,8 @@ import { REPO } from "./shared/target.ts";
 
 /**
  * Composite action entrypoint for `install_command: auto`. Detects the target
- * repo's package manager and runs the matching install so the outdated check
- * can read the installed tree.
+ * repo's package manager and runs the matching lockfile-faithful install so
+ * the head verification runs against the PR's own dependency state.
  *
  * Runs before the agent on the trusted checkout. Unsupported or ambiguous PMs
  * fail here with a clear ::error instead of producing a partial update. This is
@@ -20,22 +20,13 @@ function main(): void {
   }
   const command = detected.pm.installCommand(REPO);
   if (command === null) {
-    const base =
-      `::error::install_command "auto" needs a committed ${detected.pm.name} lockfile ` +
-      `(${detected.pm.lockfiles.join(" or ")}) and found none in ${REPO}. `;
-    // A lockfile-less escape hatch only helps PMs whose outdated check reads the
-    // installed tree (npm/pnpm). bun reads the lockfile itself, so there is no
-    // install flag that makes a lockfile-less repo updatable — say so plainly
-    // instead of pointing bun users at a dead end.
+    // The baseline/head attribution reinstalls need a lockfile-faithful
+    // install too, so a lockfile-less repo cannot be aftercared under "auto";
+    // say so plainly instead of guessing an install that would dirty the tree.
     console.error(
-      detected.pm.noLockfileInstall === null
-        ? base +
-            `Commit a ${detected.pm.name} lockfile: ${detected.pm.name} computes updates from ` +
-            `the lockfile, so depvisor cannot update a repository that tracks none.`
-        : base +
-            `Commit a lockfile, or — if your repository tracks none by policy — set the ` +
-            `install_command input to "${detected.pm.noLockfileInstall}" (a bare install ` +
-            `would create the lockfile, and depvisor refuses the resulting dirty tree).`,
+      `::error::install_command "auto" needs a committed ${detected.pm.name} lockfile ` +
+        `(${detected.pm.lockfiles.join(" or ")}) and found none in ${REPO}. Commit a ` +
+        `lockfile, or set the install_command input to your own install command.`,
     );
     process.exit(1);
   }

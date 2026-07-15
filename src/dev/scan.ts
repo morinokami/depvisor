@@ -1,60 +1,61 @@
 import { resolve } from "node:path";
-import { collectCandidates } from "../core/collect.ts";
-import { groupCandidates, parseGroups } from "../core/grouping.ts";
+import { classifyPrCommits, diffDependencies } from "../core/dep-diff.ts";
+import {
+  checkoutDetached,
+  checkoutForce,
+  currentBranch,
+  mergeBase,
+  revParse,
+} from "../core/git.ts";
+import { runInstall } from "../core/install.ts";
 import { detectPackageManager } from "../core/pm.ts";
-import { applyReleaseAge, parseMinimumReleaseAge } from "../core/release-age.ts";
+import { resolveResetCommand } from "../core/preflight.ts";
 import { parseVerifyCommands, runVerification, verifyStepsFor } from "../core/verify.ts";
 
 /**
- * depvisor scan — runs the deterministic core (collect → group → verify)
- * against a repo and prints the result, no LLM, no API key. Two callers: a
- * developer eyeballing the pipeline without going through the agent, and CI's
- * fixture-e2e job, which runs it per fixture variant as the real-package-manager
- * E2E gate. It is not part of the composite action — hence its home under dev/.
+ * depvisor scan — runs the deterministic aftercare core (PM detection → commit
+ * classification → dependency diff → verification/attribution) against a repo
+ * checked out on an updater-style branch, and prints the result. No LLM, no
+ * API key. Two callers: a developer eyeballing the pipeline without going
+ * through the agent, and CI's fixture-e2e job, which runs it per fixture
+ * variant as the real-package-manager E2E gate. It is not part of the
+ * composite action — hence its home under dev/.
  *
- *   node src/dev/scan.ts [repoPath] [--verify] [--minimum-release-age=<days>]
- *                        [--expect-updates[=<name>[@<location>],...]]
+ *   node src/dev/scan.ts [repoPath] [--base=<ref>] [--verify[=green|broken]]
+ *                        [--expect-changes=<name>[,<name>…]]
  *
- * --minimum-release-age applies the workflow's cooldown clamp (opt-in here, so the
- * default scan stays offline); it hits the real npm registry.
- * DEPVISOR_GROUPS is honored like in the workflow, so user-declared grouping
- * can be eyeballed here too.
- *
- * Exit code is nonzero when a --verify step fails or --verify finds no steps
- * (mirroring the workflow's fail-closed no-verify-scripts), and — with
- * --expect-updates — when the scan ends with zero candidates, zero actionable
- * groups, or a named expectation unmet. An expectation may pin a declaring
- * workspace (`semver@packages/core`); the location separator is the LAST `@`,
- * so scoped names work bare (`@types/node`) and pinned
- * (`@types/node@packages/web`). This is the CI fixture-e2e canary: the
- * fixtures are outdated by construction, so a hole here means a PM's output
- * format drifted and a parser broke silently — including the partial
- * breakages a bare zero-candidates check would miss (every candidate
- * degrading to `unknown` and leaving no groups, or one workspace quietly
- * dropping out of enumeration).
+ * --verify runs the head verification; `--verify=broken` additionally demands
+ * the aftercare fixture scenario end-to-end — head RED, then merge-base
+ * baseline GREEN under its own reinstalled lockfile state (attribution works),
+ * then a clean return to head — and exits nonzero otherwise. `--verify=green`
+ * demands a green head. --expect-changes names packages the dependency diff
+ * must surface as DIRECT changes; a parser regression that shrinks the diff
+ * fails the job instead of passing unnoticed.
  */
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const repoArg = args.find((a) => !a.startsWith("--")) ?? "fixtures/sample-app";
   const repoPath = resolve(process.cwd(), repoArg);
-  const doVerify = args.includes("--verify");
-  const expectArg = args.find((a) => a === "--expect-updates" || a.startsWith("--expect-updates="));
-  const expectUpdates = expectArg !== undefined;
-  const expectations = (expectArg?.startsWith("--expect-updates=") ? expectArg : "")
-    .slice("--expect-updates=".length)
-    .split(",")
-    .map((e) => e.trim())
-    .filter((e) => e.length > 0);
-  const ageArg = args.find((a) => a.startsWith("--minimum-release-age="));
-  const minimumReleaseAge = ageArg
-    ? parseMinimumReleaseAge(ageArg.slice("--minimum-release-age=".length))
-    : 0;
-  if (minimumReleaseAge === null) {
-    console.log(`--minimum-release-age must be a non-negative integer (days): "${ageArg}"\n`);
+  const baseArg = args.find((a) => a.startsWith("--base="));
+  const baseRef = baseArg ? baseArg.slice("--base=".length) : "main";
+  const verifyArg = args.find((a) => a === "--verify" || a.startsWith("--verify="));
+  const verifyMode = verifyArg?.startsWith("--verify=")
+    ? verifyArg.slice("--verify=".length)
+    : verifyArg
+      ? "any"
+      : null;
+  if (verifyMode !== null && !["any", "green", "broken"].includes(verifyMode)) {
+    console.log(`--verify must be bare, =green, or =broken: "${verifyArg}"\n`);
     process.exitCode = 1;
     return;
   }
+  const expectArg = args.find((a) => a.startsWith("--expect-changes="));
+  const expectations = (expectArg ?? "")
+    .slice("--expect-changes=".length)
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
 
   console.log(`\ndepvisor scan → ${repoPath}\n`);
 
@@ -65,101 +66,64 @@ async function main(): Promise<void> {
     return;
   }
   const pm = detected.pm;
-  console.log(`Package manager: ${pm.name} — detected via ${detected.source}\n`);
+  console.log(`Package manager: ${pm.name} — detected via ${detected.source}`);
 
-  let candidates = collectCandidates(repoPath, pm);
-  if (candidates.length === 0) {
-    console.log("No outdated dependencies found.\n");
-    if (expectUpdates) {
-      console.log("--expect-updates: zero candidates on a repo that should have some.\n");
-      process.exitCode = 1;
-    }
+  const headRef = currentBranch(repoPath);
+  const headSha = revParse(repoPath, "HEAD");
+  const mergeBaseSha = mergeBase(repoPath, baseRef, "HEAD");
+  if (!mergeBaseSha) {
+    console.log(`No merge base between '${baseRef}' and HEAD.\n`);
+    process.exitCode = 1;
     return;
   }
-
-  console.log(`Found ${candidates.length} outdated package(s):`);
-  for (const c of candidates) {
-    console.log(`  ${c.name.padEnd(22)} ${c.current} → ${c.latest}  [${c.updateType}, ${c.kind}]`);
-  }
-
-  if (minimumReleaseAge > 0) {
-    console.log(`\nApplying minimum release age of ${minimumReleaseAge} day(s) (npm registry)...`);
-    const aged = await applyReleaseAge(candidates, minimumReleaseAge);
-    for (const c of aged.clamped) console.log(`  clamped    ${c.name} ${c.from} → ${c.to}`);
-    for (const c of aged.heldBack) {
-      console.log(`  held back  ${c.name} (no version newer than ${c.current} is old enough)`);
-    }
-    for (const c of aged.unavailable) {
-      console.log(`  dropped    ${c.name} (release age unverifiable — the workflow reports red)`);
-    }
-    if (aged.clamped.length + aged.heldBack.length + aged.unavailable.length === 0) {
-      console.log("  every candidate's latest is already mature");
-    }
-    candidates = aged.kept;
-    if (candidates.length === 0) {
-      console.log("\nNo candidates remain after the release-age clamp.\n");
-      if (expectUpdates) {
-        console.log("--expect-updates: the clamp left zero candidates.\n");
-        process.exitCode = 1;
-      }
-      return;
-    }
-  }
-
-  const parsedGroups = parseGroups(process.env.DEPVISOR_GROUPS || "");
-  if (!parsedGroups.ok) {
-    console.log(`\nbad-groups: ${parsedGroups.problems.join("; ")}\n`);
+  console.log(
+    `Head: ${headRef} @ ${headSha.slice(0, 8)}; base: ${baseRef}; merge base: ${mergeBaseSha.slice(0, 8)}\n`,
+  );
+  if (mergeBaseSha === headSha) {
+    console.log("The branch adds no commits beyond the base — nothing to analyze.\n");
     process.exitCode = 1;
     return;
   }
 
-  const groups = groupCandidates(candidates, parsedGroups.rules);
-  console.log(`\nProposed ${groups.length} group(s) — stable keys become branch/PR identity:`);
-  for (const g of groups) {
-    console.log(`\n  ▸ ${g.key}`);
-    console.log(`    ${g.reason}`);
-    for (const m of g.members) {
-      const where = m.locations.filter((l) => l !== "");
-      const at = where.length > 0 ? `  @ ${where.join(", ")}` : "";
-      console.log(`      - ${m.name} (${m.current} → ${m.latest})${at}`);
+  const commits = classifyPrCommits(repoPath, mergeBaseSha, headSha);
+  if (!commits.ok) {
+    console.log("not-an-update-pr: commits touch non-dependency paths:");
+    for (const f of commits.foreign) {
+      console.log(`  ${f.sha.slice(0, 8)}: ${f.paths.join(", ")}`);
     }
+    console.log("");
+    process.exitCode = 1;
+    return;
   }
-  const skipped = candidates.filter((c) => c.updateType === "unknown");
-  if (skipped.length > 0) {
-    console.log(
-      `\nSkipped (unknown update type — latest not ahead of current): ${skipped.map((c) => c.name).join(", ")}`,
-    );
+  console.log(
+    `Commit classification: ${commits.updaterCommits} updater commit(s), ${commits.ownCommits} depvisor repair commit(s)`,
+  );
+
+  const diff = diffDependencies(repoPath, mergeBaseSha, headSha, pm);
+  console.log(
+    `\nDependency diff (${diff.lockfileResolved ? "lockfile-resolved" : "manifest specifiers"}; ` +
+      `${diff.changedFiles.length} dependency-state file(s) changed):`,
+  );
+  for (const c of diff.direct) {
+    const where = c.locations.filter((l) => l !== "");
+    const at = where.length > 0 ? `  @ ${where.join(", ")}` : "";
+    console.log(`  ${c.name.padEnd(22)} ${c.from} → ${c.to}  [${c.updateType}, ${c.kind}]${at}`);
+  }
+  if (diff.transitives.length > 0) {
+    console.log(`  (+ ${diff.transitives.length} transitive package(s) moved)`);
+  }
+  if (diff.direct.length === 0 && diff.transitives.length === 0) {
+    console.log("  (no dependency change found)");
+    process.exitCode = 1;
   }
 
-  if (expectUpdates) {
-    // Match against group MEMBERS, not raw candidates: a candidate that
-    // degraded to `unknown` never becomes a PR, so it must not satisfy an
-    // expectation either.
-    const members = groups.flatMap((g) => g.members);
-    const problems: string[] = [];
-    if (groups.length === 0) problems.push("zero actionable groups");
-    for (const e of expectations) {
-      const sep = e.lastIndexOf("@");
-      const name = sep > 0 ? e.slice(0, sep) : e;
-      const location = sep > 0 ? e.slice(sep + 1) : undefined;
-      const met = members.some(
-        (m) => m.name === name && (location === undefined || m.locations.includes(location)),
-      );
-      if (!met)
-        problems.push(`${name} missing${location === undefined ? "" : ` at "${location}"`}`);
-    }
-    if (problems.length > 0) {
-      console.log(`\n--expect-updates: ${problems.join("; ")}.`);
-      console.log(
-        members.length === 0
-          ? "No actionable members."
-          : `Actionable members: ${members.map((m) => `${m.name}[${m.locations.join(",")}]`).join(" ")}`,
-      );
-      process.exitCode = 1;
-    }
+  const missing = expectations.filter((name) => !diff.direct.some((c) => c.name === name));
+  if (missing.length > 0) {
+    console.log(`\n--expect-changes: missing direct change(s): ${missing.join(", ")}.`);
+    process.exitCode = 1;
   }
 
-  if (doVerify) {
+  if (verifyMode !== null) {
     // Same precedence as the workflow: explicit commands replace auto-detection.
     const custom = parseVerifyCommands(process.env.DEPVISOR_VERIFY_COMMANDS || "");
     const steps = custom.length > 0 ? custom : verifyStepsFor(repoPath, pm);
@@ -169,13 +133,55 @@ async function main(): Promise<void> {
           "and DEPVISOR_VERIFY_COMMANDS is not set.",
       );
       process.exitCode = 1;
-    } else {
-      console.log(`\nRunning verification gate (${steps.map((s) => s.name).join(" → ")})...`);
-      const results = runVerification(repoPath, steps);
-      for (const r of results) {
-        console.log(`  ${r.ok ? "✓" : "✗"} ${r.name} (exit ${r.code})`);
+      return;
+    }
+    console.log(`\nRunning head verification (${steps.map((s) => s.name).join(" → ")})...`);
+    const headRun = runVerification(repoPath, steps);
+    for (const r of headRun) console.log(`  ${r.ok ? "✓" : "✗"} ${r.name} (exit ${r.code})`);
+    const headGreen = headRun.every((r) => r.ok);
+
+    if (verifyMode === "green" && !headGreen) {
+      console.log("\n--verify=green: the head verification failed.");
+      process.exitCode = 1;
+    }
+    if (verifyMode === "any" && !headGreen) process.exitCode = 1;
+
+    if (verifyMode === "broken") {
+      if (headGreen) {
+        console.log("\n--verify=broken: expected the head to fail verification, but it passed.");
+        process.exitCode = 1;
+      } else {
+        // The attribution round-trip the workflow performs: baseline under the
+        // merge base's own lockfile state, then a clean return to head.
+        const resetCommand = resolveResetCommand(pm, repoPath, "auto");
+        if (!resetCommand) {
+          console.log("\n--verify=broken: no reinstall command (missing lockfile?).");
+          process.exitCode = 1;
+        } else {
+          console.log(`\nBaseline attribution at ${mergeBaseSha.slice(0, 8)} (${resetCommand})...`);
+          checkoutDetached(repoPath, mergeBaseSha);
+          const baseInstall = runInstall(repoPath, resetCommand);
+          const baseline = baseInstall.ok ? runVerification(repoPath, steps) : [];
+          for (const r of baseline) console.log(`  ${r.ok ? "✓" : "✗"} ${r.name} (exit ${r.code})`);
+          const baselineGreen = baseInstall.ok && baseline.every((r) => r.ok);
+          checkoutForce(repoPath, headRef);
+          const headInstall = runInstall(repoPath, resetCommand);
+          if (!baseInstall.ok) {
+            console.log("  baseline install failed.");
+            process.exitCode = 1;
+          } else if (!baselineGreen) {
+            console.log("  baseline-red: the merge base fails verification too.");
+            process.exitCode = 1;
+          } else if (!headInstall.ok) {
+            console.log("  returning to head: reinstall failed.");
+            process.exitCode = 1;
+          } else {
+            console.log(
+              "  attribution OK: head red, baseline green — the failure is the update's.",
+            );
+          }
+        }
       }
-      if (results.some((r) => !r.ok)) process.exitCode = 1;
     }
   }
 

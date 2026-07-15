@@ -4,16 +4,11 @@
  * must be compared, only the numeric x.y.z core is parsed and ordered, and each
  * consumer anchors its parse to match the shape of ITS input:
  *
- *   - `parseVersionCore` (here, unanchored): version strings from the registry
- *     and `outdated` output. `outdated` reports the `latest` dist-tag verbatim,
- *     and when a maintainer points it at a prerelease (e.g. 2.0.0-rc.1) that
- *     exact string is what the update installs — so it still classifies from
- *     its x.y.z core instead of being dropped. Used by collect.ts, ignore.ts,
- *     and release-age.ts's clamp bounds.
- *   - release-age.ts's `parseStable` (fully anchored): the clamp set must never
- *     contain a prerelease, which the core comparator cannot order.
- *   - advisories.ts's `parseOsvVersion` (start-anchored, plus OSV's "0"
- *     sentinel): OSV boundaries are bare concrete versions, never tags.
+ *   - `parseVersionCore` (here, unanchored): lockfile-resolved versions and
+ *     manifest specifiers from the updater's diff — a range like `^11.2.1` or
+ *     a prerelease like `2.0.0-rc.1` still classifies from its x.y.z core
+ *     instead of being dropped. Used by dep-diff.ts's `classifyUpdate` and
+ *     version ordering.
  *   - changelog.ts's `parseSemver` (end-anchored): a release tag's prerelease
  *     suffix (`v11.0.0-beta.1`) must not parse as its GA version and land in a
  *     release-note window.

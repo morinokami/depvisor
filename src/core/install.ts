@@ -7,8 +7,9 @@ const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
  * Run a dependency install command in `repo`. Shared by `install-target.ts`
- * (the pre-agent install behind `install_command: auto`) and the group-boundary
- * reset in the update workflow, which both need a lockfile-faithful reinstall.
+ * (the pre-agent install behind `install_command: auto`) and the aftercare
+ * flow's baseline/head attribution reinstalls, which all need a
+ * lockfile-faithful install.
  *
  * `shell: true` because the command is a full shell string: either a fixed
  * `PmToolchain.installCommand` (e.g. `npm ci`) or the trusted, workflow-supplied

@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseRunConfig, type ConfigEnv } from "../src/core/config.ts";
-
-/** parseRunConfig on an env with no DEPVISOR_* knobs set at all. */
-function defaults() {
-  const parsed = parseRunConfig({});
-  assert.ok(parsed.ok);
-  return parsed.config;
-}
+import { parsePrNumber, parseRefName, parseRunConfig, type ConfigEnv } from "../src/core/config.ts";
 
 /** The status of the first rejected knob, or null when the env parses. */
 function rejection(env: ConfigEnv): { status: string; summary: string } | null {
@@ -15,133 +8,146 @@ function rejection(env: ConfigEnv): { status: string; summary: string } | null {
   return parsed.ok ? null : { status: parsed.status, summary: parsed.summary };
 }
 
-test("an empty env yields every documented default", () => {
-  const config = defaults();
-  assert.equal(config.dryRun, false);
-  assert.equal(config.conflictRefreshOnly, false);
-  assert.equal(config.openPullRequestsLimit, 5);
-  assert.equal(config.minimumReleaseAge, 1);
-  assert.equal(config.suggestFeatures, false);
-  assert.equal(config.language, "");
-  assert.equal(config.baseBranch, undefined);
-  assert.equal(config.openPrsFile, undefined);
-  assert.equal(config.verifyCommands, "");
-  assert.equal(config.installCommand, "");
-  assert.deepEqual([...config.releaseAgeExclude], []);
-  assert.deepEqual(config.ignoreRules, []);
-  assert.deepEqual(config.groupRules, []);
+test("an empty env fails closed: base_ref is required, not defaulted", () => {
+  // An aftercare run without a base has nothing to attribute against, so the
+  // one required knob must fail loudly instead of guessing 'main'.
+  const rejected = rejection({});
+  assert.ok(rejected);
+  assert.equal(rejected.status, "bad-base-ref");
+  assert.match(rejected.summary, /base_ref input is required/);
+});
+
+test("with only base_ref set, every other knob takes its documented default", () => {
+  const parsed = parseRunConfig({ DEPVISOR_BASE_REF: "main" });
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.config, {
+    baseRef: "main",
+    headRef: undefined,
+    prNumber: undefined,
+    verifyCommands: "",
+    installCommand: "",
+    language: "",
+  });
 });
 
 test("empty strings mean 'not set', as the composite action forwards them", () => {
   const parsed = parseRunConfig({
-    DEPVISOR_BASE_BRANCH: "",
-    DEPVISOR_CONFLICT_REFRESH_ONLY: "",
-    DEPVISOR_OPEN_PRS_FILE: "",
-    DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "",
-    DEPVISOR_MINIMUM_RELEASE_AGE: "",
-    DEPVISOR_SUGGEST_FEATURES: "",
-    DEPVISOR_IGNORE: "",
-    DEPVISOR_GROUPS: "",
+    DEPVISOR_BASE_REF: "main",
+    DEPVISOR_HEAD_REF: "",
+    DEPVISOR_PR_NUMBER: "",
+    DEPVISOR_VERIFY_COMMANDS: "",
+    DEPVISOR_INSTALL_COMMAND: "",
     DEPVISOR_LANGUAGE: "",
   });
   assert.ok(parsed.ok);
-  assert.deepEqual(parsed.config, defaults());
+  const base = parseRunConfig({ DEPVISOR_BASE_REF: "main" });
+  assert.ok(base.ok);
+  assert.deepEqual(parsed.config, base.config);
 });
 
-test("set knobs are carried through", () => {
+test("set knobs are carried through (refs trimmed, pr_number numeric)", () => {
   const parsed = parseRunConfig({
-    DEPVISOR_BASE_BRANCH: "main",
-    DEPVISOR_DRY_RUN: "true",
-    DEPVISOR_CONFLICT_REFRESH_ONLY: "true",
-    DEPVISOR_OPEN_PRS_FILE: "/tmp/open-prs.json",
-    DEPVISOR_VERIFY_COMMANDS: "npm run ci",
-    DEPVISOR_INSTALL_COMMAND: "npm ci",
-    DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "3",
-    DEPVISOR_MINIMUM_RELEASE_AGE: "0",
-    DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "@acme/private\n@acme/tools-*\n# a comment",
-    DEPVISOR_IGNORE: "lodash\nreact@19\n@types/*",
-    DEPVISOR_GROUPS: "react: react react-dom\nacme: @acme/*",
-    DEPVISOR_SUGGEST_FEATURES: "true",
+    DEPVISOR_BASE_REF: " main ",
+    DEPVISOR_HEAD_REF: "dependabot/npm_and_yarn/lru-cache-11.0.0",
+    DEPVISOR_PR_NUMBER: "42",
+    DEPVISOR_VERIFY_COMMANDS: "make check\nmake e2e",
+    DEPVISOR_INSTALL_COMMAND: "npm ci --ignore-scripts",
     DEPVISOR_LANGUAGE: "pt-BR",
   });
   assert.ok(parsed.ok);
-  const config = parsed.config;
-  assert.equal(config.dryRun, true);
-  assert.equal(config.conflictRefreshOnly, true);
-  assert.equal(config.baseBranch, "main");
-  assert.equal(config.openPrsFile, "/tmp/open-prs.json");
-  assert.equal(config.verifyCommands, "npm run ci");
-  assert.equal(config.installCommand, "npm ci");
-  assert.equal(config.openPullRequestsLimit, 3);
-  assert.equal(config.minimumReleaseAge, 0);
-  assert.equal(config.suggestFeatures, true);
-  assert.equal(config.language, "pt-BR");
-  assert.deepEqual(config.releaseAgeExclude, [
-    { name: "@acme/private" },
-    { namePrefix: "@acme/tools-" },
-  ]);
-  assert.deepEqual(config.ignoreRules, [
-    { name: "lodash", major: null },
-    { name: "react", major: 19 },
-    { namePrefix: "@types/" },
-  ]);
-  assert.deepEqual(config.groupRules, [
-    { name: "react", packages: [{ name: "react" }, { name: "react-dom" }] },
-    { name: "acme", packages: [{ namePrefix: "@acme/" }] },
-  ]);
+  assert.deepEqual(parsed.config, {
+    baseRef: "main",
+    headRef: "dependabot/npm_and_yarn/lru-cache-11.0.0",
+    prNumber: 42,
+    verifyCommands: "make check\nmake e2e",
+    installCommand: "npm ci --ignore-scripts",
+    language: "pt-BR",
+  });
 });
 
 test("each knob fails closed with its own bad-* status and echoes the value", () => {
+  const base = { DEPVISOR_BASE_REF: "main" };
+  // The ref knobs are embedded in git command lines and the status file, so
+  // anything outside plain branch naming must be refused, not passed through.
   const cases: [ConfigEnv, string, string][] = [
-    [{ DEPVISOR_DRY_RUN: "yes" }, "bad-dry-run", "'yes'"],
-    [{ DEPVISOR_CONFLICT_REFRESH_ONLY: "yes" }, "bad-conflict-refresh-only", "'yes'"],
-    [{ DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: " 0 " }, "bad-open-pull-requests-limit", "'0'"],
-    [{ DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "many" }, "bad-open-pull-requests-limit", "'many'"],
-    [{ DEPVISOR_MINIMUM_RELEASE_AGE: "-1" }, "bad-minimum-release-age", "'-1'"],
-    [{ DEPVISOR_SUGGEST_FEATURES: "yes" }, "bad-suggest-features", "'yes'"],
-    [{ DEPVISOR_LANGUAGE: "japanese please" }, "bad-language", "'japanese please'"],
+    [{ DEPVISOR_BASE_REF: "../evil" }, "bad-base-ref", "'../evil'"],
+    [{ ...base, DEPVISOR_HEAD_REF: "-x" }, "bad-head-ref", "'-x'"], // option injection
+    [{ ...base, DEPVISOR_HEAD_REF: "a..b" }, "bad-head-ref", "'a..b'"], // range syntax
+    [{ ...base, DEPVISOR_HEAD_REF: "feature/" }, "bad-head-ref", "'feature/'"],
+    [{ ...base, DEPVISOR_HEAD_REF: "branch.lock" }, "bad-head-ref", "'branch.lock'"],
+    [{ ...base, DEPVISOR_PR_NUMBER: "0" }, "bad-pr-number", "'0'"],
+    [{ ...base, DEPVISOR_PR_NUMBER: "abc" }, "bad-pr-number", "'abc'"],
+    [{ ...base, DEPVISOR_PR_NUMBER: "1.5" }, "bad-pr-number", "'1.5'"],
+    [{ ...base, DEPVISOR_LANGUAGE: "not a tag!" }, "bad-language", "'not a tag!'"],
   ];
   for (const [env, status, echoed] of cases) {
     const rejected = rejection(env);
-    assert.equal(rejected?.status, status);
+    assert.ok(rejected, status);
+    assert.equal(rejected.status, status);
     assert.ok(rejected.summary.includes(echoed), `${status} summary should echo ${echoed}`);
   }
 });
 
-test("list knobs name every unrecognized entry, pluralized", () => {
-  const one = rejection({ DEPVISOR_IGNORE: "not a package name" });
-  assert.equal(one?.status, "bad-ignore");
-  assert.ok(one.summary.includes("1 unrecognized entry:"));
-  assert.ok(one.summary.includes("not a package name"));
-
-  const two = rejection({ DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "bad name\nlodash@4" });
-  assert.equal(two?.status, "bad-minimum-release-age-exclude");
-  assert.ok(two.summary.includes("2 unrecognized entries:"));
-  assert.ok(two.summary.includes("bad name, lodash@4"));
-
-  const groups = rejection({ DEPVISOR_GROUPS: "react react-dom\nreact: react\nweb: react" });
-  assert.equal(groups?.status, "bad-groups");
-  assert.ok(groups.summary.includes("2 invalid entries:"));
-  assert.ok(groups.summary.includes("react react-dom")); // the line missing its ':'
-  assert.ok(groups.summary.includes("'react'")); // the package claimed by two groups
-});
-
-test("the cooldown exclusion is validated even when the cooldown is disabled", () => {
-  // A typo must fail now, not the day minimum_release_age is turned back on.
-  const rejected = rejection({
-    DEPVISOR_MINIMUM_RELEASE_AGE: "0",
-    DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: "not a package name",
-  });
-  assert.equal(rejected?.status, "bad-minimum-release-age-exclude");
-});
-
 test("the first rejection wins, in the order the knobs are parsed", () => {
-  const rejected = rejection({
-    DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: "nope",
-    DEPVISOR_MINIMUM_RELEASE_AGE: "nope",
-    DEPVISOR_IGNORE: "nope nope",
-    DEPVISOR_SUGGEST_FEATURES: "nope",
-    DEPVISOR_LANGUAGE: "nope nope",
+  // Two mistyped knobs report only the first: enough to send the user to
+  // their workflow file without a wall of statuses.
+  const baseFirst = rejection({
+    DEPVISOR_BASE_REF: "../evil",
+    DEPVISOR_HEAD_REF: "-x",
+    DEPVISOR_PR_NUMBER: "abc",
+    DEPVISOR_LANGUAGE: "not a tag!",
   });
-  assert.equal(rejected?.status, "bad-open-pull-requests-limit");
+  assert.equal(baseFirst?.status, "bad-base-ref");
+
+  const headFirst = rejection({
+    DEPVISOR_BASE_REF: "main",
+    DEPVISOR_HEAD_REF: "-x",
+    DEPVISOR_PR_NUMBER: "abc",
+    DEPVISOR_LANGUAGE: "not a tag!",
+  });
+  assert.equal(headFirst?.status, "bad-head-ref");
+
+  const prBeforeLanguage = rejection({
+    DEPVISOR_BASE_REF: "main",
+    DEPVISOR_PR_NUMBER: "abc",
+    DEPVISOR_LANGUAGE: "not a tag!",
+  });
+  assert.equal(prBeforeLanguage?.status, "bad-pr-number");
+});
+
+test("parseRefName: real updater branch names pass; git-hostile shapes are null", () => {
+  // "" stays "" (= unset), and surrounding whitespace is trimmed.
+  assert.equal(parseRefName(""), "");
+  assert.equal(parseRefName("  "), "");
+  assert.equal(parseRefName(" main "), "main");
+  // The charset exists to serve exactly these: real Dependabot/Renovate branches.
+  assert.equal(
+    parseRefName("dependabot/npm_and_yarn/lru-cache-11.0.0"),
+    "dependabot/npm_and_yarn/lru-cache-11.0.0",
+  );
+  assert.equal(parseRefName("renovate/lru-cache-11.x"), "renovate/lru-cache-11.x");
+  for (const bad of [
+    "../evil", // path escape
+    "-x", // would parse as a git option
+    ".hidden", // leading '.' is invalid in refs
+    "/abs",
+    "a..b", // revision-range syntax
+    "feature/", // trailing '/' is invalid in refs
+    "branch.lock", // reflock collision
+    "a b",
+    "a\nb",
+    "$(true)",
+  ]) {
+    assert.equal(parseRefName(bad), null, `should reject '${bad}'`);
+  }
+});
+
+test("parsePrNumber: '' stays unset; only a plain positive integer parses", () => {
+  assert.equal(parsePrNumber(""), "");
+  assert.equal(parsePrNumber("  "), "");
+  assert.equal(parsePrNumber("42"), 42);
+  assert.equal(parsePrNumber(" 7 "), 7);
+  for (const bad of ["0", "-1", "abc", "1.5", "007", "1e3", "99999999999999999999"]) {
+    assert.equal(parsePrNumber(bad), null, `should reject '${bad}'`);
+  }
 });

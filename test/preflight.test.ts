@@ -7,30 +7,47 @@ import { join } from "node:path";
 import { npmToolchain } from "../src/core/pm.ts";
 import { preflight, resolveResetCommand, type PreflightOptions } from "../src/core/preflight.ts";
 
+function git(repo: string, cmd: string): string {
+  return execSync(`git ${cmd}`, { cwd: repo, encoding: "utf8" }).trim();
+}
+
+function commit(repo: string, message: string): void {
+  git(repo, "add -A");
+  git(repo, `-c user.email=t@t -c user.name=t commit -qm "${message}" --allow-empty`);
+}
+
 function tempRepo(files: Record<string, string> = {}): string {
   const repo = mkdtempSync(join(tmpdir(), "depvisor-preflight-"));
-  execSync("git init -q -b main", { cwd: repo });
+  git(repo, "init -q -b main");
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(join(repo, name), content);
   }
-  execSync("git add -A", { cwd: repo });
-  execSync("git -c user.email=t@t -c user.name=t commit -qm init --allow-empty", { cwd: repo });
+  commit(repo, "init");
   return repo;
 }
 
-/** A repo that passes every gate: npm lockfile, build+test scripts. */
+const HEAD_BRANCH = "dependabot/npm_and_yarn/lru-cache-11.0.0";
+
+/**
+ * The shape a real run sees: a green base on main (npm lockfile, build+test
+ * scripts) plus a checked-out updater head branch one commit ahead of it.
+ */
 function greenRepo(): string {
-  return tempRepo({
+  const repo = tempRepo({
     "package.json": JSON.stringify({ scripts: { build: "true", test: "true" } }),
     "package-lock.json": "{}",
   });
+  git(repo, `checkout -qb ${HEAD_BRANCH}`);
+  writeFileSync(join(repo, "package-lock.json"), JSON.stringify({ bumped: true }));
+  commit(repo, "deps: bump lru-cache");
+  return repo;
 }
 
-const NO_OPTS: PreflightOptions = { baseBranch: undefined, verifyCommands: "" };
+const MAIN_OPTS: PreflightOptions = { baseRef: "main", headRef: undefined, verifyCommands: "" };
 
 function failure(
   repo: string,
-  opts: PreflightOptions = NO_OPTS,
+  opts: PreflightOptions = MAIN_OPTS,
 ): { status: string; summary: string } {
   const res = preflight(repo, opts);
   assert.equal(res.ok, false, JSON.stringify(res));
@@ -55,7 +72,7 @@ test("preflight: persisted checkout credentials fail closed before any tree read
   assert.ok(!res.summary.includes("c2VjcmV0"));
 });
 
-test("preflight: a dirty tree is refused, not built upon", () => {
+test("preflight: a dirty tree is refused, not repaired on top of", () => {
   const repo = greenRepo();
   writeFileSync(join(repo, "leftover.txt"), "from a previous failed run\n");
   assert.equal(failure(repo).status, "dirty-tree");
@@ -77,25 +94,52 @@ test("preflight: package-manager detection failures pass through as their own st
   assert.equal(failure(yarnRepo).status, "unsupported-package-manager");
 });
 
-test("preflight: a depvisor/* base or a detached HEAD is a bad base, not an anchor", () => {
+test("preflight: a detached HEAD needs the head_ref input to name the PR branch", () => {
   const repo = greenRepo();
-  const explicit = failure(repo, { baseBranch: "depvisor/prod/left-pad", verifyCommands: "" });
-  assert.equal(explicit.status, "bad-base-branch");
+  const headSha = git(repo, "rev-parse HEAD");
+  git(repo, "checkout -q --detach");
+  // The repair is published to the head branch, so an anonymous checkout with
+  // nothing naming that branch cannot proceed.
+  assert.equal(failure(repo).status, "bad-head-ref");
 
-  // Unset base falls back to the checked-out branch; detached HEAD resolves to
-  // the literal "HEAD", which must be refused rather than used as an identity.
-  execSync("git checkout -q --detach", { cwd: repo });
-  assert.equal(failure(repo).status, "bad-base-branch");
+  // The head_ref input names the branch when the checkout cannot.
+  const res = preflight(repo, { baseRef: "main", headRef: HEAD_BRANCH, verifyCommands: "" });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  if (!res.ok) throw new Error("unreachable");
+  assert.equal(res.headRef, HEAD_BRANCH);
+  assert.equal(res.headSha, headSha);
 });
 
-test("preflight: an explicit base must exist in the checkout", () => {
+test("preflight: a base that was never fetched is refused with fetch guidance", () => {
   const repo = greenRepo();
-  const res = failure(repo, { baseBranch: "not-fetched", verifyCommands: "" });
-  assert.equal(res.status, "missing-base-branch");
+  const res = failure(repo, { baseRef: "not-fetched", headRef: undefined, verifyCommands: "" });
+  assert.equal(res.status, "missing-base-ref");
   assert.match(res.summary, /not-fetched/);
+  assert.match(res.summary, /fetch-depth: 0/);
 });
 
-test("preflight: no detectable verify scripts means no PR (typecheck alone does not count)", () => {
+test("preflight: unrelated histories have no merge base to attribute against", () => {
+  const repo = greenRepo();
+  git(repo, "checkout -q --orphan lonely");
+  commit(repo, "orphan root");
+  const res = failure(repo);
+  assert.equal(res.status, "missing-base-ref");
+  assert.match(res.summary, /No merge base/);
+});
+
+test("preflight: a CI checkout resolves the base through refs/remotes/origin/", () => {
+  // actions/checkout of the head branch with fetch-depth 0 has the base only
+  // as a remote-tracking ref, never a local branch.
+  const repo = greenRepo();
+  const mainSha = git(repo, "rev-parse main");
+  git(repo, `update-ref refs/remotes/origin/develop ${mainSha}`);
+  const res = preflight(repo, { baseRef: "develop", headRef: undefined, verifyCommands: "" });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  if (!res.ok) throw new Error("unreachable");
+  assert.equal(res.mergeBaseSha, mainSha);
+});
+
+test("preflight: no detectable verify scripts means no repair (typecheck alone does not count)", () => {
   // `typecheck` is deliberately not auto-detected (see verify.ts), so a repo
   // with only that script cannot be vouched for.
   const repo = tempRepo({
@@ -107,12 +151,18 @@ test("preflight: no detectable verify scripts means no PR (typecheck alone does 
   assert.match(res.summary, /verify_commands/);
 });
 
-test("preflight ok: pins the PM and derives the verify gate from the current branch", () => {
+test("preflight ok: pins the PM, names the head, and anchors the merge base at main's tip", () => {
   const repo = greenRepo();
-  const res = preflight(repo, NO_OPTS);
+  const mainSha = git(repo, "rev-parse main");
+  const headSha = git(repo, "rev-parse HEAD");
+  const res = preflight(repo, MAIN_OPTS);
   assert.equal(res.ok, true, JSON.stringify(res));
   if (!res.ok) throw new Error("unreachable");
-  assert.equal(res.base, "main");
+  // Unset head_ref falls back to the checked-out branch.
+  assert.equal(res.headRef, HEAD_BRANCH);
+  assert.equal(res.headSha, headSha);
+  assert.notEqual(res.headSha, mainSha); // the head really is ahead of the base
+  assert.equal(res.mergeBaseSha, mainSha);
   assert.equal(res.pm.name, "npm");
   // Auto-detection order is build → lint → test; lint is not defined here.
   assert.deepEqual(res.verifySteps, [
@@ -123,7 +173,11 @@ test("preflight ok: pins the PM and derives the verify gate from the current bra
 
 test("preflight ok: explicit verify_commands replace auto-detection entirely", () => {
   const repo = greenRepo();
-  const res = preflight(repo, { baseBranch: "main", verifyCommands: "make check\nmake e2e\n" });
+  const res = preflight(repo, {
+    baseRef: "main",
+    headRef: undefined,
+    verifyCommands: "make check\nmake e2e\n",
+  });
   assert.equal(res.ok, true, JSON.stringify(res));
   if (!res.ok) throw new Error("unreachable");
   // The repo's own build/test scripts are NOT appended.

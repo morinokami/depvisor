@@ -3,73 +3,48 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_EMAIL, NO_HOOKS } from "./git.ts";
-import {
-  isDepvisorManagedLabel,
-  type PrPayload,
-  sanitizeLabels,
-  sanitizePrBody,
-  sanitizeSummary,
-} from "./pr.ts";
+import { AFTERCARE_MARKER, sanitizeCommentBody, type ReportPayload } from "./report.ts";
+import { repairScopeViolations } from "./scope.ts";
 
-export interface OpenPrResult {
+/**
+ * The token-holding publish boundary. v2 publishes exactly two things, both
+ * onto the UPDATER's PR — never a PR, branch, title, or body of depvisor's own:
+ *
+ *   1. an optional repair commit, fast-forward-pushed onto the PR's head
+ *      branch only while the remote tip still equals the updater tip this run
+ *      consumed (compare-and-swap; the updater rebasing or a human pushing
+ *      mid-run blocks the publish instead of clobbering), and
+ *   2. one marker-deduplicated report comment (created once, edited on
+ *      re-runs).
+ *
+ * The payload is an untrusted read-back at this boundary (the tokenless step
+ * wrote it), so the PR identity comes from trusted action env instead and the
+ * payload must AGREE with it, the comment body is re-sanitized at the exit,
+ * and the repair range is re-verified structurally: descendant of the
+ * expected tip, every commit committed by depvisor's sentinel, and its diff
+ * clean of dependency-state/execution-surface paths (`repairScopeViolations`).
+ * All git/gh work runs inside a fresh clone with a scrubbed environment, so
+ * target-command-touched `.git/`, global git config, and inherited env cannot
+ * influence this step.
+ */
+
+export interface PublishResult {
   ok: boolean;
-  /** created: new PR; updated: existing PR refreshed; blocked: expected human intervention. */
-  action: "created" | "updated" | "blocked" | "failed";
-  url: string | null;
+  /** published: comment (and push, when a repair existed) landed; blocked:
+   * expected churn (PR closed, head moved); failed: a real error. */
+  action: "published" | "blocked" | "failed";
+  /** Whether the repair commit was pushed in THIS run. */
+  pushed: boolean;
+  commentUrl: string | null;
   error: string | null;
 }
 
-export type HumanTakeoverCommentOutcome =
-  | "posted"
-  | "already-present"
-  | "no-open-pr"
-  | "unavailable";
-
-export const OPEN_PR_BLOCKED_MARKER = "<!-- depvisor:open-pr-blocked -->";
-
-export const OPEN_PR_BLOCKED_COMMENT = `depvisor stopped updating this PR because its head branch contains a commit that was not committed by depvisor. This avoids overwriting work on the branch with a force-push.
-
-To let depvisor manage this dependency update again, merge or close this PR and delete its head branch. If the update is still needed, depvisor may prepare it again on a future run.
-
-${OPEN_PR_BLOCKED_MARKER}`;
-
-/**
- * Reserved for the expected policy stops caused by ordinary human action on
- * the PR, which open-pr records as the green `open-pr-blocked` — exactly what
- * the status reference (docs/results.md) documents that status to mean:
- *   - a human took over the PR branch (the remote tip carries their commits),
- *   - in conflict-refresh-only mode, the target PR was merged/closed while the
- *     run was in flight, so there is nothing left to refresh.
- * Every other push-boundary refusal (non-depvisor branch or base, a foreign
- * committer in the local range, non-network remote) signals payload/config
- * tampering or misconfiguration and must go through failed(): a green
- * "blocked" there would end the whole job green with no PR opened — a silent
- * no-PR outcome, which the status design promises to surface.
- */
-function blocked(error: string): OpenPrResult {
-  return { ok: false, action: "blocked", url: null, error };
+function blocked(error: string): PublishResult {
+  return { ok: false, action: "blocked", pushed: false, commentUrl: null, error };
 }
 
-function failed(error: string): OpenPrResult {
-  return { ok: false, action: "failed", url: null, error };
-}
-
-/**
- * Attach a fix-it hint to well-known `gh pr create` failures. The most common
- * first-run failure — the repository setting that forbids Actions from creating
- * PRs — surfaces as a raw GraphQL error that names no setting, and it lands
- * only AFTER the agent step has already spent LLM tokens, so the message must
- * point straight at the fix. Anything unrecognized passes through unchanged.
- */
-export function describePrCreateError(error: string): string {
-  if (/not permitted to create or approve pull requests/i.test(error)) {
-    return (
-      `${error} — enable "Allow GitHub Actions to create and approve pull requests" ` +
-      "(repository Settings → Actions → General → Workflow permissions), or pass a " +
-      "GitHub App / PAT token with pull-request write access as the github_token input."
-    );
-  }
-  return error;
+function failed(error: string): PublishResult {
+  return { ok: false, action: "failed", pushed: false, commentUrl: null, error };
 }
 
 /**
@@ -179,537 +154,297 @@ type GhRunner = (args: string[]) => { code: number; out: string; err: string };
 const COMMENTS_PER_PAGE = 100;
 const MAX_COMMENT_PAGES = 10;
 
-/**
- * Leave one deterministic, best-effort notice when the human-commit guard takes
- * ownership away from depvisor. This helper runs only after the branch has
- * passed prepareCleanPush's validation, and production supplies a GhRunner
- * closed over the fresh clone and scrubbed environment.
- *
- * The hidden marker makes sequential runs idempotent. Comment reads are bounded
- * to 1,000 entries; if the read fails, returns an unexpected shape, or reaches
- * that bound without proving the list is exhausted, the safe fail-soft choice
- * is to skip posting rather than risk a duplicate. The workflow's documented
- * concurrency closes the ordinary read-then-create race, though this is not a
- * globally atomic uniqueness guarantee.
- */
-export function notifyHumanTakeoverComment(
-  branch: string,
-  runGh: GhRunner,
-): HumanTakeoverCommentOutcome {
-  try {
-    const viewed = runGh([
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--state",
-      "open",
-      "--json",
-      "number",
-      "--jq",
-      ".[0].number",
-    ]);
-    if (viewed.code !== 0) {
-      console.warn(`note: could not find the open PR for blocked branch ${branch}: ${viewed.err}`);
-      return "unavailable";
-    }
-    const numberText = viewed.out.trim();
-    if (!/^[1-9]\d*$/.test(numberText)) {
-      console.warn(`note: blocked branch ${branch} no longer has an open PR to comment on`);
-      return "no-open-pr";
-    }
-    const number = Number(numberText);
-    if (!Number.isSafeInteger(number)) {
-      console.warn(`note: open PR number for blocked branch ${branch} was not a safe integer`);
-      return "unavailable";
-    }
+export type ReportCommentOutcome =
+  | { ok: true; url: string | null; edited: boolean }
+  | { ok: false; error: string };
 
-    for (let page = 1; page <= MAX_COMMENT_PAGES; page += 1) {
-      const listed = runGh([
+/**
+ * Create or update the single marker-carrying report comment on the PR. The
+ * hidden marker makes sequential runs idempotent: the existing comment is
+ * PATCHed in place instead of stacking a new comment per synchronize event.
+ * Comment reads are bounded to 1,000 entries; if the read fails, returns an
+ * unexpected shape, or reaches that bound without proving the marker absent,
+ * this FAILS (the report is a core deliverable in v2, so silently skipping it
+ * would defeat the run) rather than risking a duplicate.
+ */
+export function upsertReportComment(
+  prNumber: number,
+  body: string,
+  runGh: GhRunner,
+): ReportCommentOutcome {
+  for (let page = 1; page <= MAX_COMMENT_PAGES; page += 1) {
+    const listed = runGh([
+      "api",
+      "--method",
+      "GET",
+      `repos/{owner}/{repo}/issues/${prNumber}/comments`,
+      "-F",
+      `per_page=${COMMENTS_PER_PAGE}`,
+      "-F",
+      `page=${page}`,
+    ]);
+    if (listed.code !== 0) {
+      return { ok: false, error: `could not list comments on PR #${prNumber}: ${listed.err}` };
+    }
+    let comments: unknown;
+    try {
+      comments = JSON.parse(listed.out);
+    } catch {
+      return { ok: false, error: `GitHub returned invalid JSON for PR #${prNumber} comments` };
+    }
+    if (!Array.isArray(comments)) {
+      return { ok: false, error: `GitHub returned a non-array for PR #${prNumber} comments` };
+    }
+    const existing = comments.find(
+      (comment): comment is { id: number; body: string } =>
+        comment !== null &&
+        typeof comment === "object" &&
+        "id" in comment &&
+        typeof comment.id === "number" &&
+        "body" in comment &&
+        typeof comment.body === "string" &&
+        comment.body.includes(AFTERCARE_MARKER),
+    );
+    if (existing) {
+      const patched = runGh([
         "api",
         "--method",
-        "GET",
-        `repos/{owner}/{repo}/issues/${number}/comments`,
-        "-F",
-        `per_page=${COMMENTS_PER_PAGE}`,
-        "-F",
-        `page=${page}`,
+        "PATCH",
+        `repos/{owner}/{repo}/issues/comments/${existing.id}`,
+        "-f",
+        `body=${body}`,
+        "--jq",
+        ".html_url",
       ]);
-      if (listed.code !== 0) {
-        console.warn(`note: could not inspect comments on PR #${number}: ${listed.err}`);
-        return "unavailable";
+      if (patched.code !== 0) {
+        return { ok: false, error: `could not update the report comment: ${patched.err}` };
       }
-
-      let comments: unknown;
-      try {
-        comments = JSON.parse(listed.out);
-      } catch {
-        console.warn(
-          `note: could not inspect comments on PR #${number}: GitHub returned invalid JSON`,
-        );
-        return "unavailable";
-      }
-      if (!Array.isArray(comments)) {
-        console.warn(
-          `note: could not inspect comments on PR #${number}: GitHub returned a non-array`,
-        );
-        return "unavailable";
-      }
-      if (
-        comments.some(
-          (comment) =>
-            comment !== null &&
-            typeof comment === "object" &&
-            "body" in comment &&
-            typeof comment.body === "string" &&
-            comment.body.includes(OPEN_PR_BLOCKED_MARKER),
-        )
-      ) {
-        return "already-present";
-      }
-      if (comments.length < COMMENTS_PER_PAGE) {
-        const posted = runGh(["pr", "comment", String(number), "--body", OPEN_PR_BLOCKED_COMMENT]);
-        if (posted.code !== 0) {
-          console.warn(`note: could not comment on blocked PR #${number}: ${posted.err}`);
-          return "unavailable";
-        }
-        console.log(`  commented on PR #${number}: depvisor will not overwrite the human commit`);
-        return "posted";
-      }
+      return { ok: true, url: patched.out || null, edited: true };
     }
-
-    console.warn(
-      `note: skipped commenting on blocked PR #${number}: could not prove the marker was absent within ${COMMENTS_PER_PAGE * MAX_COMMENT_PAGES} comments`,
-    );
-    return "unavailable";
-  } catch (err) {
-    const message = Error.isError(err) ? err.message : String(err);
-    console.warn(`note: could not notify the open PR for blocked branch ${branch}: ${message}`);
-    return "unavailable";
+    if (comments.length < COMMENTS_PER_PAGE) {
+      const posted = runGh([
+        "api",
+        "--method",
+        "POST",
+        `repos/{owner}/{repo}/issues/${prNumber}/comments`,
+        "-f",
+        `body=${body}`,
+        "--jq",
+        ".html_url",
+      ]);
+      if (posted.code !== 0) {
+        return { ok: false, error: `could not post the report comment: ${posted.err}` };
+      }
+      return { ok: true, url: posted.out || null, edited: false };
+    }
   }
+  return {
+    ok: false,
+    error: `could not prove the report marker absent within ${COMMENTS_PER_PAGE * MAX_COMMENT_PAGES} comments on PR #${prNumber}`,
+  };
 }
 
-/** gh (by absolute path) for other token-holding entrypoints using the same scrubbed env. */
-export function runSecureGh(
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-  args: string[],
-): { code: number; out: string; err: string } {
-  return gh(env, cwd, args);
-}
-
-/** Clean checkout to push from: fresh clone, scrubbed env, verified branch sha. */
-interface PreparedPush {
-  clone: string;
-  workDir: string;
-  env: NodeJS.ProcessEnv;
-  branchSha: string;
+/** The PR identity the publish step trusts — action env, never the payload. */
+export interface TrustedPrContext {
+  prNumber: number;
+  headRef: string;
+  /** Trusted push target (Actions context). Unset only in trusted local dev. */
+  remoteUrl?: string | undefined;
 }
 
 /**
- * Produce a clean checkout to push from, then re-verify the branch before this
- * token-holding step touches the remote. Target lifecycle/verification commands
- * can write `.git/config`, and Git config has many command-execution hooks;
- * pushing from a fresh clone with a scrubbed env avoids repo-local, global, and
- * env-based tampering. Push-boundary checks:
- *   1. the branch name must be one depvisor produces,
- *   2. the base must be a real, non-depvisor branch (the payload is written in
- *      the tokenless step, so its `base` is not trusted),
- *   3. every commit in base..branch must have depvisor as its COMMITTER — the
- *      author is deliberately a resolvable display identity (git.ts) and so
- *      proves nothing.
- * On any doubt nothing is prepared and the temp dir is removed. On success the
- * caller owns `workDir` and must remove it.
+ * Publish one aftercare result: verify the PR is still open on the expected
+ * head, fast-forward-push the repair commit (when one exists), and upsert the
+ * report comment. See the module doc for the trust argument. On any doubt the
+ * temp clone is removed and nothing is pushed.
  */
-function prepareCleanPush(repo: string, payload: PrPayload): PreparedPush | OpenPrResult {
-  if (!payload.branch.startsWith("depvisor/")) {
-    return failed(`refusing to push '${payload.branch}': not a depvisor branch`);
-  }
-  if (payload.base.startsWith("depvisor/")) {
+export function publishAftercare(
+  repo: string,
+  payload: ReportPayload,
+  trusted: TrustedPrContext,
+): PublishResult {
+  // The payload must agree with the trusted identity; a mismatch means the
+  // payload file was rewritten after the workflow emitted it.
+  if (payload.headRef !== trusted.headRef) {
     return failed(
-      `refusing to open a PR against base '${payload.base}': a depvisor branch cannot be the base`,
+      `payload head ref '${payload.headRef}' does not match the trusted head ref '${trusted.headRef}'; refusing to publish`,
+    );
+  }
+  if (payload.prNumber !== null && payload.prNumber !== trusted.prNumber) {
+    return failed(
+      `payload PR #${payload.prNumber} does not match the trusted PR #${trusted.prNumber}; refusing to publish`,
     );
   }
 
-  const workDir = mkdtempSync(join(tmpdir(), "depvisor-openpr-"));
+  const workDir = mkdtempSync(join(tmpdir(), "depvisor-publish-"));
   const home = join(workDir, "home");
   mkdirSync(home);
   const clone = join(workDir, "repo");
   const env = buildSecureEnv(home);
-  const fail = (result: OpenPrResult): OpenPrResult => {
-    rmSync(workDir, { recursive: true, force: true });
-    return result;
-  };
-
-  // Clone from the fresh temp dir, not inside `repo`, so git never treats the
-  // target checkout as the current repository and reads its config.
-  const cloned = git(env, workDir, ["clone", "--quiet", repo, clone]);
-  if (cloned.code !== 0) {
-    return fail(failed(`could not prepare a clean checkout to push from: ${cloned.err}`));
-  }
-
-  const baseRef = `refs/remotes/origin/${payload.base}`;
-  const branchRef = `refs/remotes/origin/${payload.branch}`;
-  if (git(env, clone, ["rev-parse", "--verify", "--quiet", baseRef]).code !== 0) {
-    return fail(failed(`base branch '${payload.base}' does not exist; refusing to push`));
-  }
-  if (git(env, clone, ["rev-parse", "--verify", "--quiet", branchRef]).code !== 0) {
-    return fail(failed(`branch '${payload.branch}' not found; refusing to push`));
-  }
-  const branchSha = git(env, clone, ["rev-parse", branchRef]).out;
-
-  // %ce, not %ae: the author is deliberately a resolvable display identity
-  // (git.ts:AGENT_AUTHOR), so only the committer marks depvisor's own commit
-  // objects — and any human rebase/amend/web-UI edit rewrites the committer.
-  const log = git(env, clone, ["log", "--format=%ce", `${baseRef}..${branchRef}`]);
-  if (log.code !== 0) {
-    return fail(
-      failed(`cannot verify the committers of ${payload.base}..${payload.branch}: ${log.err}`),
-    );
-  }
-  const foreign = [
-    ...new Set(
-      log.out
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .filter((email) => email !== AGENT_EMAIL),
-    ),
-  ];
-  // A foreign committer in the LOCAL base..branch range is tampering, not a
-  // human takeover: in CI nothing human can commit to the checkout between the
-  // agent step and this one (the remote-tip takeover check below in
-  // openPrWithGh is the expected-green case).
-  if (foreign.length > 0) {
-    return fail(
-      failed(
-        `branch ${payload.branch} has commits whose committer is not depvisor (${foreign.join(", ")}); refusing to push`,
-      ),
-    );
-  }
-
-  return { clone, workDir, env, branchSha };
-}
-
-export interface LabelReconciliation {
-  add: string[];
-  remove: string[];
-}
-
-/**
- * Compute the exact best-effort reconciliation for depvisor-owned labels.
- * Labels outside that vocabulary are never removed. `preserve` exempts labels
- * from removal this run because the input behind them was unavailable rather
- * than negative (today: `security` when the fail-open advisory lookup failed —
- * its absence from `desired` is then missing data, not evidence). Inputs may
- * come back in arbitrary API order, so both outputs are deduplicated and
- * sorted for deterministic `gh` calls.
- */
-export function labelReconciliation(
-  current: readonly string[],
-  desired: readonly string[],
-  preserve: readonly string[] = [],
-): LabelReconciliation {
-  const currentSet = new Set(current);
-  const desiredSet = new Set(desired);
-  const preserveSet = new Set(preserve);
-  return {
-    add: [...desiredSet].filter((label) => !currentSet.has(label)).toSorted(),
-    remove: [...currentSet]
-      .filter(
-        (label) =>
-          isDepvisorManagedLabel(label) && !desiredSet.has(label) && !preserveSet.has(label),
-      )
-      .toSorted(),
-  };
-}
-
-/**
- * Reconcile depvisor's deterministic labels on the PR, entirely fail-soft.
- *
- * The main objective is the PR itself, so nothing here may fail it — that is why
- * labels are applied AFTER `gh pr create`, never passed to it: `gh pr create
- * --label <unknown>` aborts creation, turning a missing label into a lost PR.
- *
- * Both creating a label and applying it need only `pull-requests: write` (the
- * scope that already opened the PR): GitHub's label REST endpoint accepts either
- * `issues` or `pull-requests` write, verified empirically against the standard
- * `GITHUB_TOKEN` — no `issues: write` is required.
- *
- * Existing labels are read first. Obsolete labels within depvisor's fixed
- * vocabulary are removed (except `preserve`, see `labelReconciliation`),
- * desired missing labels are ensured (`gh label create`, no `--force`) and
- * added, and labels outside the vocabulary are untouched. Per-label edits keep
- * a single API failure isolated. A read/remove/create/add failure is logged
- * and skipped, never fatal: these labels describe review provenance but are
- * not a security gate or merge authorization. All calls use the scrubbed
- * environment.
- */
-function reconcileLabels(
-  env: NodeJS.ProcessEnv,
-  clone: string,
-  branch: string,
-  labels: string[],
-  preserve: readonly string[],
-): void {
-  const viewed = gh(env, clone, [
-    "pr",
-    "view",
-    branch,
-    "--json",
-    "labels",
-    "--jq",
-    ".labels[].name",
-  ]);
-  const current =
-    viewed.code === 0
-      ? viewed.out
-          .split("\n")
-          .map((label) => label.trim())
-          .filter(Boolean)
-      : [];
-  if (viewed.code !== 0) {
-    console.warn(
-      `note: could not inspect labels on ${branch}; adding the desired set without removals: ${viewed.err}`,
-    );
-  }
-
-  const reconciliation = labelReconciliation(current, labels, preserve);
-  for (const label of reconciliation.remove) {
-    const removed = gh(env, clone, ["pr", "edit", branch, "--remove-label", label]);
-    if (removed.code !== 0) {
-      console.warn(`note: could not remove stale label '${label}' from ${branch}: ${removed.err}`);
-    }
-  }
-  for (const label of reconciliation.add) {
-    // Ensure first; a failure here is fine — the add below decides whether the
-    // desired label reached the PR.
-    gh(env, clone, ["label", "create", label]);
-    const added = gh(env, clone, ["pr", "edit", branch, "--add-label", label]);
-    if (added.code !== 0) {
-      console.warn(`note: could not apply label '${label}' to ${branch}: ${added.err}`);
-    }
-  }
-}
-
-/**
- * Push the update branch and open (or refresh) the PR via the `gh` CLI.
- *
- * This is the only code that touches a token, and it runs in a separate
- * workflow step from the agent. All git/gh work runs inside a fresh clone with
- * a scrubbed environment, so target-command-touched `.git/`, global git config,
- * and inherited env cannot influence the token-holding step.
- *
- * In CI, `remoteUrl` must come from a trusted source such as Actions context,
- * not from the target checkout. When omitted for trusted local dev, it falls
- * back to `remote.origin.url`. Either way, non-network remotes are refused.
- *
- * `conflictRefreshOnly` re-enforces the closed-world mode at this exit
- * boundary: the tokenless step selected conflicted PRs from a snapshot taken
- * before install/verification/LLM work, so the target PR can be merged or
- * closed while the run is in flight. In that mode the still-open PR is
- * re-verified before anything is pushed (a merge can auto-delete the branch,
- * which the push would otherwise resurrect), and `gh pr create` is never
- * called — a vanished PR is a green `blocked`, never a new PR. The flag must
- * come from trusted workflow env, NOT the payload: the payload is an untrusted
- * read-back at this boundary, so a mode bit inside it could be forged off.
- */
-export function openPrWithGh(
-  repo: string,
-  payload: PrPayload,
-  remoteUrl?: string,
-  conflictRefreshOnly = false,
-): OpenPrResult {
-  const prepared = prepareCleanPush(repo, payload);
-  if (!("clone" in prepared)) return prepared;
-  const { clone, workDir, env, branchSha } = prepared;
-
-  // The tokenless step writes the payload; re-sanitize title/body/labels at the
-  // exit boundary in case payload.json was changed after buildPrPayload.
-  const title = sanitizeSummary(payload.title);
-  const body = sanitizePrBody(payload.body);
-  const labels = sanitizeLabels(payload.labels);
-  // `security` rides the one fail-open input (the advisory lookup); when that
-  // lookup failed this run, an existing label must survive the reconcile. A
-  // tampered/mistyped payload field lands on the fail-safe (preserving) side:
-  // parsePrPayload already coerced anything but `true` to false.
-  const preserveLabels = payload.advisoriesOk ? [] : ["security"];
 
   try {
+    // Clone from the fresh temp dir, not inside `repo`, so git never treats the
+    // target checkout as the current repository and reads its config.
+    const cloned = git(env, workDir, ["clone", "--quiet", repo, clone]);
+    if (cloned.code !== 0) {
+      return failed(`could not prepare a clean checkout to publish from: ${cloned.err}`);
+    }
+
     // Prefer the trusted URL; only fall back to target config for local dev.
     // `config --get` reads the raw value and ignores `url.*.insteadOf`.
     const pushUrl =
-      remoteUrl && remoteUrl.trim()
-        ? remoteUrl.trim()
+      trusted.remoteUrl && trusted.remoteUrl.trim()
+        ? trusted.remoteUrl.trim()
         : git(env, repo, ["config", "--get", "remote.origin.url"]).out;
     if (!pushUrl) {
-      return failed("cannot resolve a remote URL to push to");
+      return failed("cannot resolve a remote URL to publish to");
     }
     if (!isNetworkRemote(pushUrl)) {
       return failed(
-        `refusing to push to non-network remote '${pushUrl}': a local/file/helper target would run its server-side hooks in this token-holding process`,
+        `refusing to publish to non-network remote '${pushUrl}': a local/file/helper target would run its server-side hooks in this token-holding process`,
       );
     }
-    // The clone's origin is the local source path, so point it at the remote.
     const setUrl = git(env, clone, ["remote", "set-url", "origin", pushUrl]);
     if (setUrl.code !== 0) {
       return failed(`could not point the clean checkout at the remote: ${setUrl.err}`);
     }
 
     // Configure git to authenticate through gh/GH_TOKEN. Non-fatal: without a
-    // token the push below fails with a clear auth error. Fresh HOME prevents
+    // token the fetch below fails with a clear auth error. Fresh HOME prevents
     // ambient credentials from being picked up.
     gh(env, clone, ["auth", "setup-git"]);
 
-    // Closed-world re-check: the snapshot that selected this group is minutes
-    // old by now. Refresh-only may only touch a PR that is STILL open — if it
-    // was merged/closed mid-run there is nothing to refresh, and pushing would
-    // resurrect an auto-deleted branch. An unverifiable state fails closed
-    // (red): this is a gate in this mode, and a green skip on an API outage
-    // would be a silent no-PR outcome.
-    let refreshUrl = "";
-    if (conflictRefreshOnly) {
-      const open = gh(env, clone, [
-        "pr",
-        "list",
-        "--head",
-        payload.branch,
-        "--state",
-        "open",
-        "--json",
-        "url",
-        "--jq",
-        ".[0].url",
-      ]);
-      if (open.code !== 0) {
-        return failed(
-          `conflict-refresh-only: could not re-verify that the ${payload.branch} PR is still open: ${open.err}`,
-        );
-      }
-      if (!open.out) {
-        return blocked(
-          `conflict-refresh-only: the PR for ${payload.branch} is no longer open (merged or closed while the run was in flight); refusing to push or open a new PR`,
-        );
-      }
-      refreshUrl = open.out;
-    }
-
-    // Human-commit guard: a non-depvisor committer at the remote tip means a
-    // force-push would overwrite human work. %ce for the same reason as the
-    // local-range check above — the resolvable author proves nothing.
-    const fetched = git(env, clone, ["fetch", "origin", payload.branch]);
-    let expectedSha = ""; // empty lease = "the remote ref must not exist yet"
-    if (fetched.code === 0) {
-      const tipCommitter = git(env, clone, ["log", "-1", "--format=%ce", "FETCH_HEAD"]).out;
-      if (tipCommitter !== AGENT_EMAIL) {
-        notifyHumanTakeoverComment(payload.branch, (args) => gh(env, clone, args));
-        return blocked(
-          `remote ${payload.branch} tip was committed by ${tipCommitter}; refusing to force-push over human commits`,
-        );
-      }
-      expectedSha = git(env, clone, ["rev-parse", "FETCH_HEAD"]).out;
-    }
-
-    const push = git(env, clone, [
-      "push",
-      `--force-with-lease=refs/heads/${payload.branch}:${expectedSha}`,
-      "origin",
-      `${branchSha}:refs/heads/${payload.branch}`,
-    ]);
-    if (push.code !== 0) {
-      return failed(`git push failed: ${push.err}`);
-    }
-
-    // Refresh-only never reaches `gh pr create`: the push above refreshed the
-    // still-open PR verified before it, so go straight to the edit/reconcile
-    // path. If the PR closed in the seconds since that check, the worst case
-    // is a pushed branch — the open-PR set still cannot grow in this mode.
-    if (conflictRefreshOnly) {
-      return refreshExistingPr(
-        env,
-        clone,
-        payload,
-        title,
-        body,
-        labels,
-        preserveLabels,
-        refreshUrl,
-      );
-    }
-
-    const create = gh(env, clone, [
+    // The PR must still be open, on the branch the trusted context names. A
+    // merged/closed PR is expected churn (green blocked); an unverifiable
+    // state fails closed — publishing blind is exactly what this check exists
+    // to prevent.
+    const viewed = gh(env, clone, [
       "pr",
-      "create",
-      "--base",
-      payload.base,
-      "--head",
-      payload.branch,
-      "--title",
-      title,
-      "--body",
-      body,
-    ]);
-    if (create.code === 0) {
-      reconcileLabels(env, clone, payload.branch, labels, preserveLabels);
-      return { ok: true, action: "created", url: create.out, error: null };
-    }
-
-    // `gh pr create` fails when a PR already exists for this head — that is the
-    // idempotent success case (the push above already refreshed it), not an error.
-    const existing = gh(env, clone, [
-      "pr",
-      "list",
-      "--head",
-      payload.branch,
-      "--state",
-      "open",
+      "view",
+      String(trusted.prNumber),
       "--json",
-      "url",
+      "state,headRefName",
       "--jq",
-      ".[0].url",
+      '[.state, .headRefName] | join("\\u0000")',
     ]);
-    if (existing.code === 0 && existing.out) {
-      return refreshExistingPr(
-        env,
-        clone,
-        payload,
-        title,
-        body,
-        labels,
-        preserveLabels,
-        existing.out,
+    if (viewed.code !== 0) {
+      return failed(`could not verify PR #${trusted.prNumber}: ${viewed.err}`);
+    }
+    const [state, headRefName] = viewed.out.split("\u0000");
+    if (state !== "OPEN") {
+      return blocked(
+        `PR #${trusted.prNumber} is no longer open (${state ?? "unknown state"}); nothing to publish`,
+      );
+    }
+    if (headRefName !== trusted.headRef) {
+      return failed(
+        `PR #${trusted.prNumber} head is '${headRefName ?? ""}', not the trusted '${trusted.headRef}'; refusing to publish`,
       );
     }
 
-    return failed(describePrCreateError(create.err));
+    // Compare-and-swap anchor: the remote tip must still be the updater tip
+    // this run consumed — unless it already equals the repair commit (an
+    // idempotent re-run after a successful push).
+    const fetched = git(env, clone, ["fetch", "origin", trusted.headRef]);
+    if (fetched.code !== 0) {
+      return failed(`could not fetch the remote head of ${trusted.headRef}: ${fetched.err}`);
+    }
+    const remoteTip = git(env, clone, ["rev-parse", "FETCH_HEAD"]).out;
+    const alreadyPushed = payload.repairSha !== null && remoteTip === payload.repairSha;
+    if (remoteTip !== payload.expectedHeadSha && !alreadyPushed) {
+      return blocked(
+        `the remote head of ${trusted.headRef} moved (expected ${payload.expectedHeadSha.slice(0, 8)}, found ${remoteTip.slice(0, 8)}); the updater rebased or a human pushed — re-run on the new head`,
+      );
+    }
+
+    let pushed = false;
+    if (payload.repairSha !== null && !alreadyPushed) {
+      // Structural re-verification of the repair range inside the clean clone.
+      // The expected tip must be an ancestor of the repair commit…
+      const anchor = git(env, clone, ["merge-base", payload.repairSha, payload.expectedHeadSha]);
+      if (anchor.code !== 0 || anchor.out !== payload.expectedHeadSha) {
+        return failed(
+          `repair commit ${payload.repairSha.slice(0, 8)} does not descend from the expected head; refusing to push`,
+        );
+      }
+      // …every commit in between must carry depvisor's committer sentinel (%ce,
+      // not %ae: the author is a resolvable display identity — git.ts — and any
+      // human rebase/amend rewrites the committer)…
+      const log = git(env, clone, [
+        "log",
+        "--format=%ce",
+        `${payload.expectedHeadSha}..${payload.repairSha}`,
+      ]);
+      if (log.code !== 0) {
+        return failed(`cannot verify the repair range's committers: ${log.err}`);
+      }
+      const foreign = [
+        ...new Set(
+          log.out
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .filter((email) => email !== AGENT_EMAIL),
+        ),
+      ];
+      if (foreign.length > 0) {
+        return failed(
+          `the repair range contains commits whose committer is not depvisor (${foreign.join(", ")}); refusing to push`,
+        );
+      }
+      // …and its committed diff must pass the repair scope rule again.
+      const diffed = git(env, clone, [
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        payload.expectedHeadSha,
+        payload.repairSha,
+      ]);
+      if (diffed.code !== 0) {
+        return failed(`cannot inspect the repair diff: ${diffed.err}`);
+      }
+      const violations = repairScopeViolations(diffed.out.split("\u0000").filter(Boolean));
+      if (violations.length > 0) {
+        return failed(
+          `the repair diff touches out-of-scope paths (${violations.toSorted().join(", ")}); refusing to push`,
+        );
+      }
+
+      // Plain push, no force: the server enforces fast-forward, so a race with
+      // the updater between the fetch above and here still cannot clobber.
+      const push = git(env, clone, [
+        "push",
+        "origin",
+        `${payload.repairSha}:refs/heads/${trusted.headRef}`,
+      ]);
+      if (push.code !== 0) {
+        return /non-fast-forward|fetch first|\[rejected\]/i.test(push.err)
+          ? blocked(
+              `the remote head of ${trusted.headRef} moved while publishing; nothing was pushed — re-run on the new head`,
+            )
+          : failed(`git push failed: ${push.err}`);
+      }
+      pushed = true;
+    }
+
+    // The report comment. Re-sanitized at this exit boundary because the
+    // payload file is untrusted here; the marker survives for idempotency.
+    const body = sanitizeCommentBody(payload.commentBody);
+    const comment = upsertReportComment(trusted.prNumber, body, (args) => gh(env, clone, args));
+    if (!comment.ok) {
+      // A pushed repair with a failed comment is a partial publish: report it
+      // red so the missing report is noticed, but say what did land.
+      return {
+        ok: false,
+        action: "failed",
+        pushed,
+        commentUrl: null,
+        error: pushed ? `repair pushed, but ${comment.error}` : comment.error,
+      };
+    }
+    return { ok: true, action: "published", pushed, commentUrl: comment.url, error: null };
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
-}
-
-/**
- * Sync an already-pushed, already-open PR with the fresh payload. Keep
- * title/body in sync, then reconcile labels (fail-soft, separate from the
- * title/body edit so a label hiccup cannot undo it). Reconciliation removes
- * obsolete depvisor-owned review signals while preserving every label outside
- * that vocabulary. A failed edit stays fail-soft (the push already refreshed
- * the commits, and the stale marker makes the next run retry the refresh) but
- * must not be silent.
- */
-function refreshExistingPr(
-  env: NodeJS.ProcessEnv,
-  clone: string,
-  payload: PrPayload,
-  title: string,
-  body: string,
-  labels: string[],
-  preserveLabels: string[],
-  url: string,
-): OpenPrResult {
-  const edited = gh(env, clone, ["pr", "edit", payload.branch, "--title", title, "--body", body]);
-  if (edited.code !== 0) {
-    console.warn(`note: could not refresh title/body of ${payload.branch}: ${edited.err}`);
-  }
-  reconcileLabels(env, clone, payload.branch, labels, preserveLabels);
-  return { ok: true, action: "updated", url, error: null };
 }

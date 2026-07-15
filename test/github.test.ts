@@ -1,161 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { commitAll } from "../src/core/git.ts";
 import {
   buildSecureEnv,
-  describePrCreateError,
   isNetworkRemote,
-  labelReconciliation,
-  notifyHumanTakeoverComment,
-  OPEN_PR_BLOCKED_COMMENT,
-  OPEN_PR_BLOCKED_MARKER,
-  openPrWithGh,
+  publishAftercare,
   SAFE_PATH_DIRS,
+  upsertReportComment,
 } from "../src/core/github.ts";
-
-/** A local target repo with one human-committed base commit; no origin remote. */
-function tempTargetRepo(): { repo: string; base: string; sh: (cmd: string) => string } {
-  const repo = mkdtempSync(join(tmpdir(), "depvisor-github-"));
-  const sh = (cmd: string) => execSync(cmd, { cwd: repo, encoding: "utf8" });
-  sh("git init -q");
-  writeFileSync(join(repo, "src.ts"), "export {};\n");
-  sh("git add -A && git -c user.email=human@example.com -c user.name=human commit -qm init");
-  const base = sh("git rev-parse --abbrev-ref HEAD").trim();
-  return { repo, base, sh };
-}
-
-test("describePrCreateError appends the repo-setting hint to the Actions-forbidden error", () => {
-  const raw =
-    "GraphQL: GitHub Actions is not permitted to create or approve pull requests (createPullRequest)";
-  const described = describePrCreateError(raw);
-  assert.ok(described.startsWith(raw));
-  assert.match(described, /Allow GitHub Actions to create and approve pull requests/);
-  assert.match(described, /github_token/);
-});
-
-test("describePrCreateError passes unrecognized errors through unchanged", () => {
-  for (const raw of ["pull request create failed: HTTP 502", ""]) {
-    assert.equal(describePrCreateError(raw), raw);
-  }
-});
-
-test("push-boundary policy refusals are failed (red), not blocked (green)", () => {
-  // `blocked` is reserved for the expected human-intervention stops (a human
-  // took over the PR branch; the refresh-only target PR was merged/closed
-  // mid-run) because open-pr records it as the green `open-pr-blocked`.
-  // A tampered payload must not ride that green path: it would end the whole
-  // job green with no PR opened (a silent no-PR outcome). Both checks below
-  // fire before any git/network work, so they are unit-testable as-is.
-  const payload = { base: "main", title: "t", body: "b", labels: [], advisoriesOk: true };
-  const foreignBranch = openPrWithGh("/nonexistent", { ...payload, branch: "not-depvisor" });
-  assert.equal(foreignBranch.ok, false);
-  assert.equal(foreignBranch.action, "failed");
-  assert.match(foreignBranch.error ?? "", /not a depvisor branch/);
-
-  const depvisorBase = openPrWithGh("/nonexistent", {
-    ...payload,
-    branch: "depvisor/dev-knip",
-    base: "depvisor/other",
-  });
-  assert.equal(depvisorBase.ok, false);
-  assert.equal(depvisorBase.action, "failed");
-  assert.match(depvisorBase.error ?? "", /cannot be the base/);
-});
-
-test("push is refused when a base..branch commit has a foreign committer, even with a depvisor author", () => {
-  const { repo, base, sh } = tempTargetRepo();
-  sh("git checkout -qb depvisor/prod-x");
-  writeFileSync(join(repo, "src.ts"), "export const changed = true;\n");
-  // Forged author: the resolvable display identity proves nothing, so the guard
-  // must key on the committer and refuse this commit.
-  sh(
-    "git -c user.email=human@example.com -c user.name=human commit -aqm work " +
-      '--author="github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"',
-  );
-  const res = openPrWithGh(repo, {
-    branch: "depvisor/prod-x",
-    base,
-    title: "t",
-    body: "b",
-    labels: [],
-    advisoriesOk: true,
-  });
-  assert.equal(res.ok, false);
-  assert.equal(res.action, "failed");
-  assert.match(res.error ?? "", /committer is not depvisor/);
-  assert.match(res.error ?? "", /human@example\.com/);
-});
-
-test("depvisor-committed commits pass the committer guard in both the split and pre-split styles", () => {
-  const { repo, base, sh } = tempTargetRepo();
-  sh("git checkout -qb depvisor/prod-x");
-  writeFileSync(join(repo, "src.ts"), "export const a = 1;\n");
-  // New style: resolvable github-actions[bot] author + sentinel committer.
-  assert.ok(commitAll(repo, "deps: bump"));
-  writeFileSync(join(repo, "src.ts"), "export const a = 2;\n");
-  // Pre-split style (sentinel in BOTH fields): tips of PR branches created
-  // before the author/committer split carry these and must keep refreshing.
-  sh(
-    'git -c "user.email=depvisor[bot]@users.noreply.github.com" -c user.name=depvisor ' +
-      "commit -aqm old-style",
-  );
-  const res = openPrWithGh(repo, {
-    branch: "depvisor/prod-x",
-    base,
-    title: "t",
-    body: "b",
-    labels: [],
-    advisoriesOk: true,
-  });
-  // The committer guard let both commits through; the run then stops at remote
-  // resolution because this fixture has no origin — reaching that point (and
-  // not the committer refusal) is the assertion.
-  assert.equal(res.ok, false);
-  assert.match(res.error ?? "", /cannot resolve a remote URL/);
-});
-
-test("conflict-refresh-only re-verifies the PR before pushing and fails closed when it cannot", () => {
-  const { repo, base, sh } = tempTargetRepo();
-  sh("git checkout -qb depvisor/prod-x");
-  writeFileSync(join(repo, "src.ts"), "export const a = 1;\n");
-  assert.ok(commitAll(repo, "deps: bump"));
-  const payload = {
-    branch: "depvisor/prod-x",
-    base,
-    title: "t",
-    body: "b",
-    labels: [],
-    advisoriesOk: true,
-  };
-  // The remote is unreachable/nonexistent, so `gh pr list` cannot vouch that
-  // the target PR is still open. Refresh-only must stop AT ITS OWN GATE —
-  // before the fetch/push — because an unverifiable PR state in the
-  // closed-world mode is a red gate failure, not a skippable hiccup.
-  const refreshOnly = openPrWithGh(
-    repo,
-    payload,
-    "https://github.com/depvisor-test/definitely-nonexistent-repo",
-    true,
-  );
-  assert.equal(refreshOnly.ok, false);
-  assert.equal(refreshOnly.action, "failed");
-  assert.match(refreshOnly.error ?? "", /conflict-refresh-only: could not re-verify/);
-
-  // The same call in normal mode proceeds past that gate (and fails later, at
-  // the push against the unreachable remote), pinning the gate to the mode.
-  const normal = openPrWithGh(
-    repo,
-    payload,
-    "https://github.com/depvisor-test/definitely-nonexistent-repo",
-  );
-  assert.equal(normal.ok, false);
-  assert.equal(normal.action, "failed");
-  assert.match(normal.error ?? "", /git push failed/);
-});
+import { AFTERCARE_MARKER, type ReportPayload } from "../src/core/report.ts";
 
 test("isNetworkRemote accepts network remotes", () => {
   for (const url of [
@@ -191,161 +43,6 @@ test("isNetworkRemote rejects local, file, and helper remotes", () => {
   ]) {
     assert.equal(isNetworkRemote(url), false, url);
   }
-});
-
-test("labelReconciliation replaces stale depvisor signals and preserves outside labels", () => {
-  assert.deepEqual(
-    labelReconciliation(
-      ["depvisor", "semver:patch", "fixer:none", "security", "team:platform"],
-      ["depvisor", "semver:minor", "fixer:applied", "dev-dependencies"],
-    ),
-    {
-      add: ["dev-dependencies", "fixer:applied", "semver:minor"],
-      remove: ["fixer:none", "security", "semver:patch"],
-    },
-  );
-});
-
-test("labelReconciliation never removes preserved labels (fail-open advisory input)", () => {
-  // A failed advisory lookup leaves `security` out of the desired set as
-  // missing data, not evidence — preserving it must not block other removals
-  // or the adds.
-  assert.deepEqual(
-    labelReconciliation(
-      ["depvisor", "security", "semver:patch", "fixer:none"],
-      ["depvisor", "semver:minor", "fixer:none"],
-      ["security"],
-    ),
-    {
-      add: ["semver:minor"],
-      remove: ["semver:patch"],
-    },
-  );
-});
-
-test("labelReconciliation deduplicates and stabilizes API-order inputs", () => {
-  assert.deepEqual(
-    labelReconciliation(
-      ["security", "depvisor", "security", "user-label"],
-      ["fixer:none", "depvisor", "fixer:none"],
-    ),
-    {
-      add: ["fixer:none"],
-      remove: ["security"],
-    },
-  );
-});
-
-test("human-takeover notice is posted once with a fixed hidden marker", () => {
-  const calls: string[][] = [];
-  const outcome = notifyHumanTakeoverComment("depvisor/prod-x", (args) => {
-    calls.push(args);
-    if (args[0] === "pr" && args[1] === "list") {
-      return { code: 0, out: "17", err: "" };
-    }
-    if (args[0] === "api") {
-      return { code: 0, out: JSON.stringify([{ body: "ordinary comment" }]), err: "" };
-    }
-    return { code: 0, out: "https://github.com/acme/repo/pull/17#issuecomment-1", err: "" };
-  });
-
-  assert.equal(outcome, "posted");
-  assert.ok(OPEN_PR_BLOCKED_COMMENT.endsWith(OPEN_PR_BLOCKED_MARKER));
-  assert.deepEqual(calls.at(-1), ["pr", "comment", "17", "--body", OPEN_PR_BLOCKED_COMMENT]);
-});
-
-test("human-takeover notice is not duplicated when any comment carries the marker", () => {
-  const calls: string[][] = [];
-  const outcome = notifyHumanTakeoverComment("depvisor/prod-x", (args) => {
-    calls.push(args);
-    if (args[0] === "pr") return { code: 0, out: "17", err: "" };
-    return {
-      code: 0,
-      out: JSON.stringify([{ body: `already notified\n\n${OPEN_PR_BLOCKED_MARKER}` }]),
-      err: "",
-    };
-  });
-
-  assert.equal(outcome, "already-present");
-  assert.equal(
-    calls.some((args) => args[0] === "pr" && args[1] === "comment"),
-    false,
-  );
-});
-
-test("human-takeover notice paginates comments before deciding the marker is absent", () => {
-  const calls: string[][] = [];
-  const fullPage = Array.from({ length: 100 }, (_, i) => ({ body: `comment ${i}` }));
-  const outcome = notifyHumanTakeoverComment("depvisor/prod-x", (args) => {
-    calls.push(args);
-    if (args[0] === "pr" && args[1] === "list") {
-      return { code: 0, out: "17", err: "" };
-    }
-    if (args[0] === "api" && args.includes("page=1")) {
-      return { code: 0, out: JSON.stringify(fullPage), err: "" };
-    }
-    if (args[0] === "api") {
-      return { code: 0, out: JSON.stringify([{ body: OPEN_PR_BLOCKED_MARKER }]), err: "" };
-    }
-    return { code: 0, out: "", err: "" };
-  });
-
-  assert.equal(outcome, "already-present");
-  assert.equal(
-    calls.some((args) => args[0] === "pr" && args[1] === "comment"),
-    false,
-  );
-  assert.equal(calls.filter((args) => args[0] === "api").length, 2);
-});
-
-test("human-takeover notice skips posting when the bounded scan cannot prove absence", () => {
-  const fullPage = JSON.stringify(Array.from({ length: 100 }, () => ({ body: "comment" })));
-  let apiCalls = 0;
-  const outcome = notifyHumanTakeoverComment("depvisor/prod-x", (args) => {
-    if (args[0] === "pr" && args[1] === "list") {
-      return { code: 0, out: "17", err: "" };
-    }
-    if (args[0] === "api") {
-      apiCalls += 1;
-      return { code: 0, out: fullPage, err: "" };
-    }
-    throw new Error("comment must not be posted after an inconclusive scan");
-  });
-
-  assert.equal(outcome, "unavailable");
-  assert.equal(apiCalls, 10);
-});
-
-test("human-takeover notice failures and a vanished PR stay fail-soft", () => {
-  assert.equal(
-    notifyHumanTakeoverComment("depvisor/prod-x", () => ({
-      code: 1,
-      out: "",
-      err: "API unavailable",
-    })),
-    "unavailable",
-  );
-  assert.equal(
-    notifyHumanTakeoverComment("depvisor/prod-x", () => ({ code: 0, out: "", err: "" })),
-    "no-open-pr",
-  );
-  assert.equal(
-    notifyHumanTakeoverComment("depvisor/prod-x", () => {
-      throw new Error("spawn failed unexpectedly");
-    }),
-    "unavailable",
-  );
-
-  let call = 0;
-  assert.equal(
-    notifyHumanTakeoverComment("depvisor/prod-x", () => {
-      call += 1;
-      if (call === 1) return { code: 0, out: "17", err: "" };
-      if (call === 2) return { code: 0, out: "[]", err: "" };
-      return { code: 1, out: "", err: "comment rejected" };
-    }),
-    "unavailable",
-  );
 });
 
 test("binary resolution prefers root-owned system dirs over user-writable prefixes", () => {
@@ -417,4 +114,179 @@ test("buildSecureEnv carries only token env and pins a clean git/gh environment"
       else process.env[k] = v;
     }
   }
+});
+
+// upsertReportComment is what makes the report idempotent across synchronize
+// events: one marker-carrying comment, PATCHed in place, never stacked.
+
+const REPORT_BODY = `report body\n\n${AFTERCARE_MARKER}`;
+
+test("report comment: an existing marker comment is PATCHed in place (edited)", () => {
+  const calls: string[][] = [];
+  const outcome = upsertReportComment(7, REPORT_BODY, (args) => {
+    calls.push(args);
+    if (args.includes("GET")) {
+      // The marker check must key on the comment BODY, not position or author.
+      return {
+        code: 0,
+        out: JSON.stringify([
+          { id: 1, body: "ordinary comment" },
+          { id: 42, body: `previous report\n\n${AFTERCARE_MARKER}` },
+        ]),
+        err: "",
+      };
+    }
+    return { code: 0, out: "https://github.com/acme/repo/pull/7#issuecomment-42", err: "" };
+  });
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    url: "https://github.com/acme/repo/pull/7#issuecomment-42",
+    edited: true,
+  });
+  assert.deepEqual(calls[0], [
+    "api",
+    "--method",
+    "GET",
+    "repos/{owner}/{repo}/issues/7/comments",
+    "-F",
+    "per_page=100",
+    "-F",
+    "page=1",
+  ]);
+  // The PATCH targets the marker comment's id and rewrites its body.
+  assert.deepEqual(calls[1], [
+    "api",
+    "--method",
+    "PATCH",
+    "repos/{owner}/{repo}/issues/comments/42",
+    "-f",
+    `body=${REPORT_BODY}`,
+    "--jq",
+    ".html_url",
+  ]);
+});
+
+test("report comment: a short markerless page proves absence and POSTs a new comment", () => {
+  const calls: string[][] = [];
+  const outcome = upsertReportComment(7, REPORT_BODY, (args) => {
+    calls.push(args);
+    if (args.includes("GET")) {
+      // < 100 entries: the page is final, so the marker is provably absent.
+      return {
+        code: 0,
+        out: JSON.stringify([{ id: 1, body: "ordinary comment" }]),
+        err: "",
+      };
+    }
+    return { code: 0, out: "https://github.com/acme/repo/pull/7#issuecomment-9", err: "" };
+  });
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    url: "https://github.com/acme/repo/pull/7#issuecomment-9",
+    edited: false,
+  });
+  assert.deepEqual(calls[1], [
+    "api",
+    "--method",
+    "POST",
+    "repos/{owner}/{repo}/issues/7/comments",
+    "-f",
+    `body=${REPORT_BODY}`,
+    "--jq",
+    ".html_url",
+  ]);
+});
+
+test("report comment: a failed or malformed list read fails, never posts blind", () => {
+  // The report is a core deliverable, so an unreadable comment list is a red
+  // failure — silently posting could stack duplicates.
+  const listFailure = upsertReportComment(7, REPORT_BODY, () => ({
+    code: 1,
+    out: "",
+    err: "HTTP 502",
+  }));
+  assert.equal(listFailure.ok, false);
+  assert.match(listFailure.ok ? "" : listFailure.error, /could not list comments on PR #7/);
+
+  const notJson = upsertReportComment(7, REPORT_BODY, (args) => {
+    assert.ok(args.includes("GET"), "must not POST/PATCH after a malformed list");
+    return { code: 0, out: "<html>rate limited</html>", err: "" };
+  });
+  assert.equal(notJson.ok, false);
+  assert.match(notJson.ok ? "" : notJson.error, /invalid JSON/);
+
+  const notArray = upsertReportComment(7, REPORT_BODY, (args) => {
+    assert.ok(args.includes("GET"), "must not POST/PATCH after a non-array list");
+    return { code: 0, out: JSON.stringify({ message: "Not Found" }), err: "" };
+  });
+  assert.equal(notArray.ok, false);
+  assert.match(notArray.ok ? "" : notArray.error, /non-array/);
+});
+
+test("report comment: ten full markerless pages cannot prove absence — bounded failure, no POST", () => {
+  const fullPage = JSON.stringify(
+    Array.from({ length: 100 }, (_, i) => ({ id: i + 1, body: `comment ${i}` })),
+  );
+  const pagesSeen: string[] = [];
+  const outcome = upsertReportComment(7, REPORT_BODY, (args) => {
+    assert.ok(args.includes("GET"), "must not POST after an inconclusive scan");
+    const page = args.find((a) => a.startsWith("page="));
+    if (page) pagesSeen.push(page);
+    return { code: 0, out: fullPage, err: "" };
+  });
+
+  assert.equal(outcome.ok, false);
+  // 100 per page × 10 pages = the 1,000-comment read bound.
+  assert.match(outcome.ok ? "" : outcome.error, /1000 comments on PR #7/);
+  assert.deepEqual(
+    pagesSeen,
+    Array.from({ length: 10 }, (_, i) => `page=${i + 1}`),
+  );
+});
+
+// publishAftercare's pre-clone guards: the payload is an untrusted read-back
+// (the tokenless step wrote it), so it must AGREE with the trusted action env
+// before any git/network work happens. Only these guards are unit-testable —
+// everything past them drives a clone.
+
+function minimalPayload(overrides: Partial<ReportPayload> = {}): ReportPayload {
+  return {
+    prNumber: 7,
+    headRef: "dependabot/npm_and_yarn/lru-cache-11.0.0",
+    baseRef: "main",
+    expectedHeadSha: "a".repeat(40),
+    repairSha: null,
+    commentBody: REPORT_BODY,
+    ...overrides,
+  };
+}
+
+test("publishAftercare refuses a payload whose head ref disagrees with the trusted context", () => {
+  // A rewritten payload naming another branch must be a red failure, not a
+  // green blocked: it is tampering evidence, not expected churn.
+  const res = publishAftercare("/nonexistent", minimalPayload(), {
+    prNumber: 7,
+    headRef: "renovate/other-branch",
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.action, "failed");
+  assert.equal(res.pushed, false);
+  assert.equal(res.commentUrl, null);
+  assert.match(res.error ?? "", /head ref/);
+  assert.match(res.error ?? "", /refusing to publish/);
+});
+
+test("publishAftercare refuses a payload whose PR number disagrees with the trusted context", () => {
+  const res = publishAftercare(
+    "/nonexistent",
+    minimalPayload({ prNumber: 8 }), // head refs agree; the PR number does not
+    { prNumber: 7, headRef: "dependabot/npm_and_yarn/lru-cache-11.0.0" },
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.action, "failed");
+  assert.equal(res.pushed, false);
+  assert.match(res.error ?? "", /PR #8/);
+  assert.match(res.error ?? "", /trusted PR #7/);
 });

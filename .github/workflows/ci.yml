@@ -70,12 +70,13 @@ jobs:
       - name: Run knip
         run: pnpm run knip
 
-  # E2E against real package managers: generate each fixture, run the
-  # deterministic scan, then execute the real Flue workflow through its
-  # credential-free dry-run branch and assert its plan/status/no-mutation
-  # contracts. Talks to the live npm registry (fixture installs + PM outdated)
-  # and OSV prioritization, so upstream hiccups fail one variant,
-  # not all (fail-fast: false; OSV itself remains product-level fail-soft).
+  # E2E against real package managers: generate each fixture (green baseline on
+  # main + an updater-style update/lru-cache branch whose bump breaks the
+  # source), then run the deterministic aftercare core: commit classification,
+  # the dependency diff, head verification (must be RED), and merge-base
+  # baseline attribution (must be GREEN). Talks to the live npm registry
+  # (fixture installs), so upstream hiccups fail one variant, not all
+  # (fail-fast: false).
   fixture-e2e:
     name: Fixture E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -83,60 +84,35 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `expect` names the packages every scan must surface as ACTIONABLE
-        # (grouped, not degraded to `unknown`), with `@<location>` pinning the
-        # declaring workspace — so a partial parser regression (one dep-kind
-        # section dropped, one workspace missing from enumeration, a dep losing
-        # a location) fails the job instead of shrinking the output unnoticed.
-        # Each list is the COMPLETE outdated-dependency × declaring-location
-        # enumeration of its fixture template; update together. The npm
-        # workspace template deliberately declares @types/semver only in
-        # packages/core (npm hoists; the bun/pnpm isolated linkers need a copy
-        # per package — see scripts/init-fixture.sh), hence its shorter list.
+        # `expect` names the packages the dependency diff must surface as
+        # DIRECT changes — a lockfile-parser regression that shrinks the diff
+        # fails the job instead of passing unnoticed.
         include:
           - name: npm
             init: "fixture:init"
             dest: fixtures/sample-app
-            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
+            expect: "lru-cache"
           - name: pnpm
             init: "fixture:init:pnpm"
             dest: fixtures/sample-app-pnpm
-            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
+            expect: "lru-cache"
           - name: bun
             init: "fixture:init:bun"
             dest: fixtures/sample-app-bun
-            expect: "chalk,lru-cache,semver,@types/node,@types/semver,typescript"
+            expect: "lru-cache"
             bun: true
           - name: npm-workspaces
             init: "fixture:init:workspaces"
             dest: fixtures/sample-app-workspaces
-            expect: >-
-              lru-cache@packages/core,
-              chalk@packages/web,
-              semver@packages/core, semver@packages/web,
-              @types/node@packages/core, @types/node@packages/web,
-              @types/semver@packages/core,
-              typescript@packages/core, typescript@packages/web
+            expect: "lru-cache"
           - name: pnpm-workspaces
             init: "fixture:init:workspaces:pnpm"
             dest: fixtures/sample-app-pnpm-workspaces
-            expect: >-
-              lru-cache@packages/core,
-              chalk@packages/web,
-              semver@packages/core, semver@packages/web,
-              @types/node@packages/core, @types/node@packages/web,
-              @types/semver@packages/core, @types/semver@packages/web,
-              typescript@packages/core, typescript@packages/web
+            expect: "lru-cache"
           - name: bun-workspaces
             init: "fixture:init:workspaces:bun"
             dest: fixtures/sample-app-bun-workspaces
-            expect: >-
-              lru-cache@packages/core,
-              chalk@packages/web,
-              semver@packages/core, semver@packages/web,
-              @types/node@packages/core, @types/node@packages/web,
-              @types/semver@packages/core, @types/semver@packages/web,
-              typescript@packages/core, typescript@packages/web
+            expect: "lru-cache"
             bun: true
     steps:
       - name: Harden runner
@@ -150,7 +126,6 @@ jobs:
             release-assets.githubusercontent.com:443
             *.actions.githubusercontent.com:443
             registry.npmjs.org:443
-            api.osv.dev:443
             npm.flatt.tech:443
             nodejs.org:443
 
@@ -189,25 +164,11 @@ jobs:
           INIT: ${{ matrix.init }}
         run: pnpm run "$INIT"
 
-      - name: Run deterministic scan with verification
+      - name: Run deterministic aftercare scan with attribution
         env:
           DEST: ${{ matrix.dest }}
           EXPECT: ${{ matrix.expect }}
-        run: node src/dev/scan.ts "$DEST" --verify --expect-updates="$EXPECT"
-
-      - name: Run credential-free dry-run workflow
-        env:
-          DEPVISOR_DRY_RUN: "true"
-          DEPVISOR_LLM_MODEL: ""
-          DEPVISOR_MINIMUM_RELEASE_AGE: "0"
-          DEPVISOR_TARGET_REPO: ${{ github.workspace }}/${{ matrix.dest }}
-          EXPECT: ${{ matrix.expect }}
-          OPENAI_API_KEY: ""
-          ANTHROPIC_API_KEY: ""
-          OPENROUTER_API_KEY: ""
-        run: |
-          pnpm exec flue run update --target node
-          node src/dev/assert-dry-run.ts "$DEPVISOR_TARGET_REPO" "$EXPECT"
+        run: node src/dev/scan.ts "$DEST" --base=main --verify=broken --expect-changes="$EXPECT"
 
   zizmor:
     name: GitHub Actions security audit

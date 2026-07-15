@@ -153,6 +153,31 @@ else
   npm install --no-audit --no-fund
   npm run build >/dev/null
 fi
+# Simulate the updater PR depvisor v2 consumes: a branch off main whose single
+# commit bumps lru-cache to its latest major — the update that intentionally
+# breaks the sample source (the fixer's raison d'être) — touching only
+# dependency state (manifest + lockfile), committed under an updater-style
+# identity (any non-depvisor committer works for the classification gate).
+# The branch stays checked out with its dependencies installed, which is the
+# state the aftercare workflow and dev/scan.ts expect.
+git checkout -q -b update/lru-cache
+if [ "$ws" = "1" ]; then
+  case "$pm" in
+    npm) npm install --no-audit --no-fund lru-cache@latest -w packages/core ;;
+    pnpm) pnpm --dir packages/core add lru-cache@latest ;;
+    bun) bun add --cwd packages/core lru-cache@latest ;;
+  esac
+else
+  case "$pm" in
+    npm) npm install --no-audit --no-fund lru-cache@latest ;;
+    pnpm) pnpm add lru-cache@latest ;;
+    bun) bun add lru-cache@latest ;;
+  esac
+fi
+git add -A
+git -c user.email='49699333+dependabot[bot]@users.noreply.github.com' -c user.name='dependabot[bot]' \
+  commit -qm 'build(deps): bump lru-cache to latest'
+
 label="$pm"
 [ "$ws" = "1" ] && label="$pm-workspaces"
-echo "fixture ready at $dest (green baseline on branch main, $label)."
+echo "fixture ready at $dest (green baseline on main; updater-style branch update/lru-cache checked out, $label)."

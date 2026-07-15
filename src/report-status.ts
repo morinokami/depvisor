@@ -1,21 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync } from "node:fs";
-import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  dryRunPlanPath,
-  readDryRunPlan,
-  renderDryRunPlan,
-  type DryRunPlan,
-} from "./core/dry-run.ts";
-import {
   appendStepSummary,
-  groupLogLine,
   readRunStatus,
   runFailsJob,
   runLogLine,
   RUN_STATUS_FILE,
-  statusFailsJob,
   toActionOutputs,
 } from "./core/status.ts";
 
@@ -75,38 +66,13 @@ function main(): void {
     appendMissingSummary(message);
     process.exit(1);
   }
-  let dryRunPlan: DryRunPlan | null = null;
-  if (status.status === "dry-run-completed") {
-    const planFile = dryRunPlanPath(dirname(file));
-    dryRunPlan = readDryRunPlan(planFile);
-    if (!dryRunPlan) {
-      writeActionOutputs(toActionOutputs(null));
-      const message = existsSync(planFile)
-        ? "depvisor wrote an unreadable dry-run plan (corrupt or truncated); treating the run as failed."
-        : "depvisor reported dry-run-completed without emitting its plan; treating the run as failed.";
-      emitAnnotation("error", message);
-      appendMissingSummary(message);
-      process.exit(1);
-    }
-  }
   writeActionOutputs(toActionOutputs(status));
 
-  // Run-level annotation reflects the overall job outcome (a completed run with
-  // a failed group is still a red job), then one error annotation per failing
-  // group so each no-PR/failed outcome is surfaced individually.
   const runFails = runFailsJob(status);
   emitAnnotation(runFails ? "error" : "notice", `depvisor ${runLogLine(status)}`);
-  for (const group of status.groups) {
-    if (statusFailsJob(group.status)) {
-      emitAnnotation("error", `depvisor ${groupLogLine(group)}`);
-    }
-  }
 
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
-  if (summaryFile) {
-    appendStepSummary(summaryFile, status);
-    if (dryRunPlan) appendFileSync(summaryFile, `${renderDryRunPlan(dryRunPlan)}\n`);
-  }
+  if (summaryFile) appendStepSummary(summaryFile, status);
 
   if (runFails) process.exit(1);
 }

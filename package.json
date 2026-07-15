@@ -2,7 +2,7 @@
   "name": "depvisor",
   "version": "1.5.0",
   "private": true,
-  "description": "GitHub Action that investigates, updates, fixes and explains dependency updates.",
+  "description": "GitHub Action that verifies, repairs, and explains Dependabot/Renovate dependency-update PRs.",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.ts",

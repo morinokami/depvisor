@@ -23,7 +23,7 @@ import { REPO } from "../shared/target.ts";
  * set, while fixer additionally receives the write set. Every path is repo-
  * relative, jailed below the real target root (including symlink resolution),
  * and `.git` is never exposed. A prompt-injected agent therefore cannot rewrite
- * depvisor's own checkout or the later token-holding open-pr entrypoint.
+ * depvisor's own checkout or the later token-holding publish entrypoint.
  */
 
 const READ_CHARS_MAX = 30_000;

@@ -1,30 +1,30 @@
 name: depvisor
 
+# Aftercare runs once per updater PR head: verify, repair if broken, report.
+# NOTE (Dependabot): workflows triggered by Dependabot PRs read secrets from
+# the repository's *Dependabot secrets* store and get a read-only GITHUB_TOKEN
+# by default — register OPENAI_API_KEY there too, and elevate the token via the
+# `permissions:` key below (supported for Dependabot-triggered runs).
 on:
-  # Keep the schedule disabled here; consumers enable it in their own workflow.
-  # schedule:
-  #   - cron: '0 3 * * 1'
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Preview candidates, groups, and PR actions without changing anything
-        type: boolean
-        default: false
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions: {}
 
 concurrency:
-  group: depvisor
-  cancel-in-progress: false
+  group: depvisor-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  update:
-    name: Prepare dependency updates
+  aftercare:
+    name: Dependency-update PR aftercare
+    # Only updater-authored PRs; human PRs are CI's business, not depvisor's.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write # push prepared update branches
-      pull-requests: write # open or refresh dependency PRs
+      contents: write # push the repair commit onto the PR head branch
+      pull-requests: write # create/update the report comment
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
@@ -36,23 +36,26 @@ jobs:
             objects.githubusercontent.com:443
             *.actions.githubusercontent.com:443
             registry.npmjs.org:443
-            api.osv.dev:443
             api.openai.com:443
             api.anthropic.com:443
 
+      # The PR head branch itself (not the merge ref): the repair commit is
+      # published onto it. fetch-depth: 0 so the merge base with the base
+      # branch is computable; persist-credentials: false is load-bearing — the
+      # agent step must never sit next to a token (check-credentials enforces).
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: ./
         id: depvisor
         with:
-          dry_run: ${{ inputs.dry_run }}
           # A GitHub Environment would add consumer setup; the composite action
           # keeps this key in its structurally token-free step.
           llm_api_key: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] dedicated token-free step
           llm_model: openai/gpt-5.5
-          install_command: skip
           # The target here is depvisor itself; auto-detection would only find
           # lint/test, so name the full CI gate set explicitly.
           verify_commands: |
@@ -70,9 +73,8 @@ jobs:
         env:
           DEPVISOR_STATUS: ${{ steps.depvisor.outputs.status }}
           DEPVISOR_FAILED: ${{ steps.depvisor.outputs.failed }}
-          DEPVISOR_PREPARED_COUNT: ${{ steps.depvisor.outputs.prepared_count }}
-          DEPVISOR_PR_URLS: ${{ steps.depvisor.outputs.pr_urls }}
+          DEPVISOR_REPAIRED: ${{ steps.depvisor.outputs.repaired }}
+          DEPVISOR_COMMENT_URL: ${{ steps.depvisor.outputs.comment_url }}
         run: |
-          echo "status=$DEPVISOR_STATUS failed=$DEPVISOR_FAILED prepared_count=$DEPVISOR_PREPARED_COUNT"
-          echo "pr_urls:"
-          echo "$DEPVISOR_PR_URLS"
+          echo "status=$DEPVISOR_STATUS failed=$DEPVISOR_FAILED repaired=$DEPVISOR_REPAIRED"
+          echo "comment_url=$DEPVISOR_COMMENT_URL"

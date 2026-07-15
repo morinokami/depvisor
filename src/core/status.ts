@@ -1,34 +1,35 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import type { NumstatEntry } from "./git.ts";
-import { isDisplayablePath, sanitizeSummary } from "./pr.ts";
+import { isDisplayablePath, sanitizeSummary } from "./report.ts";
 import { RUN_STATUS_FILE } from "./status-file.ts";
 import { formatNumstatLines } from "./test-changes.ts";
-import type { Candidate } from "./types.ts";
+import type { DependencyChange } from "./types.ts";
 import type { VerifyResult } from "./verify.ts";
 
 export { RUN_STATUS_FILE };
 
-export interface StatusPackage {
-  name: string;
-  current: string;
-  latest: string;
-  kind: Candidate["kind"];
-  updateType: Candidate["updateType"];
-}
+/**
+ * One aftercare run serves exactly one updater PR, so the status is flat: no
+ * group array, one terminal status string. The workflow writes it
+ * incrementally (starting at the red `in-progress` crash marker that only a
+ * graceful finish upgrades), the token-holding publish step patches the
+ * publish outcome in, and report-status.ts projects it into annotations, the
+ * step summary, and the action outputs.
+ */
 
 /**
- * Token/cost usage for ONE agent operation within a group, projected from Flue's
+ * Token/cost usage for ONE agent operation, projected from Flue's
  * `PromptResultResponse.usage`/`.model` at the workflow boundary (kept
  * structural, so core stays Flue-free). Numbers only — no untrusted text, so it
  * never touches token separation or the gates. `costUsd` is Flue's
  * provider-priced estimate (BYOK-approximate), not an invoice. `role` names
- * which operation spent it: the agent-as-fixer flow can run up to two per group
- * (the failure-path `fixer` and the PR `digest`), recorded as separate entries —
- * see GroupResult.usage.
+ * which operation spent it: a run can hold up to two entries (the failure-path
+ * `fixer` and the report `digest`).
  */
-export interface GroupUsage {
+export interface OpUsage {
   role: "fixer" | "digest";
   input: number;
   output: number;
@@ -40,81 +41,68 @@ export interface GroupUsage {
   model: string;
 }
 
-/** Run-level usage: the sum of every group whose agent actually ran. */
-export interface RunUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  totalTokens: number;
-  costUsd: number;
-  /** Distinct models seen across the summed groups (usually one). */
-  models: string[];
-  /** How many groups contributed usage (i.e. actually ran the agent). */
-  groupCount: number;
-}
-
-/** One group's outcome within a run — the unit the PR/annotation UX renders. */
-export interface GroupResult {
+/** A run's aggregate status — the unit report-status renders. */
+export interface RunStatus {
   status: string;
-  branch: string | null;
-  group: string | null;
+  baseRef: string | null;
+  headRef: string | null;
+  /** The updater tip this run consumed (null before preflight resolved it). */
+  headSha: string | null;
+  prNumber: number | null;
   summary: string;
-  packages: StatusPackage[];
+  /** The dependency changes the PR carries (empty before/without analysis). */
+  changes: DependencyChange[];
   verification: VerifyResult[];
+  /** Whether trusted workflow code created a validated repair commit. */
+  repaired: boolean;
   /**
-   * Test-looking files this update changed (visibility, not a gate — see
-   * core/test-changes.ts; the fixer or a lifecycle script can both be the
-   * writer). Optional/absent when none changed; record-only, so it is
-   * deliberately NOT in RUN_OUTPUT_SCHEMA below.
+   * Test-looking files the repair changed (visibility, not a gate — see
+   * core/test-changes.ts). Optional/absent when none changed; record-only, so
+   * it is deliberately NOT in RUN_OUTPUT_SCHEMA below.
    */
   testChanges?: NumstatEntry[];
   /**
-   * Token/cost usage for this group's agent operations (visibility only), one
-   * entry per operation that actually ran: 0 for outcomes that ran no agent
-   * (skip/held-back/branch-collision/release-age-unavailable/bump-failed, or a
-   * prompt that threw before returning), 1 when only one of fixer/digest ran, 2
-   * when both did. Absent/empty when zero ran. Record-only, like `testChanges` —
-   * NOT in RUN_OUTPUT_SCHEMA.
+   * Token/cost usage for this run's agent operations (visibility only), one
+   * entry per operation that actually ran. Absent/empty when zero ran.
+   * Record-only, like `testChanges` — NOT in RUN_OUTPUT_SCHEMA.
    */
-  usage?: GroupUsage[];
-  prUrl: string | null;
+  usage?: OpUsage[];
+  /** URL of the published report comment, patched in by the publish step. */
+  commentUrl: string | null;
+}
+
+/** A fresh status shell; callers override what they know. */
+export function emptyRunStatus(status: string, summary: string): RunStatus {
+  return {
+    status,
+    baseRef: null,
+    headRef: null,
+    headSha: null,
+    prNumber: null,
+    summary,
+    changes: [],
+    verification: [],
+    repaired: false,
+    commentUrl: null,
+  };
 }
 
 /**
- * A run's aggregate status: run-level fields plus one entry per group the run
- * touched. A run can prepare several PRs (up to `open_pull_requests_limit` open depvisor PRs), so
- * the group array carries the per-PR detail while `status` describes the run as
- * a whole (`completed`/`dry-run-completed`, or a run-level stop like
- * `no-updates`/`baseline-red`).
- */
-export interface RunStatus {
-  status: string;
-  base: string | null;
-  summary: string;
-  groups: GroupResult[];
-}
-
-/**
- * The workflow-facing view of a run: `RunStatus` minus per-group `packages` and
- * `prUrl` (the full record lives in status.json). Schema and projector are one
- * definition — `toRunOutput` is a `v.parse`, and `v.object` strips the extra
- * keys — so the workflow output cannot silently drift from `RunStatus`.
+ * The workflow-facing view of a run: `RunStatus` minus the record-only fields.
+ * Schema and projector are one definition — `toRunOutput` is a `v.parse`, and
+ * `v.object` strips the extra keys — so the workflow output cannot silently
+ * drift from `RunStatus`.
  */
 export const RUN_OUTPUT_SCHEMA = v.object({
   status: v.string(),
-  base: v.nullable(v.string()),
+  baseRef: v.nullable(v.string()),
+  headRef: v.nullable(v.string()),
+  headSha: v.nullable(v.string()),
+  prNumber: v.nullable(v.number()),
   summary: v.string(),
-  groups: v.array(
-    v.object({
-      status: v.string(),
-      branch: v.nullable(v.string()),
-      group: v.nullable(v.string()),
-      summary: v.string(),
-      verification: v.array(
-        v.object({ name: v.string(), ok: v.boolean(), code: v.nullable(v.number()) }),
-      ),
-    }),
+  repaired: v.boolean(),
+  verification: v.array(
+    v.object({ name: v.string(), ok: v.boolean(), code: v.nullable(v.number()) }),
   ),
 });
 
@@ -126,24 +114,49 @@ export function toRunOutput(run: RunStatus): v.InferOutput<typeof RUN_OUTPUT_SCH
 // interpolation in consumer workflows — a classic command/shell-injection
 // surface — so only fixed-vocabulary statuses (every depvisor status is
 // kebab-case, `readRunStatus`'s "unknown" fallback included) and
-// strictly-shaped PR URLs pass; free text (summaries) is never emitted. The
-// URL charset has no `:` beyond the scheme, so a GHES `server_url` with a
-// custom port fails the gate — the URL is dropped (fail-closed), nothing else.
+// strictly-shaped comment URLs pass; free text (summaries) is never emitted.
+// The URL charset allows `#` for GitHub's `#issuecomment-<id>` anchors and has
+// no `:` beyond the scheme, so a GHES `server_url` with a custom port fails
+// the gate — the URL is dropped (fail-closed), nothing else.
 const OUTPUT_STATUS_RE = /^[a-z-]+$/;
-const OUTPUT_PR_URL_RE = /^https:\/\/[A-Za-z0-9./_-]+$/;
+const OUTPUT_URL_RE = /^https:\/\/[A-Za-z0-9./_#-]+$/;
 
 /** The action's `outputs:` values, keyed exactly as action.yml declares them. */
 export type ActionOutputs = {
   status: string;
   failed: string;
-  prepared_count: string;
-  pr_urls: string;
+  repaired: string;
+  comment_url: string;
   total_tokens: string;
   est_cost_usd: string;
 };
 
 const ZERO_USAGE_OUTPUTS = { total_tokens: "0", est_cost_usd: "0.000000" } as const;
 const UNAVAILABLE_USAGE_OUTPUTS = { total_tokens: "0", est_cost_usd: "" } as const;
+
+/** Run-level usage: the sum of the operations that actually ran, or null. */
+export function sumUsage(entries: readonly OpUsage[] | undefined): {
+  totalTokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number;
+  models: string[];
+} | null {
+  if (!entries || entries.length === 0) return null;
+  const total = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
+  for (const u of entries) {
+    total.totalTokens += u.totalTokens;
+    total.input += u.input;
+    total.output += u.output;
+    total.cacheRead += u.cacheRead;
+    total.cacheWrite += u.cacheWrite;
+    total.costUsd += u.costUsd;
+  }
+  const models = [...new Set(entries.map((u) => u.model).filter((m) => m.length > 0))];
+  return { ...total, models };
+}
 
 /**
  * Project the already-recorded per-operation usage into numeric-only action
@@ -157,20 +170,16 @@ const UNAVAILABLE_USAGE_OUTPUTS = { total_tokens: "0", est_cost_usd: "" } as con
  * Flue represents an unpriced model with zero cost rather than a separate
  * "price unavailable" bit. A token-bearing zero-cost operation therefore makes
  * the WHOLE run estimate unavailable — emitting the sum of only priced
- * operations would understate the total. This also conservatively treats a
- * genuinely free model as unavailable; the current Flue response cannot
- * distinguish those cases. A valid run with no agent operation has a known
- * zero cost instead.
+ * operations would understate the total.
  */
 function usageActionOutputs(
-  groups: GroupResult[],
+  entries: readonly OpUsage[] | undefined,
 ): Pick<ActionOutputs, "total_tokens" | "est_cost_usd"> {
-  const entries = groups.flatMap((g) => g.usage ?? []);
-  if (entries.length === 0) return ZERO_USAGE_OUTPUTS;
+  if (!entries || entries.length === 0) return ZERO_USAGE_OUTPUTS;
   if (entries.some((u) => !Number.isSafeInteger(u.totalTokens) || u.totalTokens < 0)) {
     return UNAVAILABLE_USAGE_OUTPUTS;
   }
-  const usage = sumGroupUsage(groups);
+  const usage = sumUsage(entries);
   if (!usage || !Number.isSafeInteger(usage.totalTokens) || usage.totalTokens < 0) {
     return UNAVAILABLE_USAGE_OUTPUTS;
   }
@@ -192,85 +201,57 @@ function usageActionOutputs(
 
 /**
  * The action-outputs projection of a run: the bridge that lets consumer
- * workflow steps branch on the result (notify on new PRs, skip follow-up
- * jobs, …). `null` means the status file was never written — a setup or agent
- * step crashed before reporting — and still yields `failed: "true"` so
- * `if: always()` consumers get a signal exactly when they need it most.
- * `prepared_count` counts `pr-prepared` groups as patched by the open-pr step,
- * i.e. groups whose PR was opened or refreshed (a blocked/failed open-pr has
- * already left that status); `pr_urls` is those PRs' URLs, newline-separated.
- * `total_tokens`/`est_cost_usd` reuse the same per-operation records as the step
- * summary; no second accounting path or provider call is introduced.
+ * workflow steps branch on the result. `null` means the status file was never
+ * written — a setup or agent step crashed before reporting — and still yields
+ * `failed: "true"` so `if: always()` consumers get a signal exactly when they
+ * need it most.
  */
 export function toActionOutputs(run: RunStatus | null): ActionOutputs {
   if (!run) {
     return {
       status: "",
       failed: "true",
-      prepared_count: "0",
-      pr_urls: "",
+      repaired: "false",
+      comment_url: "",
       ...UNAVAILABLE_USAGE_OUTPUTS,
     };
   }
-  const urls = run.groups
-    .map((g) => g.prUrl)
-    .filter((url): url is string => url !== null && OUTPUT_PR_URL_RE.test(url));
   return {
     // An off-vocabulary status is dropped, not escaped; `failed` derives from
     // the raw status (off-vocabulary is not in OK_STATUSES, so it fails), so
     // the gate can never launder a failure into a green-looking output.
     status: OUTPUT_STATUS_RE.test(run.status) ? run.status : "",
     failed: runFailsJob(run) ? "true" : "false",
-    prepared_count: String(run.groups.filter((g) => g.status === "pr-prepared").length),
-    pr_urls: urls.join("\n"),
-    ...usageActionOutputs(run.groups),
+    repaired: run.repaired ? "true" : "false",
+    comment_url: run.commentUrl && OUTPUT_URL_RE.test(run.commentUrl) ? run.commentUrl : "",
+    ...usageActionOutputs(run.usage),
   };
 }
 
-// Benign outcomes that stay green. Covers both run-level (`completed`,
-// `dry-run-completed`, `no-updates`) and group-level statuses. `open-pr-blocked` is green because a
-// human having taken over the PR branch is expected (see open-pr.ts);
-// `held-back-by-limit` is green because the open_pull_requests_limit ceiling doing its job is
-// normal operation, not a failure. Everything else — including the
-// `in-progress` marker the workflow writes incrementally (which only a graceful
-// finish upgrades to `completed`) and the per-group `bump-failed` (the
-// deterministic bump or its install failed for a group — agent-as-fixer;
-// red, per-group, the run continues) — fails the job.
+// Benign outcomes that stay green. `not-an-update-pr` is green because a
+// human taking over an updater branch (or a non-dependency PR reaching the
+// workflow) is expected, not a failure; `deferred` is green because the fixer
+// declining an unsafe repair is the designed behavior and the report comment
+// explains it; `publish-blocked` is green because the updater rebasing or the
+// PR closing mid-run is normal churn. Everything else — including the
+// `in-progress` marker the workflow writes up front (which only a graceful
+// finish upgrades) and `verification-failed` (analysis ran but the PR remains
+// red — the outcome users must notice) — fails the job.
 const OK_STATUSES = new Set([
-  "completed",
-  "dry-run-completed",
-  "no-updates",
-  "pr-prepared",
-  "pr-up-to-date",
+  "report-prepared",
+  "repair-prepared",
+  "not-an-update-pr",
   "deferred",
-  "open-pr-blocked",
-  "held-back-by-limit",
+  "publish-blocked",
 ]);
 
-export function statusPackages(candidates: Candidate[]): StatusPackage[] {
-  return candidates.map(({ name, current, latest, kind, updateType }) => ({
-    name,
-    current,
-    latest,
-    kind,
-    updateType,
-  }));
+/** Whether the run's status is a job-failing outcome. */
+export function statusFailsJob(status: string): boolean {
+  return !OK_STATUSES.has(status);
 }
 
-/**
- * Sum usage across every group AND every agent operation within it (a group can
- * now carry a fixer entry and a digest entry). Groups without `usage` — skips,
- * hold-backs, bump-failed, no-structured-result — contribute nothing. Returns
- * null when no operation ran anywhere, so callers render nothing rather than a
- * misleading zero-token row. `groupCount` counts GROUPS that ran ≥1 operation,
- * not operations, so a two-operation group still counts once.
- */
-export function sumGroupUsage(groups: GroupResult[]): RunUsage | null {
-  const groupsWithUsage = groups.filter((g) => (g.usage?.length ?? 0) > 0);
-  const all = groupsWithUsage.flatMap((g) => g.usage ?? []);
-  if (all.length === 0) return null;
-  const models = new Set(all.map((u) => u.model).filter((m): m is string => Boolean(m)));
-  return { ...sumUsageEntries(all), models: [...models], groupCount: groupsWithUsage.length };
+export function runFailsJob(run: RunStatus): boolean {
+  return statusFailsJob(run.status);
 }
 
 export function statusPath(outDir: string): string {
@@ -284,35 +265,11 @@ export function emitRunStatus(outDir: string, status: RunStatus): string {
   return outPath;
 }
 
-function parseGroup(raw: Partial<GroupResult>): GroupResult {
-  const group: GroupResult = {
-    status: raw.status ?? "unknown",
-    branch: typeof raw.branch === "string" ? raw.branch : null,
-    group: typeof raw.group === "string" ? raw.group : null,
-    summary: typeof raw.summary === "string" ? raw.summary : "",
-    packages: Array.isArray(raw.packages) ? raw.packages : [],
-    verification: Array.isArray(raw.verification) ? raw.verification : [],
-    prUrl: typeof raw.prUrl === "string" ? raw.prUrl : null,
-  };
-  // Preserve testChanges across the open-pr read→rewrite round-trip; parseGroup
-  // rebuilds the object field-by-field, so an omitted field would be silently
-  // dropped when open-pr patches the PR URL back in.
-  if (Array.isArray(raw.testChanges) && raw.testChanges.length > 0) {
-    group.testChanges = raw.testChanges;
-  }
-  // Same round-trip concern for usage — a list of numeric-only records,
-  // re-normalized defensively (a hand-edited/truncated status file must not
-  // crash the report), so it survives the open-pr read→rewrite intact.
-  const usage = parseUsageList(raw.usage);
-  if (usage.length > 0) group.usage = usage;
-  return group;
-}
-
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function parseUsageList(raw: unknown): GroupUsage[] {
+function parseUsageList(raw: unknown): OpUsage[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((entry) => {
     const u = parseUsage(entry);
@@ -320,9 +277,9 @@ function parseUsageList(raw: unknown): GroupUsage[] {
   });
 }
 
-function parseUsage(raw: unknown): GroupUsage | null {
+function parseUsage(raw: unknown): OpUsage | null {
   if (!raw || typeof raw !== "object") return null;
-  const u = raw as Partial<GroupUsage>;
+  const u = raw as Partial<OpUsage>;
   // A usage entry with no recognized role is illegible; drop it (display-only,
   // so failing toward "render nothing" is the safe direction).
   if (u.role !== "fixer" && u.role !== "digest") return null;
@@ -341,11 +298,10 @@ function parseUsage(raw: unknown): GroupUsage | null {
 export function readRunStatus(file: string): RunStatus | null {
   if (!existsSync(file)) return null;
   // The status file is untrusted at read-back (the tokenless step wrote it,
-  // like the payloads), and the reporter exists to surface failures — so a
+  // like the payload), and the reporter exists to surface failures — so a
   // truncated/corrupt write or a non-object root must read as null (= no
   // status), the direction every caller already fails toward, not crash the
-  // report before it can write its outputs (or crash open-pr mid-loop and
-  // break its per-payload isolation).
+  // report before it can write its outputs.
   let parsed: Partial<RunStatus>;
   try {
     const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
@@ -354,75 +310,47 @@ export function readRunStatus(file: string): RunStatus | null {
   } catch {
     return null;
   }
-  return {
-    status: parsed.status ?? "unknown",
-    base: typeof parsed.base === "string" ? parsed.base : null,
+  const run: RunStatus = {
+    status: typeof parsed.status === "string" ? parsed.status : "unknown",
+    baseRef: typeof parsed.baseRef === "string" ? parsed.baseRef : null,
+    headRef: typeof parsed.headRef === "string" ? parsed.headRef : null,
+    headSha: typeof parsed.headSha === "string" ? parsed.headSha : null,
+    prNumber:
+      typeof parsed.prNumber === "number" && Number.isSafeInteger(parsed.prNumber)
+        ? parsed.prNumber
+        : null,
     summary: typeof parsed.summary === "string" ? parsed.summary : "",
-    groups: Array.isArray(parsed.groups)
-      ? (parsed.groups as Partial<GroupResult>[]).map(parseGroup)
-      : [],
+    changes: Array.isArray(parsed.changes) ? parsed.changes : [],
+    verification: Array.isArray(parsed.verification) ? parsed.verification : [],
+    repaired: parsed.repaired === true,
+    commentUrl: typeof parsed.commentUrl === "string" ? parsed.commentUrl : null,
   };
+  // Preserve the record-only fields across the publish read→rewrite round-trip;
+  // this parser rebuilds the object field-by-field, so an omitted field would
+  // be silently dropped when publish patches the outcome back in.
+  if (Array.isArray(parsed.testChanges) && parsed.testChanges.length > 0) {
+    run.testChanges = parsed.testChanges;
+  }
+  const usage = parseUsageList(parsed.usage);
+  if (usage.length > 0) run.usage = usage;
+  return run;
 }
 
 /**
- * Record one payload's outcome from the token-holding open-pr step: patch the
- * group entry whose branch matches (the PR URL, or an open-pr-blocked/
- * open-pr-failed status) without disturbing other groups — or, when no entry
- * matches (an unreadable payload with no known branch, or a payload naming a
- * branch the run never recorded), APPEND a synthetic entry instead. The
- * append matters: this file is what the report step projects the job result
- * from, and a payload failure that leaves the stale `pr-prepared` entry
- * standing would report `failed="false"` while the open-pr step's non-zero
- * exit turns the job red. `fallback` supplies the appended entry's
- * status/summary when `patch` carries neither (the opened-PR path patches only
- * `prUrl`); without it the append fails toward `open-pr-failed`. Returns null
- * when the status file is missing/unreadable — report-status's null path
- * already reports that as a failure.
+ * Record the publish outcome from the token-holding publish step: patch the
+ * status file without disturbing the analysis record. Returns null when the
+ * status file is missing/unreadable — report-status's null path already
+ * reports that as a failure.
  */
-export function recordGroupOutcome(
+export function recordPublishOutcome(
   file: string,
-  branch: string | null,
-  patch: Partial<GroupResult>,
-  fallback?: Pick<GroupResult, "status" | "summary">,
+  patch: Partial<Pick<RunStatus, "status" | "summary" | "commentUrl">>,
 ): RunStatus | null {
   const current = readRunStatus(file);
   if (!current) return null;
-  let matched = false;
-  const groups = current.groups.map((g) => {
-    if (branch === null || g.branch !== branch) return g;
-    matched = true;
-    return { ...g, ...patch };
-  });
-  if (!matched) {
-    groups.push({
-      status: "open-pr-failed",
-      branch,
-      group: null,
-      summary: "",
-      packages: [],
-      verification: [],
-      prUrl: null,
-      ...fallback,
-      ...patch,
-    });
-  }
-  const next: RunStatus = { ...current, groups };
+  const next: RunStatus = { ...current, ...patch };
   writeFileSync(file, JSON.stringify(next, null, 2));
   return next;
-}
-
-/** Whether a single status string is a job-failing outcome. */
-export function statusFailsJob(status: string): boolean {
-  return !OK_STATUSES.has(status);
-}
-
-/**
- * Whether the run should fail the job: a run-level failure, OR any group with a
- * job-failing status. A `completed` run still fails the job when a group ended
- * in e.g. `verification-failed`, so silent no-PR outcomes still notify users.
- */
-export function runFailsJob(status: RunStatus): boolean {
-  return statusFailsJob(status.status) || status.groups.some((g) => statusFailsJob(g.status));
 }
 
 function oneLine(value: string): string {
@@ -433,28 +361,16 @@ function oneLine(value: string): string {
 }
 
 /** Run-level one-line summary for logs and the top annotation. */
-export function runLogLine(status: RunStatus): string {
-  const parts = [`status=${status.status}`];
-  if (status.base) parts.push(`base=${status.base}`);
-  if (status.groups.length > 0) {
-    const counts = new Map<string, number>();
-    for (const g of status.groups) counts.set(g.status, (counts.get(g.status) ?? 0) + 1);
-    const breakdown = [...counts.entries()].map(([s, n]) => `${s}=${n}`).join(", ");
-    parts.push(`groups=${status.groups.length} (${breakdown})`);
-  }
-  const usage = sumGroupUsage(status.groups);
+export function runLogLine(run: RunStatus): string {
+  const parts = [`status=${run.status}`];
+  if (run.headRef) parts.push(`head=${run.headRef}`);
+  if (run.baseRef) parts.push(`base=${run.baseRef}`);
+  if (run.prNumber !== null) parts.push(`pr=#${run.prNumber}`);
+  if (run.repaired) parts.push("repaired=true");
+  if (run.commentUrl) parts.push(`comment=${run.commentUrl}`);
+  const usage = sumUsage(run.usage);
   if (usage) parts.push(`tokens=${usage.totalTokens} cost=${fmtCost(usage.costUsd)}`);
-  const summary = oneLine(status.summary);
-  return summary ? `${parts.join(" ")} - ${summary}` : parts.join(" ");
-}
-
-/** Per-group one-line summary for logs and per-group annotations. */
-export function groupLogLine(group: GroupResult): string {
-  const parts = [`status=${group.status}`];
-  if (group.group) parts.push(`group=${group.group}`);
-  if (group.branch) parts.push(`branch=${group.branch}`);
-  if (group.prUrl) parts.push(`pr=${group.prUrl}`);
-  const summary = oneLine(group.summary);
+  const summary = oneLine(run.summary);
   return summary ? `${parts.join(" ")} - ${summary}` : parts.join(" ");
 }
 
@@ -473,56 +389,14 @@ function fmtCost(n: number): string {
   return `~$${n.toFixed(4)}`;
 }
 
-/** Sum a group's per-operation usage entries into the digest's numeric shape. */
-function sumUsageEntries(list: readonly GroupUsage[]): {
-  totalTokens: number;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  costUsd: number;
-} {
-  const total = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
-  for (const u of list) {
-    total.totalTokens += u.totalTokens;
-    total.input += u.input;
-    total.output += u.output;
-    total.cacheRead += u.cacheRead;
-    total.cacheWrite += u.cacheWrite;
-    total.costUsd += u.costUsd;
-  }
-  return total;
-}
-
-/**
- * One-line token/cost digest shared by the run header and per-group tables. The
- * numbers are Flue-provided (no user input); the model id is charset-escaped via
- * mdCell at the call site.
- */
-function usageDigest(u: {
-  totalTokens: number;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  costUsd: number;
-}): string {
-  // The four token buckets are additive (totalTokens = in + out + cacheRead +
-  // cacheWrite), and cache writes are billed, so name both cache buckets when
-  // present — otherwise the breakdown wouldn't sum to the total shown.
-  const cacheRead = u.cacheRead > 0 ? ` · cache read ${fmtTokens(u.cacheRead)}` : "";
-  const cacheWrite = u.cacheWrite > 0 ? ` · cache write ${fmtTokens(u.cacheWrite)}` : "";
-  return `${fmtTokens(u.totalTokens)} tokens (in ${fmtTokens(u.input)} · out ${fmtTokens(u.output)}${cacheRead}${cacheWrite}), est. ${fmtCost(u.costUsd)}`;
-}
-
-function packageTable(packages: StatusPackage[]): string {
-  if (packages.length === 0) return "";
-  const rows = packages.map(
-    (p) =>
-      `| ${mdCell(p.name)} | ${mdCell(p.current)} | ${mdCell(p.latest)} | ${mdCell(p.kind)} | ${mdCell(p.updateType)} |`,
+function changesTable(changes: DependencyChange[]): string {
+  if (changes.length === 0) return "";
+  const rows = changes.map(
+    (c) =>
+      `| ${mdCell(c.name)} | ${mdCell(c.from)} | ${mdCell(c.to)} | ${mdCell(c.kind)} | ${mdCell(c.updateType)} |`,
   );
   return [
-    "#### Packages",
+    "### Dependency changes",
     "",
     "| Package | From | To | Kind | Type |",
     "|---|---|---|---|---|",
@@ -536,20 +410,15 @@ function verificationTable(results: VerifyResult[]): string {
   const rows = results.map(
     (r) => `| ${r.ok ? "pass" : "fail"} | ${mdCell(r.name)} | ${mdCell(r.code)} |`,
   );
-  return [
-    "#### Verification",
-    "",
-    "| Result | Command | Exit |",
-    "|---|---|---|",
-    ...rows,
-    "",
-  ].join("\n");
+  return ["### Verification", "", "| Result | Command | Exit |", "|---|---|---|", ...rows, ""].join(
+    "\n",
+  );
 }
 
 /**
- * A step-summary block flagging test files this update changed, so a maintainer
- * sees it in the Actions UI before the PR is even opened. Paths are charset-
- * validated (`isDisplayablePath`) before embedding, exactly like the PR body;
+ * A step-summary block flagging test files the repair changed, so a maintainer
+ * sees it in the Actions UI as well as the report comment. Paths are charset-
+ * validated (`isDisplayablePath`) before embedding, exactly like the comment;
  * any dropped for unsafe names are still counted.
  */
 function testChangesTable(changes: NumstatEntry[]): string {
@@ -558,67 +427,52 @@ function testChangesTable(changes: NumstatEntry[]): string {
   const omitted = changes.length - safe.length;
   const rows = safe.map((c) => `| \`${c.path}\` | ${formatNumstatLines(c)} |`);
   return [
-    `#### ⚠️ Tests modified in this update (${changes.length})`,
+    `### ⚠️ Tests modified by the repair (${changes.length})`,
     "",
     ...(rows.length > 0 ? ["| File | Lines |", "|---|---|", ...rows, ""] : []),
     ...(omitted > 0 ? [`_${omitted} file(s) with unsafe names omitted._`, ""] : []),
   ].join("\n");
 }
 
-function renderGroup(group: GroupResult): string {
-  const heading = `### Group \`${mdCell(group.group ?? "?")}\` — \`${mdCell(group.status)}\``;
-  const rows = [`| Branch | ${group.branch ? `\`${mdCell(group.branch)}\`` : "none"} |`];
-  if (group.prUrl) rows.push(`| PR | ${mdCell(group.prUrl)} |`);
-  if (group.usage && group.usage.length > 0) {
-    // Group total, then a compact per-role breakdown (`fixer 12,345 + digest
-    // 2,111`) so a two-operation group shows where the tokens went. Distinct
-    // models are joined (usually one).
-    const summed = sumUsageEntries(group.usage);
-    const breakdown = group.usage.map((u) => `${u.role} ${fmtTokens(u.totalTokens)}`).join(" + ");
-    const models = [...new Set(group.usage.map((u) => u.model).filter((m) => m.length > 0))];
+export function renderStepSummary(run: RunStatus): string {
+  const usage = sumUsage(run.usage);
+  const rows = [
+    `| Status | \`${mdCell(run.status)}\` |`,
+    `| PR | ${run.prNumber !== null ? `#${run.prNumber}` : "none"} |`,
+    `| Head | ${run.headRef ? `\`${mdCell(run.headRef)}\`` : "none"} |`,
+    `| Base | ${run.baseRef ? `\`${mdCell(run.baseRef)}\`` : "none"} |`,
+    `| Repaired | ${run.repaired ? "yes" : "no"} |`,
+  ];
+  if (run.commentUrl) rows.push(`| Report | ${mdCell(run.commentUrl)} |`);
+  if (usage) {
+    const cacheRead = usage.cacheRead > 0 ? ` · cache read ${fmtTokens(usage.cacheRead)}` : "";
+    const cacheWrite = usage.cacheWrite > 0 ? ` · cache write ${fmtTokens(usage.cacheWrite)}` : "";
+    const breakdown = (run.usage ?? [])
+      .map((u) => `${u.role} ${fmtTokens(u.totalTokens)}`)
+      .join(" + ");
     rows.push(
-      `| LLM usage | ${usageDigest(summed)} · ${breakdown} — \`${mdCell(models.join(", "))}\` |`,
+      `| LLM usage | ${fmtTokens(usage.totalTokens)} tokens (in ${fmtTokens(usage.input)} · out ${fmtTokens(usage.output)}${cacheRead}${cacheWrite}), est. ${fmtCost(usage.costUsd)} · ${breakdown} — \`${mdCell(usage.models.join(", "))}\` |`,
     );
   }
   return [
-    heading,
+    "## depvisor",
     "",
     "| Field | Value |",
     "|---|---|",
     ...rows,
     "",
-    mdCell(group.summary) || "No summary was emitted.",
+    "### Summary",
     "",
-    packageTable(group.packages),
-    verificationTable(group.verification),
-    testChangesTable(group.testChanges ?? []),
+    mdCell(run.summary) || "No summary was emitted.",
+    "",
+    changesTable(run.changes),
+    verificationTable(run.verification),
+    testChangesTable(run.testChanges ?? []),
   ]
     .filter((part) => part !== "")
     .join("\n");
 }
 
-export function renderStepSummary(status: RunStatus): string {
-  const usage = sumGroupUsage(status.groups);
-  const header = [
-    "## depvisor",
-    "",
-    "| Field | Value |",
-    "|---|---|",
-    `| Status | \`${mdCell(status.status)}\` |`,
-    `| Base | ${status.base ? `\`${mdCell(status.base)}\`` : "none"} |`,
-    `| Groups | ${status.groups.length} |`,
-    ...(usage
-      ? [`| LLM usage | ${usageDigest(usage)} — \`${mdCell(usage.models.join(", "))}\` |`]
-      : []),
-    "",
-    "### Summary",
-    "",
-    mdCell(status.summary) || "No summary was emitted.",
-    "",
-  ].join("\n");
-  return [header, ...status.groups.map(renderGroup)].filter((part) => part !== "").join("\n");
-}
-
-export function appendStepSummary(file: string, status: RunStatus): void {
-  appendFileSync(file, `${renderStepSummary(status)}\n`);
+export function appendStepSummary(file: string, run: RunStatus): void {
+  appendFileSync(file, `${renderStepSummary(run)}\n`);
 }

@@ -6,3 +6,12 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+  # npm-family updates are what the depvisor.yml aftercare workflow consumes
+  # (dogfooding); github-actions PRs touch .github/ and are skipped by design
+  # (not-an-update-pr).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
