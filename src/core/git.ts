@@ -481,6 +481,23 @@ function commitStaged(repo: string, message: string): string {
   return revParse(repo, "HEAD");
 }
 
+/**
+ * Bundle the commits `prerequisiteSha..refs/heads/<branch>` into `file` — the
+ * transport that carries a repair commit from the tokenless analyze job to the
+ * token-holding publish job on its own fresh runner (the two never share a
+ * machine, by design). The prerequisite makes the bundle applicable only on
+ * top of the exact updater tip the run consumed; the publish side re-verifies
+ * everything about the range anyway (the bundle is untrusted input there).
+ */
+export function createRepairBundle(
+  repo: string,
+  file: string,
+  prerequisiteSha: string,
+  branch: string,
+): void {
+  git(repo, ["bundle", "create", file, `^${prerequisiteSha}`, `refs/heads/${branch}`]);
+}
+
 /** Stage everything remaining and commit. Returns sha, or null if tree was clean. */
 export function commitAll(repo: string, message: string): string | null {
   git(repo, ["add", "-A"]);

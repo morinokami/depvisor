@@ -1,5 +1,5 @@
 export type UpdateType = "patch" | "minor" | "major" | "unknown";
-export type DepKind = "prod" | "dev";
+export type DepKind = "prod" | "dev" | "transitive";
 
 /**
  * One dependency the updater PR changes, extracted deterministically from the

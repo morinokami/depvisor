@@ -1,0 +1,102 @@
+name: depvisor publish
+description: >-
+  Aftercare for dependency-update PRs, publish half: consumes the analyze
+  job's artifact and — after re-verifying everything structurally —
+  fast-forward-pushes the repair commit onto the updater's still-unmoved head
+  branch and creates or updates the marker-deduplicated report comment. Run
+  this in its OWN job on a fresh runner: it is the only place the GitHub token
+  appears, and it must never share a runner with the analyze job, whose target
+  install/verify scripts can taint runner files ($GITHUB_PATH, $GITHUB_ENV,
+  BASH_ENV). Never creates a PR or branch.
+branding:
+  icon: package
+  color: purple
+
+inputs:
+  github_token:
+    description: Token used to push the repair commit and write the report comment.
+    required: false
+    default: ${{ github.token }}
+  pr_number:
+    description: The updater PR's number. Defaults from the pull_request event context.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  head_ref:
+    description: The updater PR's head branch. Defaults from the pull_request event context.
+    required: false
+    default: ${{ github.event.pull_request.head.ref }}
+  artifact_name:
+    description: Name of the workflow artifact the analyze job uploaded.
+    required: false
+    default: depvisor-aftercare
+  node_version:
+    description: Node version used to run depvisor's publish entrypoint. Must be >= 24.
+    required: false
+    default: "24"
+
+# Machine-shaped values only, like the analyze action's outputs.
+outputs:
+  status:
+    description: >-
+      Publish outcome: published, publish-blocked (PR closed or head moved —
+      green), publish-failed, or no-payload (the analyze job prepared nothing
+      publishable).
+    value: ${{ steps.publish.outputs.status }}
+  pushed:
+    description: >-
+      "true" when the repair commit LANDED on the PR's head branch this run.
+    value: ${{ steps.publish.outputs.pushed }}
+  comment_url:
+    description: >-
+      URL of the report comment, when one was created or updated.
+    value: ${{ steps.publish.outputs.comment_url }}
+
+runs:
+  using: composite
+  steps:
+    # Same two runner quirks as the analyze action (see its comments). This
+    # action lives in publish/, so depvisor's root is the parent directory.
+    - name: Resolve depvisor path and pnpm version
+      shell: bash
+      run: | # zizmor: ignore[github-env] trusted action path and manifest only
+        DEPVISOR_PUBLISH_HOME="$(cd "$GITHUB_ACTION_PATH/.." && pwd)"
+        echo "DEPVISOR_PUBLISH_HOME=$DEPVISOR_PUBLISH_HOME" >> "$GITHUB_ENV"
+        echo "DEPVISOR_PUBLISH_PNPM_VERSION=$(node -p "require(process.env.GITHUB_ACTION_PATH + '/../package.json').packageManager.split('@')[1]")" >> "$GITHUB_ENV"
+
+    - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      with:
+        version: ${{ env.DEPVISOR_PUBLISH_PNPM_VERSION }}
+        package_json_file: ${{ env.DEPVISOR_PUBLISH_HOME }}/package.json
+
+    - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      with:
+        node-version: ${{ inputs.node_version }}
+        package-manager-cache: false
+
+    - name: Install depvisor dependencies
+      shell: bash
+      working-directory: ${{ env.DEPVISOR_PUBLISH_HOME }}
+      run: pnpm install --frozen-lockfile
+
+    # The analyze job's result. Untrusted data at this boundary: the publish
+    # entrypoint re-verifies the repair range (bundle tip, descent, committer
+    # sentinel, scope-clean diff) and re-sanitizes the comment body.
+    - name: Download publish payload
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: ${{ runner.temp }}/depvisor-payload
+
+    # Deterministic, token-holding. The PR identity and push target come from
+    # the trusted Actions event context, never from the artifact.
+    - name: Publish repair & report
+      id: publish
+      shell: bash
+      working-directory: ${{ env.DEPVISOR_PUBLISH_HOME }}
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        DEPVISOR_PAYLOAD_DIR: ${{ runner.temp }}/depvisor-payload
+        DEPVISOR_REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}
+        DEPVISOR_PR_NUMBER: ${{ inputs.pr_number }}
+        DEPVISOR_HEAD_REF: ${{ inputs.head_ref }}
+      run: node "$DEPVISOR_PUBLISH_HOME/src/publish.ts"

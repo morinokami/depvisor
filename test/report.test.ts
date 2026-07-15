@@ -178,12 +178,15 @@ test("the package table links valid names and sanitizes versions", () => {
     ),
   );
   assert.ok(comment({ changes: [change({ kind: "dev" })] }).includes("| major (dev) |"));
+  assert.ok(
+    comment({ changes: [change({ kind: "transitive" })] }).includes("| major (transitive) |"),
+  );
   // a version carrying markup is escaped, and the npm link drops (charset gate)
   const evil = comment({ changes: [change({ from: "<7", to: "11.2.1<x" })] });
   assert.ok(evil.includes("&lt;7"));
   assert.ok(!evil.includes("| <7"));
   assert.ok(!evil.includes("npmjs.com"));
-  assert.ok(comment({ changes: [] }).includes("_No direct dependency change could be named"));
+  assert.ok(comment({ changes: [] }).includes("_No dependency change could be named"));
 });
 
 test("the links column appears only for a valid GitHub slug", () => {
@@ -201,10 +204,15 @@ test("the links column appears only for a valid GitHub slug", () => {
   assert.ok(!comment().includes("Links"));
 });
 
-test("the transitive note counts lockfile-only movement", () => {
-  const body = comment({ transitives: ["semver", "yallist"] });
-  assert.ok(body.includes("_2 transitive package(s) also moved in the lockfile._"));
+test("the transitive note counts changes beyond the rendered bound", () => {
+  const body = comment({ omittedTransitives: 2 });
+  assert.ok(
+    body.includes(
+      "_2 further transitive package(s) also moved in the lockfile (omitted from the table)._",
+    ),
+  );
   assert.ok(!comment().includes("transitive package(s)"));
+  assert.ok(!comment({ omittedTransitives: 0 }).includes("transitive package(s)"));
 });
 
 test("the repair commit line appears only for a repaired verdict with a hex sha", () => {

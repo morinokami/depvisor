@@ -53,15 +53,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  aftercare:
+  # Job 1 — analyze & repair. Runs the target's own install/verify scripts,
+  # so it is deliberately TOKEN-FREE: those scripts could taint this runner.
+  analyze:
     # Run only on updater-authored PRs; add your Renovate bot's login if you
     # use one (e.g. 'renovate[bot]').
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write # push the repair commit onto the PR head branch
-      pull-requests: write # create/update the report comment
+      contents: read # checkout only; this job never pushes or comments
     steps:
       # Recommended: block unexpected network egress. Add your LLM provider
       # and any private package registries your repo needs.
@@ -74,6 +75,7 @@ jobs:
             codeload.github.com:443
             objects.githubusercontent.com:443
             *.actions.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
             registry.npmjs.org:443
             api.openai.com:443
 
@@ -90,6 +92,24 @@ jobs:
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}
           llm_model: openai/gpt-5.5 # or anthropic/claude-sonnet-5, ... (BYOK)
+
+  # Job 2 — publish. The ONLY place a GitHub token appears, on a fresh runner
+  # that never executed target code. It consumes job 1's artifact, re-verifies
+  # the repair range, fast-forward-pushes it, and upserts the report comment.
+  publish:
+    needs: analyze
+    # Publish even when analyze went red: a verification-failed report comment
+    # is exactly what the reviewer needs to see.
+    if: ${{ !cancelled() && needs.analyze.result != 'cancelled' && needs.analyze.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the repair commit onto the PR head branch
+      pull-requests: write # create/update the report comment
+    steps:
+      # No checkout at all: the action carries depvisor's own code, and the
+      # target repository is never present on this runner.
+      - uses: morinokami/depvisor/publish@v2
 ```
 
 > [!IMPORTANT]
@@ -150,14 +170,19 @@ re-run CI on the PR by itself — pass a GitHub App / PAT token as
 
 ## Safety model (short version)
 
-- **Token separation is structural**: the AI agent step holds only the LLM
-  key; the GitHub token exists only in the publish step. The agent cannot run
-  git or GitHub operations, and its repository access goes through bounded,
-  repo-jailed tools.
+- **Token separation is structural — across jobs, not just steps**: the
+  analyze job executes the target's install/verify scripts, which could taint
+  its runner (`$GITHUB_PATH`, `$GITHUB_ENV`, `BASH_ENV`), so it never holds a
+  GitHub token; the publish job holds the token on a fresh runner that never
+  ran target code, and treats everything from the analyze job (payload, repair
+  bundle) as untrusted data. The LLM key exists only in the analyze job, and
+  target subprocesses (installs, verification) get it scrubbed from their
+  environment.
 - **Deterministic gates decide, the LLM proposes**: verification runs outside
-  the agent, the scope gate rejects out-of-bounds edits, and the repair range
-  is re-verified structurally (descent, committer, diff scope) at the
-  token-holding publish boundary.
+  the agent, the scope gate rejects out-of-bounds edits (including writes to
+  git-ignored paths like `node_modules/`, which could fake verification), and
+  the repair range is re-verified structurally (bundle tip, descent,
+  committer, diff scope) at the token-holding publish boundary.
 - **Attribution before repair**: a repair is only attempted when the merge
   base verifies green and the PR head does not — a broken base stops the run
   (`baseline-red`) instead of producing an unattributable "fix".
@@ -171,12 +196,13 @@ See [docs/results.md](docs/results.md) for the full status vocabulary and
 
 ### Inputs
 
+`morinokami/depvisor@v2` (analyze — token-free):
+
 | Input             | Default                     | What it does                                                   |
 | ----------------- | --------------------------- | -------------------------------------------------------------- |
-| `llm_api_key`     | (required)                  | LLM provider API key; only the token-free agent step sees it.  |
+| `llm_api_key`     | (required)                  | LLM provider API key; only this token-free job sees it.        |
 | `llm_model`       | (required)                  | Model specifier, e.g. `openai/gpt-5.5`.                        |
 | `llm_api_key_env` | inferred                    | Env var name for the key, for providers depvisor cannot infer. |
-| `github_token`    | `${{ github.token }}`       | Used only by the publish step (push + comment).                |
 | `pr_number`       | from the PR event           | The updater PR's number.                                       |
 | `base_ref`        | from the PR event           | The PR's base branch.                                          |
 | `head_ref`        | from the PR event           | The PR's head branch (must be checked out).                    |
@@ -184,10 +210,22 @@ See [docs/results.md](docs/results.md) for the full status vocabulary and
 | `verify_commands` | auto-detect build/lint/test | Newline-separated commands; replaces auto-detection.           |
 | `language`        | English                     | BCP-47 tag for the report's narrative text.                    |
 | `node_version`    | `24`                        | Node for depvisor and your verification scripts.               |
+| `artifact_name`   | `depvisor-aftercare`        | Artifact carrying the result to the publish job.               |
 
-Outputs (`status`, `failed`, `repaired`, `comment_url`, `total_tokens`,
-`est_cost_usd`) are machine-shaped and safe to branch on from `if: always()`
-steps — see [docs/results.md](docs/results.md).
+`morinokami/depvisor/publish@v2` (publish — token-holding):
+
+| Input           | Default               | What it does                                     |
+| --------------- | --------------------- | ------------------------------------------------ |
+| `github_token`  | `${{ github.token }}` | Pushes the repair and writes the report comment. |
+| `pr_number`     | from the PR event     | The updater PR's number.                         |
+| `head_ref`      | from the PR event     | The PR's head branch.                            |
+| `artifact_name` | `depvisor-aftercare`  | Artifact the analyze job uploaded.               |
+| `node_version`  | `24`                  | Node for depvisor's publish entrypoint.          |
+
+Outputs are machine-shaped and safe to branch on from `if: always()` steps —
+analyze: `status`, `failed`, `repaired` (a verified repair was PREPARED),
+`total_tokens`, `est_cost_usd`; publish: `status`, `pushed` (the repair
+LANDED), `comment_url`. See [docs/results.md](docs/results.md).
 
 ## Versioning
 

@@ -62,14 +62,19 @@ function languageInstruction(language: string): string {
   );
 }
 
-/** One change per line for a task prompt: name, version window, dev flag, workspaces. */
+/** One change per line for a task prompt: name, version window, kind, workspaces. */
 function describeChanges(changes: readonly DependencyChange[]): string {
   return changes
     .map((c) => {
-      const dev = c.kind === "dev" ? " (dev dependency)" : "";
+      const kind =
+        c.kind === "dev"
+          ? " (dev dependency)"
+          : c.kind === "transitive"
+            ? " (transitive dependency)"
+            : "";
       const workspaces = c.locations.filter((l) => l !== "");
       const where = workspaces.length > 0 ? ` [in ${workspaces.join(", ")}]` : "";
-      return `- ${c.name}: ${c.from} -> ${c.to}${dev}${where}`;
+      return `- ${c.name}: ${c.from} -> ${c.to}${kind}${where}`;
     })
     .join("\n");
 }

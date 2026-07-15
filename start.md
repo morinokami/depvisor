@@ -15,7 +15,8 @@ digest gets bounded read/search access to the target repository; only the
 failure-path fixer gets bounded repo-relative edit tools. Neither can reach
 depvisor's action checkout or the later GitHub-token step.
 
-The finished setup is small: **one workflow file and one or two secrets**.
+The finished setup is small: **one workflow file (two jobs) and one or two
+secrets**.
 Your job is to inspect the repository first, tailor the workflow to what you
 find, and hand the user only the steps you cannot perform. This file is
 self-contained — you do not need to fetch anything else. The README
@@ -83,13 +84,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  aftercare:
+  # Analyze & repair. Runs the target's own install/verify scripts, so it is
+  # deliberately TOKEN-FREE (those scripts could taint this runner).
+  analyze:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write # push the repair commit onto the PR head branch
-      pull-requests: write # create/update the report comment
+      contents: read # checkout only; this job never pushes or comments
     steps:
       - uses: actions/checkout@v7
         with:
@@ -107,6 +109,21 @@ jobs:
           # verify_commands: |            # only when auto-detection is wrong
           #   npm run typecheck
           #   npm run test
+
+  # Publish. The ONLY place a GitHub token appears, on a fresh runner that
+  # never executed target code. No checkout needed.
+  publish:
+    needs: analyze
+    # Publish even when analyze went red: a verification-failed report
+    # comment is exactly what the reviewer needs to see.
+    if: ${{ !cancelled() && needs.analyze.result != 'cancelled' && needs.analyze.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the repair commit onto the PR head branch
+      pull-requests: write # create/update the report comment
+    steps:
+      - uses: morinokami/depvisor/publish@v2
 ```
 
 Tailoring rules:
@@ -153,8 +170,8 @@ so nothing is silent):
 - `deferred` (green): the fixer judged the repair unsafe to make (e.g. it
   would need a manifest change); the report explains — a human should take
   over.
-- `publish-blocked` (green): the PR merged/closed or its head moved mid-run;
-  nothing was pushed; the next PR event re-runs.
+- publish job `publish-blocked` (green): the PR merged/closed or its head
+  moved mid-run; nothing was pushed; the next PR event re-runs.
 - `verification-failed` (red): no passing repair could be produced; the
   report explains what is broken.
 - `baseline-red` (red): the base itself fails the checks — fix the base

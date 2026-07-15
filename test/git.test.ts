@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   changedPaths,
+  createRepairBundle,
   changedPathsInCommit,
   checkoutDetached,
   checkoutForce,
@@ -520,4 +521,28 @@ test("snapshotWorktree/worktreeDrift detects verification side effects", () => {
     ".github/workflows/evil.yml",
     "src.ts",
   ]);
+});
+
+test("createRepairBundle round-trips the repair range into another repository", () => {
+  // The bundle is how a repair commit crosses the analyze→publish job gap
+  // (the jobs never share a runner). Its prerequisite pins it to the exact
+  // updater tip, and a receiver that has that tip can fetch the range out.
+  const src = tempRepo();
+  const branch = currentBranch(src);
+  const base = revParse(src, "HEAD");
+  writeFileSync(join(src, "src.ts"), "export const repaired = 1;\n");
+  const repair = commitAll(src, "fix: adapt code to dep update");
+  assert.ok(repair);
+
+  const workDir = mkdtempSync(join(tmpdir(), "depvisor-bundle-"));
+  const bundle = join(workDir, "repair.bundle");
+  createRepairBundle(src, bundle, base, branch);
+
+  // A receiver holding the prerequisite (the updater tip) can verify + fetch.
+  const recv = join(workDir, "recv");
+  execSync(`git clone -q "${src}" "${recv}"`);
+  execSync(`git -C "${recv}" reset -q --hard ${base}`);
+  execSync(`git -C "${recv}" bundle verify "${bundle}"`, { stdio: "ignore" });
+  execSync(`git -C "${recv}" fetch -q "${bundle}" refs/heads/${branch}:refs/depvisor/repair`);
+  assert.equal(revParse(recv, "refs/depvisor/repair"), repair);
 });

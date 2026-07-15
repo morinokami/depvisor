@@ -46,6 +46,14 @@ export interface ReportPayload {
 export const REPORT_PAYLOAD_FILE = "payload.json";
 
 /**
+ * The git bundle carrying the repair commits (`expectedHeadSha..repairSha`)
+ * from the analyze job to the publish job. Written by `bundle-payload.ts`,
+ * consumed — as untrusted input, re-verified structurally — by the publish
+ * step.
+ */
+export const REPAIR_BUNDLE_FILE = "repair.bundle";
+
+/**
  * Read-back shape validation for the payload file. The tokenless step wrote
  * it, so the token-holding publish step must not assume its shape: a
  * JSON-parseable but non-payload file (`{}`, a bare string, a mistyped field)
@@ -334,6 +342,11 @@ export function composeNarrative(
   };
 }
 
+/** The kind marker in the change table's Type column. */
+function kindSuffix(c: DependencyChange): string {
+  return c.kind === "dev" ? " (dev)" : c.kind === "transitive" ? " (transitive)" : "";
+}
+
 /** The report's deterministic verdict line — never agent text. */
 export type ReportVerdict = "green" | "repaired" | "deferred" | "repair-failed";
 
@@ -358,9 +371,13 @@ const VERDICT_LINES: Record<ReportVerdict, string> = {
  */
 export function buildReportComment(args: {
   verdict: ReportVerdict;
+  /**
+   * The rendered change set: direct changes plus the bounded transitive
+   * changes the caller chose to surface (kind "transitive").
+   */
   changes: readonly DependencyChange[];
-  /** Changed lockfile packages no manifest declares (count only). */
-  transitives?: readonly string[];
+  /** Transitive changes beyond the bound — counted, never silently dropped. */
+  omittedTransitives?: number;
   /** GitHub "owner/repo" per package; missing entries render without links. */
   sourceRepos?: ReadonlyMap<string, string | null>;
   /** Test-looking files the repair changed; non-empty adds a warning section. */
@@ -375,7 +392,7 @@ export function buildReportComment(args: {
   const {
     verdict,
     changes,
-    transitives,
+    omittedTransitives,
     sourceRepos,
     testChanges,
     repairShaShort,
@@ -388,21 +405,21 @@ export function buildReportComment(args: {
   const hasLinks = links.some((l) => l !== "");
   const versionTable =
     changes.length === 0
-      ? "_No direct dependency change could be named (see the transitive note below)._"
+      ? "_No dependency change could be named from the lockfile or manifests._"
       : [
           `| Package | From | To | Type |${hasLinks ? " Links |" : ""}`,
           `|---|---|---|---|${hasLinks ? "---|" : ""}`,
           ...changes.map(
             (c, i) =>
               `| ${packageCell(c)} | ${sanitizeSummary(c.from)} | ${sanitizeSummary(c.to)} ` +
-              `| ${c.updateType}${c.kind === "dev" ? " (dev)" : ""} |` +
+              `| ${c.updateType}${kindSuffix(c)} |` +
               (hasLinks ? ` ${links[i] ?? ""} |` : ""),
           ),
         ].join("\n");
 
   const transitiveNote =
-    transitives && transitives.length > 0
-      ? `\n\n_${transitives.length} transitive package(s) also moved in the lockfile._`
+    omittedTransitives && omittedTransitives > 0
+      ? `\n\n_${omittedTransitives} further transitive package(s) also moved in the lockfile (omitted from the table)._`
       : "";
 
   const repairLine =
@@ -473,5 +490,6 @@ export function emitReportPayload(outDir: string, payload: ReportPayload): strin
  */
 export function clearPrPreview(outDir: string): void {
   rmSync(join(outDir, REPORT_PAYLOAD_FILE), { force: true });
+  rmSync(join(outDir, REPAIR_BUNDLE_FILE), { force: true });
   rmSync(join(outDir, RUN_STATUS_FILE), { force: true });
 }

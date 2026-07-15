@@ -17,15 +17,19 @@ import { repairScopeViolations } from "./scope.ts";
  *   2. one marker-deduplicated report comment (created once, edited on
  *      re-runs).
  *
- * The payload is an untrusted read-back at this boundary (the tokenless step
- * wrote it), so the PR identity comes from trusted action env instead and the
- * payload must AGREE with it, the comment body is re-sanitized at the exit,
- * and the repair range is re-verified structurally: descendant of the
- * expected tip, every commit committed by depvisor's sentinel, and its diff
- * clean of dependency-state/execution-surface paths (`repairScopeViolations`).
- * All git/gh work runs inside a fresh clone with a scrubbed environment, so
- * target-command-touched `.git/`, global git config, and inherited env cannot
- * influence this step.
+ * This boundary runs in its OWN job on a fresh runner: the analyze job's
+ * runner executed target install/verify scripts, which can taint runner files
+ * (`$GITHUB_PATH`, `$GITHUB_ENV`, `BASH_ENV`) and thereby every later step on
+ * that machine — no in-process scrubbing can undo that, so the token simply
+ * never appears there. Everything arriving from the analyze job (the payload,
+ * the repair bundle) is untrusted data: the PR identity comes from trusted
+ * action env instead and the payload must AGREE with it, the comment body is
+ * re-sanitized at the exit, and the repair range is re-verified structurally —
+ * bundle tip = payloaded repair sha, descendant of the expected tip, every
+ * commit committed by depvisor's sentinel, and its diff clean of
+ * dependency-state/execution-surface paths (`repairScopeViolations`). All
+ * git/gh work runs inside a from-scratch repository pointed at the trusted
+ * remote, with a scrubbed environment.
  */
 
 export interface PublishResult {
@@ -248,20 +252,33 @@ export function upsertReportComment(
 export interface TrustedPrContext {
   prNumber: number;
   headRef: string;
-  /** Trusted push target (Actions context). Unset only in trusted local dev. */
-  remoteUrl?: string | undefined;
+  /**
+   * Trusted push target (Actions context `${server_url}/${repository}`; the
+   * same value set by hand for local dev). Required: the publish job has no
+   * target checkout to fall back to — by design, it never shares a runner
+   * with anything that executed target code.
+   */
+  remoteUrl: string;
 }
 
 /**
  * Publish one aftercare result: verify the PR is still open on the expected
- * head, fast-forward-push the repair commit (when one exists), and upsert the
- * report comment. See the module doc for the trust argument. On any doubt the
- * temp clone is removed and nothing is pushed.
+ * head, fast-forward-push the repair commit (when one exists, carried by the
+ * git bundle), and upsert the report comment. See the module doc for the
+ * trust argument. On any doubt the temp workspace is removed and nothing is
+ * pushed.
+ *
+ * This function runs on a FRESH runner that never executed target code (the
+ * analyze/publish job split): it builds its working repository from the
+ * trusted remote URL, never from the analyze job's checkout, whose runner
+ * files (`$GITHUB_PATH`, `$GITHUB_ENV`, `BASH_ENV`, `.git`) target scripts
+ * can taint. The repair commits arrive as `bundlePath` — untrusted data,
+ * verified structurally below before anything is pushed.
  */
 export function publishAftercare(
-  repo: string,
   payload: ReportPayload,
   trusted: TrustedPrContext,
+  bundlePath: string | null,
 ): PublishResult {
   // The payload must agree with the trusted identity; a mismatch means the
   // payload file was rewritten after the workflow emitted it.
@@ -275,6 +292,15 @@ export function publishAftercare(
       `payload PR #${payload.prNumber} does not match the trusted PR #${trusted.prNumber}; refusing to publish`,
     );
   }
+  const pushUrl = trusted.remoteUrl.trim();
+  if (!pushUrl) {
+    return failed("cannot resolve a remote URL to publish to");
+  }
+  if (!isNetworkRemote(pushUrl)) {
+    return failed(
+      `refusing to publish to non-network remote '${pushUrl}': a local/file/helper target would run its server-side hooks in this token-holding process`,
+    );
+  }
 
   const workDir = mkdtempSync(join(tmpdir(), "depvisor-publish-"));
   const home = join(workDir, "home");
@@ -283,30 +309,15 @@ export function publishAftercare(
   const env = buildSecureEnv(home);
 
   try {
-    // Clone from the fresh temp dir, not inside `repo`, so git never treats the
-    // target checkout as the current repository and reads its config.
-    const cloned = git(env, workDir, ["clone", "--quiet", repo, clone]);
-    if (cloned.code !== 0) {
-      return failed(`could not prepare a clean checkout to publish from: ${cloned.err}`);
+    // A fresh repository pointed at the trusted remote — built from nothing,
+    // so no pre-existing .git (from any checkout) is ever consulted.
+    const init = git(env, workDir, ["init", "--quiet", clone]);
+    if (init.code !== 0) {
+      return failed(`could not prepare a clean repository to publish from: ${init.err}`);
     }
-
-    // Prefer the trusted URL; only fall back to target config for local dev.
-    // `config --get` reads the raw value and ignores `url.*.insteadOf`.
-    const pushUrl =
-      trusted.remoteUrl && trusted.remoteUrl.trim()
-        ? trusted.remoteUrl.trim()
-        : git(env, repo, ["config", "--get", "remote.origin.url"]).out;
-    if (!pushUrl) {
-      return failed("cannot resolve a remote URL to publish to");
-    }
-    if (!isNetworkRemote(pushUrl)) {
-      return failed(
-        `refusing to publish to non-network remote '${pushUrl}': a local/file/helper target would run its server-side hooks in this token-holding process`,
-      );
-    }
-    const setUrl = git(env, clone, ["remote", "set-url", "origin", pushUrl]);
-    if (setUrl.code !== 0) {
-      return failed(`could not point the clean checkout at the remote: ${setUrl.err}`);
+    const addRemote = git(env, clone, ["remote", "add", "origin", pushUrl]);
+    if (addRemote.code !== 0) {
+      return failed(`could not point the clean repository at the remote: ${addRemote.err}`);
     }
 
     // Configure git to authenticate through gh/GH_TOKEN. Non-fatal: without a
@@ -344,8 +355,13 @@ export function publishAftercare(
 
     // Compare-and-swap anchor: the remote tip must still be the updater tip
     // this run consumed — unless it already equals the repair commit (an
-    // idempotent re-run after a successful push).
-    const fetched = git(env, clone, ["fetch", "origin", trusted.headRef]);
+    // idempotent re-run after a successful push). --no-tags: only the branch.
+    const fetched = git(env, clone, [
+      "fetch",
+      "--no-tags",
+      "origin",
+      `refs/heads/${trusted.headRef}`,
+    ]);
     if (fetched.code !== 0) {
       return failed(`could not fetch the remote head of ${trusted.headRef}: ${fetched.err}`);
     }
@@ -359,6 +375,32 @@ export function publishAftercare(
 
     let pushed = false;
     if (payload.repairSha !== null && !alreadyPushed) {
+      // The repair commits travel as a bundle from the analyze job. Verify the
+      // bundle's prerequisites against what we fetched (the expected tip),
+      // then bring its commits in under a private ref.
+      if (bundlePath === null) {
+        return failed("a repair commit is payloaded but no repair bundle was provided");
+      }
+      const verified = git(env, clone, ["bundle", "verify", bundlePath]);
+      if (verified.code !== 0) {
+        return failed(`the repair bundle does not apply to the expected head: ${verified.err}`);
+      }
+      const applied = git(env, clone, [
+        "fetch",
+        "--no-tags",
+        bundlePath,
+        `refs/heads/${trusted.headRef}:refs/depvisor/repair`,
+      ]);
+      if (applied.code !== 0) {
+        return failed(`could not read the repair bundle: ${applied.err}`);
+      }
+      const bundleTip = git(env, clone, ["rev-parse", "refs/depvisor/repair"]).out;
+      if (bundleTip !== payload.repairSha) {
+        return failed(
+          `the repair bundle's tip (${bundleTip.slice(0, 8)}) is not the payload's repair commit (${payload.repairSha.slice(0, 8)}); refusing to push`,
+        );
+      }
+
       // Structural re-verification of the repair range inside the clean clone.
       // The expected tip must be an ancestor of the repair commit…
       const anchor = git(env, clone, ["merge-base", payload.repairSha, payload.expectedHeadSha]);

@@ -1,10 +1,16 @@
 name: depvisor
 
-# Aftercare runs once per updater PR head: verify, repair if broken, report.
+# Aftercare runs once per updater PR head, split across two jobs on purpose:
+# the ANALYZE job executes the target's install/verify scripts (which can
+# taint its runner's files — $GITHUB_PATH, $GITHUB_ENV, BASH_ENV) and
+# therefore never holds a GitHub token; the PUBLISH job holds the token on a
+# fresh runner that never ran target code, consuming the analyze result as an
+# artifact it re-verifies.
+#
 # NOTE (Dependabot): workflows triggered by Dependabot PRs read secrets from
-# the repository's *Dependabot secrets* store and get a read-only GITHUB_TOKEN
-# by default — register OPENAI_API_KEY there too, and elevate the token via the
-# `permissions:` key below (supported for Dependabot-triggered runs).
+# the repository's *Dependabot secrets* store (register OPENAI_API_KEY there
+# too) and get a read-only GITHUB_TOKEN by default — the publish job's
+# `permissions:` key elevates it.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -16,15 +22,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  aftercare:
-    name: Dependency-update PR aftercare
+  analyze:
+    name: Analyze & repair (no tokens)
     # Only updater-authored PRs; human PRs are CI's business, not depvisor's.
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write # push the repair commit onto the PR head branch
-      pull-requests: write # create/update the report comment
+      contents: read # checkout only; the job never pushes or comments
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
@@ -35,14 +40,15 @@ jobs:
             codeload.github.com:443
             objects.githubusercontent.com:443
             *.actions.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
             registry.npmjs.org:443
             api.openai.com:443
             api.anthropic.com:443
 
       # The PR head branch itself (not the merge ref): the repair commit is
       # published onto it. fetch-depth: 0 so the merge base with the base
-      # branch is computable; persist-credentials: false is load-bearing — the
-      # agent step must never sit next to a token (check-credentials enforces).
+      # branch is computable; persist-credentials: false is load-bearing — this
+      # job must never sit next to a token (check-credentials enforces).
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.ref }}
@@ -53,7 +59,7 @@ jobs:
         id: depvisor
         with:
           # A GitHub Environment would add consumer setup; the composite action
-          # keeps this key in its structurally token-free step.
+          # keeps this key in its structurally token-free job.
           llm_api_key: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] dedicated token-free step
           llm_model: openai/gpt-5.5
           # The target here is depvisor itself; auto-detection would only find
@@ -74,7 +80,48 @@ jobs:
           DEPVISOR_STATUS: ${{ steps.depvisor.outputs.status }}
           DEPVISOR_FAILED: ${{ steps.depvisor.outputs.failed }}
           DEPVISOR_REPAIRED: ${{ steps.depvisor.outputs.repaired }}
-          DEPVISOR_COMMENT_URL: ${{ steps.depvisor.outputs.comment_url }}
         run: |
           echo "status=$DEPVISOR_STATUS failed=$DEPVISOR_FAILED repaired=$DEPVISOR_REPAIRED"
-          echo "comment_url=$DEPVISOR_COMMENT_URL"
+
+  publish:
+    name: Publish repair & report (token)
+    needs: analyze
+    # Publish even when analyze went red: a verification-failed report comment
+    # is exactly what the reviewer needs to see. Only a cancelled analyze
+    # (superseded head) skips publishing.
+    if: ${{ !cancelled() && needs.analyze.result != 'cancelled' && needs.analyze.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the repair commit onto the PR head branch
+      pull-requests: write # create/update the report comment
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+            registry.npmjs.org:443
+
+      # The publish action needs depvisor's own sources; no target checkout
+      # exists (or is wanted) in this job.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: ./publish
+        id: publish
+
+      - name: Show publish outputs
+        if: always()
+        env:
+          PUBLISH_STATUS: ${{ steps.publish.outputs.status }}
+          PUBLISH_PUSHED: ${{ steps.publish.outputs.pushed }}
+          PUBLISH_COMMENT_URL: ${{ steps.publish.outputs.comment_url }}
+        run: |
+          echo "status=$PUBLISH_STATUS pushed=$PUBLISH_PUSHED comment_url=$PUBLISH_COMMENT_URL"

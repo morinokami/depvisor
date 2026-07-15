@@ -28,6 +28,7 @@ import {
 } from "../../agents/shared/tasks.ts";
 import { parseGithubSlug } from "../../core/changelog.ts";
 import type { DepDiff } from "../../core/dep-diff.ts";
+import type { DependencyChange } from "../../core/types.ts";
 import {
   changedPaths,
   checkoutDetached,
@@ -65,6 +66,11 @@ import {
   type VerifyStep,
 } from "../../core/verify.ts";
 
+// How many transitive changes join the prompts/report table alongside the
+// direct ones. A major bump can move hundreds of transitives; the direct
+// changes carry the story, so the tail is a bounded sample plus a count.
+const MAX_TRANSITIVE_CHANGES = 20;
+
 export type ProcessPrOutcome =
   | {
       /** Fail-closed stop: nothing publishable came out of this run. */
@@ -87,6 +93,8 @@ export type ProcessPrOutcome =
       summary: string;
       payload: ReportPayload;
       repaired: boolean;
+      /** The rendered change set (direct + bounded transitives), for the record. */
+      changes: DependencyChange[];
       verification: VerifyResult[];
       testChanges: NumstatEntry[];
       usage: OpUsage[];
@@ -172,8 +180,17 @@ export async function processPr(opts: ProcessPrOptions): Promise<ProcessPrOutcom
     harness,
     log,
   } = opts;
-  const changes = depDiff.direct;
-  const pkgList = changes.map((c) => c.name).join(", ") || "dependencies";
+  // The change set the prompts, packument lookups, and report table see:
+  // direct changes plus a bounded slice of transitive ones — a lockfile-only
+  // transitive/security update would otherwise reach the digest and the
+  // reviewer as an anonymous count, defeating "understand and explain the
+  // change". The overflow is counted, never silently dropped.
+  const changes = [...depDiff.direct, ...depDiff.transitives.slice(0, MAX_TRANSITIVE_CHANGES)];
+  const omittedTransitives = Math.max(0, depDiff.transitives.length - MAX_TRANSITIVE_CHANGES);
+  const pkgList =
+    depDiff.direct.map((c) => c.name).join(", ") ||
+    changes.map((c) => c.name).join(", ") ||
+    "dependencies";
   // Token/cost usage for this run's agent operations (visibility only); each
   // entry is pushed the moment its task returns, so pre-agent stops record
   // nothing.
@@ -520,7 +537,7 @@ export async function processPr(opts: ProcessPrOptions): Promise<ProcessPrOutcom
   const commentBody = buildReportComment({
     verdict,
     changes,
-    transitives: depDiff.transitives,
+    omittedTransitives,
     sourceRepos,
     testChanges,
     repairShaShort: repairSha ? repairSha.slice(0, 8) : null,
@@ -561,6 +578,7 @@ export async function processPr(opts: ProcessPrOptions): Promise<ProcessPrOutcom
     summary,
     payload,
     repaired: repairSha !== null,
+    changes,
     verification,
     testChanges,
     usage,

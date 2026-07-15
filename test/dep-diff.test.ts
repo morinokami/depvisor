@@ -146,9 +146,58 @@ test("npm: lockfile-resolved diff names the direct change and files transitives 
       locations: [""],
     },
   ]);
-  // yallist moved in the lockfile but no manifest declares it
-  assert.deepEqual(diff.transitives, ["yallist"]);
+  // yallist moved in the lockfile but no manifest declares it — its moved
+  // versions are still carried, so a lockfile-only transitive update can be
+  // named in the report and the digest prompt.
+  assert.deepEqual(diff.transitives, [
+    {
+      name: "yallist",
+      from: "4.0.0",
+      to: "5.0.0",
+      kind: "transitive",
+      updateType: "major",
+      locations: [],
+    },
+  ]);
   assert.deepEqual(diff.changedFiles, ["package-lock.json", "package.json"]);
+});
+
+test("multi-version lockfiles report the set difference, never lowest→highest", () => {
+  // A direct foo@3 stays put while a NESTED foo@1 moves to 2. Summarizing the
+  // sets as lowest→highest would claim "foo 1 → 3 major" — misleading the
+  // fixer prompt and the reviewer report alike. Only the moved versions count.
+  const repo = tempRepo();
+  const base = commit(repo, {
+    "package.json": pkg({ foo: "^3.0.0" }),
+    "package-lock.json": JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "node_modules/foo": { version: "3.0.0" },
+        "node_modules/bar/node_modules/foo": { version: "1.0.0" },
+      },
+    }),
+  });
+  const head = commit(repo, {
+    "package.json": pkg({ foo: "^3.0.0" }),
+    "package-lock.json": JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "node_modules/foo": { version: "3.0.0" },
+        "node_modules/bar/node_modules/foo": { version: "2.0.0" },
+      },
+    }),
+  });
+  const diff = diffDependencies(repo, base, head, npmToolchain);
+  assert.deepEqual(diff.direct, [
+    {
+      name: "foo",
+      from: "1.0.0",
+      to: "2.0.0",
+      kind: "prod",
+      updateType: "major",
+      locations: [""],
+    },
+  ]);
 });
 
 test("npm: without a lockfile, from/to fall back to the manifest specifiers", () => {

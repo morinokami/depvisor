@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   lstatSync,
@@ -24,6 +25,14 @@ import { REPO } from "../shared/target.ts";
  * relative, jailed below the real target root (including symlink resolution),
  * and `.git` is never exposed. A prompt-injected agent therefore cannot rewrite
  * depvisor's own checkout or the later token-holding publish entrypoint.
+ *
+ * The write set additionally rejects git-IGNORED paths: the scope gate and the
+ * worktree snapshot are git-status-based, so a write into e.g. node_modules/
+ * would be invisible to both — a poisoned fixer could tamper with installed
+ * dependency code so the authoritative verification passes against code a
+ * clean install will never reproduce. Reads of ignored paths stay allowed on
+ * purpose (inspecting an installed package's source/types is a legitimate way
+ * to adapt to it).
  */
 
 const READ_CHARS_MAX = 30_000;
@@ -75,9 +84,31 @@ function existingPath(repo: string, raw: string): { abs: string; rel: string } {
 }
 
 /**
+ * Reject a MUTATION of a git-ignored path (see the module doc: git-status-based
+ * gates cannot see ignored files, so a write there could tamper with installed
+ * dependency code and fake the authoritative verification). `check-ignore`
+ * answers for nonexistent paths too (a new file under an ignored directory
+ * matches through the directory pattern). Exit 1 means "not ignored"; anything
+ * that is not a clean "not ignored" — including a git error — fails closed:
+ * an unanswerable question must not become a write.
+ */
+function assertNotIgnored(root: string, rel: string): void {
+  const res = spawnSync("git", ["-C", root, "check-ignore", "-q", "--", rel], {
+    encoding: "utf8",
+  });
+  if (res.status === 1 && !res.error) return;
+  throw new Error(
+    res.status === 0
+      ? `${rel} is git-ignored; the fixer may not modify ignored files (installed dependencies, build output)`
+      : `cannot verify whether ${rel} is git-ignored; refusing to modify it`,
+  );
+}
+
+/**
  * Resolve a write target. For a new file, validate its closest existing parent;
  * for an existing file, validate the file itself. This closes the ordinary
  * symlink escape (`repo/link -> action checkout`) as well as lexical `../`.
+ * Ignored paths are rejected for every mutation (assertNotIgnored).
  */
 function writablePath(repo: string, raw: string): { abs: string; rel: string } {
   const path = lexicalPath(repo, raw);
@@ -85,7 +116,9 @@ function writablePath(repo: string, raw: string): { abs: string; rel: string } {
     const real = realpathSync(path.abs);
     if (!isInside(path.root, real)) throw new Error("path resolves outside the repository root");
     assertNotGit(path.root, real);
-    return { abs: real, rel: repoRelative(path.root, real) };
+    const rel = repoRelative(path.root, real);
+    assertNotIgnored(path.root, rel);
+    return { abs: real, rel };
   }
   let parent = dirname(path.abs);
   while (!existsSync(parent)) {
@@ -98,6 +131,7 @@ function writablePath(repo: string, raw: string): { abs: string; rel: string } {
     throw new Error("path parent resolves outside the repository root");
   }
   assertNotGit(path.root, realParent);
+  assertNotIgnored(path.root, path.rel);
   return { abs: path.abs, rel: path.rel };
 }
 
@@ -234,6 +268,8 @@ export function replaceRepoText(
 
 export function removeRepoFile(repo: string, path: string): { path: string } {
   const resolved = existingPath(repo, path);
+  // A removal is a mutation like any other; an ignored path is out of bounds.
+  assertNotIgnored(realpathSync(repo), resolved.rel);
   rmSync(resolved.abs);
   return { path: resolved.rel };
 }

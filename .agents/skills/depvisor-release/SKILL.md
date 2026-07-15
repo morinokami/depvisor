@@ -7,9 +7,11 @@ description: Use when touching depvisor's own CI or distribution plumbing — ac
 
 Both workflows below touch no target checkout beyond what the composite action already does, run no agent of their own, and leave the token-separation / fresh-clone / scope-gate invariants in the repo-root `CLAUDE.md` untouched.
 
-## The composite action (`action.yml`)
+## The composite actions (`action.yml` + `publish/action.yml`)
 
-The Action parses all behavior inputs through `check-config.ts` after installing depvisor itself but before installing the target. The PR-identity inputs (`pr_number`, `base_ref`, `head_ref`) default from the `pull_request` event context and are re-supplied to the token-holding publish step from that same trusted context — never from the payload the tokenless step wrote.
+depvisor ships as TWO composite actions in one repo: the root analyze action (token-free) and the `publish/` subaction (token-holding), wired by the consumer as two jobs — that job split is a security invariant (repo-root CLAUDE.md), not packaging taste. They hand off through a workflow artifact (`artifact_name`, default `depvisor-aftercare`; actions/upload-artifact + download-artifact are SHA-pinned inside the actions).
+
+The analyze action parses all behavior inputs through `check-config.ts` after installing depvisor itself but before installing the target. The PR-identity inputs (`pr_number`, `base_ref`, `head_ref`) default from the `pull_request` event context and are re-supplied to the publish action from that same trusted context — never from the artifact the tokenless job wrote.
 
 Two documented GitHub-runner quirks — **read the comments in `action.yml` before touching it**:
 
@@ -22,7 +24,7 @@ One platform caveat worth remembering: nesting the action inside another composi
 
 ## The development workflow (`.github/workflows/depvisor.yml`)
 
-It runs the composite action from the checkout via `uses: ./` on Dependabot PRs against depvisor itself, matching a consumer workflow except for that `uses: ./`. Dependabot-triggered runs read the **Dependabot secrets** store (OPENAI_API_KEY must be registered there) and start with a read-only `GITHUB_TOKEN` that the job-level `permissions:` block elevates.
+It runs both actions from the checkout (`uses: ./` in the analyze job, `uses: ./publish` in the publish job — the latter needs an explicit depvisor checkout, unlike a consumer's `morinokami/depvisor/publish@v2`, which carries the code) on Dependabot PRs against depvisor itself, otherwise matching the consumer two-job template. Dependabot-triggered runs read the **Dependabot secrets** store (OPENAI_API_KEY must be registered there) and start with a read-only `GITHUB_TOKEN` that the publish job's `permissions:` block elevates.
 
 The separate `fixture-e2e` matrix in `.github/workflows/ci.yml` runs the deterministic aftercare scanner (`src/dev/scan.ts … --verify=broken --expect-changes=lru-cache`) for every npm/pnpm/bun fixture variant: dependency-diff extraction, head verification (expected RED), and merge-base baseline attribution (expected GREEN). No model credentials anywhere in CI.
 

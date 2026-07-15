@@ -266,10 +266,11 @@ function minimalPayload(overrides: Partial<ReportPayload> = {}): ReportPayload {
 test("publishAftercare refuses a payload whose head ref disagrees with the trusted context", () => {
   // A rewritten payload naming another branch must be a red failure, not a
   // green blocked: it is tampering evidence, not expected churn.
-  const res = publishAftercare("/nonexistent", minimalPayload(), {
-    prNumber: 7,
-    headRef: "renovate/other-branch",
-  });
+  const res = publishAftercare(
+    minimalPayload(),
+    { prNumber: 7, headRef: "renovate/other-branch", remoteUrl: "https://github.com/o/r" },
+    null,
+  );
   assert.equal(res.ok, false);
   assert.equal(res.action, "failed");
   assert.equal(res.pushed, false);
@@ -280,13 +281,34 @@ test("publishAftercare refuses a payload whose head ref disagrees with the trust
 
 test("publishAftercare refuses a payload whose PR number disagrees with the trusted context", () => {
   const res = publishAftercare(
-    "/nonexistent",
     minimalPayload({ prNumber: 8 }), // head refs agree; the PR number does not
-    { prNumber: 7, headRef: "dependabot/npm_and_yarn/lru-cache-11.0.0" },
+    {
+      prNumber: 7,
+      headRef: "dependabot/npm_and_yarn/lru-cache-11.0.0",
+      remoteUrl: "https://github.com/o/r",
+    },
+    null,
   );
   assert.equal(res.ok, false);
   assert.equal(res.action, "failed");
   assert.equal(res.pushed, false);
   assert.match(res.error ?? "", /PR #8/);
   assert.match(res.error ?? "", /trusted PR #7/);
+});
+
+test("publishAftercare refuses non-network and empty remotes before touching anything", () => {
+  // The publish job builds its repository FROM the remote URL; a local/file/
+  // helper target would run its server-side hooks inside this token-holding
+  // process, and an empty one means the trusted context never arrived.
+  const trusted = { prNumber: 7, headRef: "dependabot/npm_and_yarn/lru-cache-11.0.0" };
+  const local = publishAftercare(
+    minimalPayload(),
+    { ...trusted, remoteUrl: "/tmp/evil-repo" },
+    null,
+  );
+  assert.equal(local.action, "failed");
+  assert.match(local.error ?? "", /non-network remote/);
+  const empty = publishAftercare(minimalPayload(), { ...trusted, remoteUrl: "  " }, null);
+  assert.equal(empty.action, "failed");
+  assert.match(empty.error ?? "", /remote URL/);
 });

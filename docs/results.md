@@ -1,27 +1,35 @@
 # Reading depvisor's results
 
-A depvisor run serves exactly one updater PR and ends in exactly one status.
-Statuses are a fixed, kebab-case vocabulary: they appear in the run annotation,
-the step summary, and the `status` action output, and they never carry free
-text. A red status fails the job — silent no-repair outcomes are a bug class
-this design refuses.
+A depvisor run serves exactly one updater PR across two jobs: **analyze**
+(token-free; verifies, attributes, repairs, prepares the report) and
+**publish** (token-holding, fresh runner; pushes the repair and writes the
+report comment). Each ends in exactly one status. Statuses are a fixed,
+kebab-case vocabulary: they appear in the run annotation, the step summary,
+and the `status` outputs, and they never carry free text. A red status fails
+its job — silent no-repair outcomes are a bug class this design refuses.
 
-## Green statuses (the job passes)
+## Analyze: green statuses (the job passes)
 
 | Status             | Meaning                                                                                                                                                                                                                      |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `report-prepared`  | Verification passes on the PR as-is; the reviewer report comment was prepared and published. No repair was needed.                                                                                                           |
-| `repair-prepared`  | The PR broke verification, the merge base verified green, and a bounded source repair was committed, re-verified, and pushed to the PR's head branch, together with the report comment.                                      |
+| `report-prepared`  | Verification passes on the PR as-is; the reviewer report comment was prepared for the publish job. No repair was needed.                                                                                                     |
+| `repair-prepared`  | The PR broke verification, the merge base verified green, and a bounded source repair was committed and re-verified; the repair and the report comment were handed to the publish job.                                       |
 | `not-an-update-pr` | The PR is not a pure dependency-update PR: a commit touches non-dependency paths (a human owns work on the branch), the PR changes no dependency depvisor can name, or it adds no commits beyond the base. Nothing was done. |
-| `deferred`         | Verification fails and the fixer judged the repair unsafe to make here (e.g. it would need a manifest change, which depvisor never makes). No repair was pushed; the report comment explains the blocker. Needs a human.     |
-| `publish-blocked`  | The analysis finished, but the PR was merged/closed mid-run or its head moved (the updater rebased, or someone pushed). Nothing was pushed or commented; the next PR event re-runs on the new head.                          |
+| `deferred`         | Verification fails and the fixer judged the repair unsafe to make here (e.g. it would need a manifest change, which depvisor never makes). No repair was prepared; the report comment explains the blocker. Needs a human.   |
 
-`deferred` and `publish-blocked` are green on purpose: the fixer declining an
-unsafe repair and the updater churning its branch are designed-for situations,
-not failures. The report comment (for `deferred`) and the next trigger (for
-`publish-blocked`) carry the follow-up.
+`deferred` is green on purpose: the fixer declining an unsafe repair is the
+designed behavior, and the report comment carries the follow-up.
 
-## Red statuses (the job fails)
+## Publish: outcomes (the publish action's `status` output)
+
+| Status            | Meaning                                                                                                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `published`       | The report comment was created/updated, and — when a repair existed — it was pushed. Green; `pushed` says whether a repair landed this run.                                                 |
+| `publish-blocked` | The PR was merged/closed, or its head moved (the updater rebased, or someone pushed) since the analysis. Nothing was pushed or commented; the next PR event re-runs on the new head. Green. |
+| `no-payload`      | The analyze job prepared nothing publishable (e.g. `not-an-update-pr`, or a fail-closed stop). A benign no-op. Green.                                                                       |
+| `publish-failed`  | Pushing the repair or writing the report comment failed for a real reason (auth, API, or a tampering guard: bundle/committer/scope re-verification). Red — fails the publish job.           |
+
+## Analyze: red statuses (the job fails)
 
 Configuration (reported before the target repository is touched):
 
@@ -57,47 +65,51 @@ Analysis and repair:
 | `no-structured-result`  | The fixer did not return a parseable structured result. Usually transient; if it recurs, consider a stronger `llm_model`.                                                                |
 | `in-progress`           | The crash marker: the run died before finishing. The job fails so the interruption is visible.                                                                                           |
 
-Publishing (the token-holding step):
-
-| Status           | Meaning                                                                                                          |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `publish-failed` | Pushing the repair or posting/updating the report comment failed for a real reason (auth, API, tampering guard). |
-
 ## Action outputs
 
 All outputs are machine-shaped (fixed-vocabulary statuses, `"true"`/`"false"`,
 charset-gated URLs, plain numbers) so consumer workflows can branch on them
-without a workflow-command/shell-injection surface. A red run fails the job,
-so consuming steps need `if: always()`.
+without a workflow-command/shell-injection surface. A red analyze run fails
+its job, so consuming steps need `if: always()`.
 
-| Output         | Value                                                                                                   |
-| -------------- | ------------------------------------------------------------------------------------------------------- |
-| `status`       | The run status above; empty when the run crashed before writing a status file.                          |
-| `failed`       | `"true"` when this run fails the job, else `"false"`.                                                   |
-| `repaired`     | `"true"` when a verified repair commit was created this run.                                            |
-| `comment_url`  | URL of the report comment, when one was created or updated.                                             |
-| `total_tokens` | Total LLM tokens across the fixer and digest operations; `"0"` when none ran.                           |
-| `est_cost_usd` | Provider-priced cost estimate (not an invoice); `"0.000000"` when no agent ran, empty when unavailable. |
+`morinokami/depvisor@v2` (the analyze job):
+
+| Output         | Value                                                                                                                                              |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`       | The analyze status above; empty when the run crashed before writing a status file.                                                                 |
+| `failed`       | `"true"` when this run fails the job, else `"false"`.                                                                                              |
+| `repaired`     | `"true"` when a verified repair commit was PREPARED this run. Whether it landed is the publish job's `pushed` — the updater can rebase in between. |
+| `total_tokens` | Total LLM tokens across the fixer and digest operations; `"0"` when none ran.                                                                      |
+| `est_cost_usd` | Provider-priced cost estimate (not an invoice); `"0.000000"` when no agent ran, empty when unavailable.                                            |
+
+`morinokami/depvisor/publish@v2` (the publish job):
+
+| Output        | Value                                                              |
+| ------------- | ------------------------------------------------------------------ |
+| `status`      | `published`, `publish-blocked`, `no-payload`, or `publish-failed`. |
+| `pushed`      | `"true"` when the repair commit LANDED on the PR's head branch.    |
+| `comment_url` | URL of the report comment, when one was created or updated.        |
 
 Consume them env-mediated, never inline in `run:` scripts:
 
 ```yaml
-- name: Notify on repair
-  if: always() && steps.depvisor.outputs.repaired == 'true'
+- name: Notify on landed repair
+  if: always() && steps.publish.outputs.pushed == 'true'
   env:
-    COMMENT_URL: ${{ steps.depvisor.outputs.comment_url }}
+    COMMENT_URL: ${{ steps.publish.outputs.comment_url }}
   run: echo "depvisor repaired this PR — report: $COMMENT_URL"
 ```
 
-Known runner bug: nesting the depvisor action inside another composite action
+Known runner bug: nesting the depvisor actions inside another composite action
 loses step outputs (actions/runner#2009) — consume these from a workflow step
 directly.
 
 ## Where the detail lives
 
-- The **step summary** (Actions UI) shows the status, the dependency-change
-  table, verification results, any test files the repair touched, and LLM
-  token/cost usage with the model name.
+- The **step summary** (Actions UI, analyze job) shows the status, the
+  dependency-change table (direct and a bounded sample of transitive moves),
+  verification results, any test files the repair touched, and LLM token/cost
+  usage with the model name.
 - The **report comment** on the PR carries the reviewer-facing narrative: the
   deterministic verdict line, the package table with source links, what the
   upstream changes mean for this repository, breaking changes addressed, risks

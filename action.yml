@@ -1,10 +1,12 @@
 name: depvisor
 description: >-
-  Aftercare for dependency-update PRs: verifies an updater's PR (Dependabot,
-  Renovate, …) against your build/test suite, repairs source breakage with a
-  bounded AI fixer, proves the repair, and publishes a repair commit plus an
-  evidence-grounded reviewer report — without taking over dependency selection
-  or the PR lifecycle.
+  Aftercare for dependency-update PRs, analyze half: verifies an updater's PR
+  (Dependabot, Renovate, …) against your build/test suite, repairs source
+  breakage with a bounded AI fixer, proves the repair, and hands the result to
+  the token-holding publish half (morinokami/depvisor/publish) as a workflow
+  artifact. This job is deliberately token-free: it executes the target's own
+  install/verify scripts, which can taint the runner, so the GitHub token
+  lives in a separate job on a fresh runner.
 branding:
   icon: package
   color: purple
@@ -20,10 +22,10 @@ inputs:
     description: Environment variable name used for llm_api_key; inferred for known providers.
     required: false
     default: ""
-  github_token:
-    description: Token used only by the publish step (repair push + report comment).
+  artifact_name:
+    description: Name of the workflow artifact carrying the publish payload to the publish job.
     required: false
-    default: ${{ github.token }}
+    default: depvisor-aftercare
   pr_number:
     description: The updater PR's number. Defaults from the pull_request event context.
     required: false
@@ -74,12 +76,10 @@ outputs:
     value: ${{ steps.report.outputs.failed }}
   repaired:
     description: >-
-      "true" when this run committed a verified repair to the PR's head branch.
+      "true" when this run PREPARED a verified repair commit for the PR's head
+      branch. Whether it landed is the publish job's `pushed` output — the
+      updater can rebase between the two.
     value: ${{ steps.report.outputs.repaired }}
-  comment_url:
-    description: >-
-      URL of the published report comment, when one was created or updated.
-    value: ${{ steps.report.outputs.comment_url }}
   total_tokens:
     description: >-
       Total LLM tokens used across the fixer and digest operations in the run.
@@ -218,28 +218,36 @@ runs:
           esac
         fi
         export "$LLM_API_KEY_ENV=$LLM_API_KEY"
+        # Name the key's variable for the runtime, so target subprocesses
+        # (install/verify) get it scrubbed even under a custom llm_api_key_env
+        # (core/target-env.ts).
+        export DEPVISOR_LLM_KEY_ENV="$LLM_API_KEY_ENV"
         unset LLM_API_KEY
         pnpm --silent exec flue run aftercare --target node
 
-    # Deterministic, token-holding: fast-forward-push the repair commit (when
-    # one exists) onto the PR's still-unmoved head, and create or update the
-    # marker-deduplicated report comment. Never creates a PR or branch.
-    - name: Publish repair & report
+    # Tokenless: package the repair commit (when one exists) into a git bundle
+    # next to the payload, so the artifact below can carry it to the publish
+    # job. Commits travel as data because the two jobs never share a runner —
+    # target scripts can taint this runner's files ($GITHUB_PATH, $GITHUB_ENV,
+    # BASH_ENV), so nothing token-holding may execute here.
+    - name: Bundle repair for publish
+      if: always()
       shell: bash
+      working-directory: ${{ env.DEPVISOR_HOME }}
       env:
-        GH_TOKEN: ${{ inputs.github_token }}
         DEPVISOR_TARGET_REPO: ${{ github.workspace }}
-        # Trusted push target from the Actions context. Do not derive it from
-        # the target checkout's .git/config; target lifecycle/verification
-        # commands can rewrite that to a local bare repo whose server-side hooks
-        # would run here with GH_TOKEN.
-        DEPVISOR_REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}
-        # The PR identity is re-supplied at this boundary from the trusted
-        # event context; it must never come from the agent-adjacent payload
-        # file, which is an untrusted read-back here.
-        DEPVISOR_PR_NUMBER: ${{ inputs.pr_number }}
-        DEPVISOR_HEAD_REF: ${{ inputs.head_ref }}
-      run: node "$DEPVISOR_HOME/src/publish.ts"
+      run: node "$DEPVISOR_HOME/src/bundle-payload.ts"
+
+    # Hand the payload (report comment + optional repair bundle) to the publish
+    # job. The artifact is untrusted input over there: the publish step
+    # re-verifies the repair range structurally and re-sanitizes the comment.
+    - name: Upload publish payload
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: ${{ env.DEPVISOR_HOME }}/pr-preview/
+        if-no-files-found: ignore
 
     - name: Report depvisor result
       id: report

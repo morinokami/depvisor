@@ -313,20 +313,35 @@ function sortVersions(versions: ReadonlySet<string>): string[] {
   });
 }
 
-function sameVersions(
-  a: ReadonlySet<string> | undefined,
-  b: ReadonlySet<string> | undefined,
-): boolean {
-  if (!a || !b || a.size !== b.size) return false;
-  for (const v of a) if (!b.has(v)) return false;
-  return true;
+/**
+ * The versions that actually MOVED between two version sets: the set
+ * difference in each direction, sorted. A multi-version lockfile (a direct
+ * `foo@3` plus a nested `foo@1`) must not be summarized as lowest→highest —
+ * when only the nested copy moved 1→2, the change is `1 → 2`, never `1 → 3`.
+ */
+function versionDelta(
+  before: ReadonlySet<string> | undefined,
+  after: ReadonlySet<string> | undefined,
+): { removed: string[]; added: string[]; changed: boolean } {
+  const removed = sortVersions(
+    new Set([...(before ?? [])].filter((v) => !(after ?? new Set()).has(v))),
+  );
+  const added = sortVersions(
+    new Set([...(after ?? [])].filter((v) => !(before ?? new Set()).has(v))),
+  );
+  return { removed, added, changed: removed.length > 0 || added.length > 0 };
 }
 
 export interface DepDiff {
   /** Direct dependency changes (declared in a manifest at head or base). */
   direct: DependencyChange[];
-  /** Changed lockfile packages that no manifest declares (transitive). */
-  transitives: string[];
+  /**
+   * Changed lockfile packages that no manifest declares — with their moved
+   * versions, so a lockfile-only transitive/security update can still be
+   * named, reported, and explained. `kind` is always "transitive" and
+   * `locations` empty. Empty in manifest-fallback mode (unknowable there).
+   */
+  transitives: DependencyChange[];
   /** Whether `from`/`to` are lockfile-resolved versions (else manifest specs). */
   lockfileResolved: boolean;
   /** Dependency-state paths the PR changed, sorted. */
@@ -359,26 +374,32 @@ export function diffDependencies(
   const lockfileResolved = lockBase !== null && lockHead !== null;
 
   const direct = new Map<string, DependencyChange>();
-  const transitives: string[] = [];
+  const transitives: DependencyChange[] = [];
 
   if (lockfileResolved) {
     for (const name of new Set([...lockBase.keys(), ...lockHead.keys()])) {
-      const before = lockBase.get(name);
-      const after = lockHead.get(name);
-      if (sameVersions(before, after)) continue;
+      // Set difference, not lowest→highest: only the versions that moved.
+      const delta = versionDelta(lockBase.get(name), lockHead.get(name));
+      if (!delta.changed) continue;
+      const from = delta.removed.join(", ") || "(absent)";
+      const to = delta.added.join(", ") || "(removed)";
+      // The update type is judged from the highest moved version on each side
+      // — the most conservative reading of a multi-copy move.
+      const updateType =
+        delta.removed.length > 0 && delta.added.length > 0
+          ? classifyUpdate(delta.removed.at(-1) ?? "", delta.added.at(-1) ?? "")
+          : "unknown";
       const decl = declHead.get(name) ?? declBase.get(name);
       if (!decl) {
-        transitives.push(name);
+        transitives.push({ name, from, to, kind: "transitive", updateType, locations: [] });
         continue;
       }
-      const from = before ? (sortVersions(before)[0] ?? "") : "";
-      const to = after ? (sortVersions(after).at(-1) ?? "") : "";
       direct.set(name, {
         name,
-        from: from || "(absent)",
-        to: to || "(removed)",
+        from,
+        to,
         kind: decl.kind,
-        updateType: from && to ? classifyUpdate(from, to) : "unknown",
+        updateType,
         locations: decl.locations,
       });
     }
@@ -406,7 +427,7 @@ export function diffDependencies(
 
   return {
     direct: [...direct.values()].toSorted((a, b) => (a.name < b.name ? -1 : 1)),
-    transitives: transitives.toSorted(),
+    transitives: transitives.toSorted((a, b) => (a.name < b.name ? -1 : 1)),
     lockfileResolved,
     changedFiles,
   };

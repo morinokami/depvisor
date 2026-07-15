@@ -8,7 +8,6 @@ import {
   emptyRunStatus,
   type OpUsage,
   readRunStatus,
-  recordPublishOutcome,
   renderStepSummary,
   runFailsJob,
   runLogLine,
@@ -52,7 +51,6 @@ const run = (patch: Partial<RunStatus> = {}): RunStatus => ({
   changes: [change()],
   verification: [{ name: "test", ok: true, code: 0 }],
   repaired: false,
-  commentUrl: null,
   ...patch,
 });
 
@@ -82,7 +80,6 @@ test("a sparse status file reads back with safe defaults", () => {
     changes: [],
     verification: [],
     repaired: false,
-    commentUrl: null,
   });
   // a non-string status falls back to the (red) "unknown" vocabulary word
   writeFileSync(statusPath(dir), '{"status":5}');
@@ -110,37 +107,24 @@ test("illegible usage entries and empty record-only arrays are dropped on read",
   assert.deepEqual(readRunStatus(file), run());
 });
 
-test("recordPublishOutcome patches the outcome without disturbing the analysis record", () => {
-  const dir = tempDir();
-  const original = run({ usage: [usage()] });
-  const file = emitRunStatus(dir, original);
-  const url = "https://github.com/o/r/pull/12#issuecomment-9";
-  const next = recordPublishOutcome(file, { status: "publish-blocked", commentUrl: url });
-  assert.equal(next?.status, "publish-blocked");
-  assert.deepEqual(readRunStatus(file), {
-    ...original,
-    status: "publish-blocked",
-    commentUrl: url,
-  });
-  assert.equal(recordPublishOutcome(join(dir, "absent.json"), { status: "x" }), null);
-});
-
 test("only the benign statuses stay green", () => {
-  const green = [
-    "report-prepared",
-    "repair-prepared",
-    "not-an-update-pr",
-    "deferred",
-    "publish-blocked",
-  ];
+  const green = ["report-prepared", "repair-prepared", "not-an-update-pr", "deferred"];
   for (const status of green) {
     assert.equal(statusFailsJob(status), false, status);
     const outputs = toActionOutputs(run({ status }));
     assert.equal(outputs.failed, "false", status);
     assert.equal(outputs.status, status);
   }
-  // the crash marker and "analysis ran but the PR is still red" both fail
-  for (const status of ["in-progress", "verification-failed", "repair-failed", "unknown"]) {
+  // The publish job's outcomes are its own outputs, never analyze statuses —
+  // an unexpected appearance here must read as red, not silently green.
+  // Likewise the crash marker and "analysis ran but the PR is still red".
+  for (const status of [
+    "publish-blocked",
+    "in-progress",
+    "verification-failed",
+    "repair-failed",
+    "unknown",
+  ]) {
     assert.equal(statusFailsJob(status), true, status);
     assert.equal(toActionOutputs(run({ status })).failed, "true", status);
   }
@@ -151,19 +135,6 @@ test("an off-vocabulary status is dropped from outputs but still fails", () => {
   const outputs = toActionOutputs(run({ status: "Weird_Status;$(id)" }));
   assert.equal(outputs.status, "");
   assert.equal(outputs.failed, "true");
-});
-
-test("comment_url passes only strictly-shaped https URLs", () => {
-  const url = "https://github.com/o/r/pull/1#issuecomment-1";
-  assert.equal(toActionOutputs(run({ commentUrl: url })).comment_url, url);
-  for (const bad of [
-    "javascript:alert(1)",
-    "https://github.com/x`whoami`",
-    "http://github.com/o/r/pull/1",
-    "https://ghes.example.com:8443/o/r/pull/1", // port colon is outside the charset
-  ]) {
-    assert.equal(toActionOutputs(run({ commentUrl: bad })).comment_url, "", bad);
-  }
 });
 
 test("action outputs sum usage and blank the estimate for unpriced models", () => {
@@ -201,7 +172,6 @@ test("a never-written status file still yields failed=true outputs", () => {
     status: "",
     failed: "true",
     repaired: "false",
-    comment_url: "",
     total_tokens: "0",
     est_cost_usd: "",
   });
@@ -226,7 +196,6 @@ test("runLogLine stays one line and defuses ::workflow-command forgery", () => {
   const line = runLogLine(
     run({
       repaired: true,
-      commentUrl: "https://github.com/o/r/pull/12#issuecomment-9",
       usage: [usage()],
       summary: "::error::pwn\nsecond <!-- hidden --> line",
     }),
@@ -237,7 +206,6 @@ test("runLogLine stays one line and defuses ::workflow-command forgery", () => {
   assert.ok(line.includes("base=main"));
   assert.ok(line.includes("pr=#12"));
   assert.ok(line.includes("repaired=true"));
-  assert.ok(line.includes("comment=https://github.com/o/r/pull/12#issuecomment-9"));
   assert.ok(line.includes("tokens=1260 cost=~$0.0123"));
   assert.ok(line.includes(": :error::pwn second"));
   assert.ok(!line.includes("hidden"));
@@ -248,7 +216,6 @@ test("renderStepSummary renders the field table, changes, verification, and warn
     run({
       testChanges: [{ path: "test/a.test.ts", added: 2, removed: 1 }],
       usage: [usage()],
-      commentUrl: "https://github.com/o/r/pull/12#issuecomment-9",
     }),
   );
   assert.ok(summary.includes("## depvisor"));
@@ -297,6 +264,5 @@ test("emptyRunStatus is a fresh shell with nothing resolved", () => {
     changes: [],
     verification: [],
     repaired: false,
-    commentUrl: null,
   });
 });

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { targetEnv } from "./target-env.ts";
 
 // Same rationale as verify.ts's STEP_TIMEOUT_MS: a hung install (stalled
 // network, interactive prompt) must not eat the whole CI job. Installs get a
@@ -19,6 +20,9 @@ const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
  * Returns `ok` plus the process exit code, and `error` (a spawn-level message)
  * only when the command could not be launched at all — including a timeout,
  * which surfaces as an ETIMEDOUT spawn error.
+ *
+ * The child env is `targetEnv()`: install lifecycle scripts are untrusted
+ * target code and must never see the LLM provider key the agent step holds.
  */
 export function runInstall(
   repo: string,
@@ -29,6 +33,7 @@ export function runInstall(
     shell: true,
     stdio: "inherit",
     timeout: INSTALL_TIMEOUT_MS,
+    env: targetEnv(),
   });
   if (res.error) return { ok: false, code: 1, error: res.error.message };
   const code = res.status ?? 1;

@@ -14,29 +14,47 @@ were removed in v2; configure the equivalent in Dependabot
 (`groups`/`ignore`/`cooldown`/`open-pull-requests-limit`) or Renovate
 (`packageRules`/`minimumReleaseAge`/`prConcurrentLimit`).
 
-## The trigger and checkout
+## The two-job pipeline
 
-depvisor runs once per updater PR head, from a `pull_request` workflow:
+depvisor runs once per updater PR head, from a `pull_request` workflow with
+TWO jobs — the split is the token-separation boundary, not an implementation
+detail:
+
+- **analyze** (`morinokami/depvisor@v2`, token-free): checks out the PR head,
+  runs the target's own install/verify scripts, repairs, and uploads the
+  result as a workflow artifact. Target scripts can taint this runner's files
+  (`$GITHUB_PATH`, `$GITHUB_ENV`, `BASH_ENV`), so nothing token-holding may
+  ever run on it — the job needs only `contents: read` (for the checkout).
+  The LLM key lives here, and even it is scrubbed from the environment of
+  every target subprocess (installs, verification commands).
+- **publish** (`morinokami/depvisor/publish@v2`, token-holding): a fresh
+  runner that never executed target code. It downloads the artifact
+  (untrusted data — the repair range is re-verified structurally and the
+  comment re-sanitized), fast-forward-pushes the repair, and upserts the
+  report comment. Needs `contents: write` and `pull-requests: write`, no
+  checkout at all. Gate it with `needs: analyze` and `if: ${{ !cancelled()
+&& needs.analyze.result != 'cancelled' && needs.analyze.result != 'skipped'
+}}` — it must run even when analyze went red, because a
+  `verification-failed` report comment is exactly what the reviewer needs.
+
+Workflow-shaping details:
 
 - **Events**: `types: [opened, synchronize, reopened]`. Every new head sha
   gets one analysis; the report comment is updated in place, never stacked.
-- **Actor filter**: gate the job on the updater's login
+- **Actor filter**: gate the analyze job on the updater's login
   (`github.event.pull_request.user.login == 'dependabot[bot]'`, add
   `renovate[bot]` or your bot account as needed). depvisor additionally
   refuses PRs whose commits touch non-dependency paths (`not-an-update-pr`),
   but the actor filter keeps it from spending any compute on human PRs.
-- **Checkout**: the PR's **head branch** by name
+- **Checkout** (analyze job only): the PR's **head branch** by name
   (`ref: ${{ github.event.pull_request.head.ref }}`) — the repair commit is
   published onto it — with `fetch-depth: 0` (the merge base with the base
   branch must be computable) and `persist-credentials: false` (depvisor
-  fail-closes on persisted credentials; the agent step must never sit next to
-  a token).
+  fail-closes on persisted credentials; the analyze job must never sit next
+  to a token).
 - **Concurrency**: group per PR number with `cancel-in-progress: true` — a new
   push to the PR obsoletes the running analysis, and depvisor's
   compare-and-swap publish makes the stale run harmless anyway.
-- **Permissions**: `contents: write` (the repair push) and
-  `pull-requests: write` (the report comment), granted to the job. Everything
-  else can stay `permissions: {}` at the workflow level.
 
 ### Dependabot-triggered workflows
 
@@ -46,7 +64,7 @@ Two GitHub platform rules matter when the PR author is Dependabot:
   variables → Dependabot), not the Actions store. Register your LLM API key in
   both places if other workflows also need it.
 - The default `GITHUB_TOKEN` is read-only for Dependabot-triggered runs; the
-  job-level `permissions:` block elevates it.
+  publish job's `permissions:` block elevates it.
 
 Renovate (as a GitHub App or bot user) triggers ordinary `pull_request` runs
 with ordinary secrets.
@@ -105,19 +123,28 @@ Required. depvisor is BYOK and provider-agnostic through
 `provider/model-id` (e.g. `openai/gpt-5.5`, `anthropic/claude-sonnet-5`,
 `openrouter/…`). For the known providers the key's env var is inferred; for
 anything else set `llm_api_key_env` to the variable name the provider SDK
-expects. The key is exposed **only** to the agent step, which never holds a
-GitHub token.
+expects. The key is exposed **only** to the analyze job, which never holds a
+GitHub token — and target subprocesses (installs, verification commands) get
+it scrubbed from their environment, so the packages under test never see it
+either.
 
 The fixer runs only when verification fails and the baseline is green; the
 digest runs once per analyzed PR. Both are bounded (jailed repo tools, capped
 release-notes injection), and the step summary reports tokens and an estimated
 cost per run.
 
-### `github_token`
+### `github_token` (publish action)
 
-Used only by the publish step: the fast-forward push of the repair commit and
-the report comment. Defaults to the workflow's `GITHUB_TOKEN`. Needs
-`contents: write` and `pull-requests: write` on the PR's repository.
+An input of `morinokami/depvisor/publish@v2`, not of the analyze action: the
+fast-forward push of the repair commit and the report comment. Defaults to
+the workflow's `GITHUB_TOKEN`. Needs `contents: write` and
+`pull-requests: write` on the PR's repository.
+
+### `artifact_name` (both actions)
+
+The workflow artifact that carries the payload (report comment + optional
+repair bundle) from analyze to publish. Defaults to `depvisor-aftercare`;
+set it on BOTH actions if you need another name (e.g. matrix runs).
 
 ### `pr_number`, `base_ref`, `head_ref`
 

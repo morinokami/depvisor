@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PmToolchain } from "./pm.ts";
+import { targetEnv } from "./target-env.ts";
 import { tail } from "./text.ts";
 
 export interface VerifyStep {
@@ -70,6 +71,10 @@ export function verifyStepsFor(repoPath: string, pm: PmToolchain): VerifyStep[] 
  * handed to the fixer, then echoed to the run log so failures stay diagnosable
  * there. Each result carries that bounded `tail`; callers strip it with
  * `stripVerifyTails` before it crosses the record/payload boundary.
+ *
+ * The child env is `targetEnv()`: verification commands run the target's own
+ * scripts and test code — untrusted, and they must never see the LLM provider
+ * key the agent step holds.
  */
 export function runVerification(repoPath: string, steps: VerifyStep[]): VerifyResult[] {
   const results: VerifyResult[] = [];
@@ -80,6 +85,7 @@ export function runVerification(repoPath: string, steps: VerifyStep[]): VerifyRe
       encoding: "utf8",
       timeout: STEP_TIMEOUT_MS,
       maxBuffer: MAX_OUTPUT_BYTES,
+      env: targetEnv(),
     });
     if (res.stdout) process.stdout.write(res.stdout);
     if (res.stderr) process.stderr.write(res.stderr);

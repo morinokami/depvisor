@@ -156,6 +156,7 @@ export default defineWorkflow({
       run.verification = outcome.verification;
       if (outcome.usage.length > 0) run.usage = outcome.usage;
       if (outcome.kind === "prepared") {
+        run.changes = outcome.changes;
         run.repaired = outcome.repaired;
         if (outcome.testChanges.length > 0) run.testChanges = outcome.testChanges;
         const payloadPath = emitReportPayload(PR_OUT_DIR, outcome.payload);

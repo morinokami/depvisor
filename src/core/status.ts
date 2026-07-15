@@ -13,11 +13,12 @@ export { RUN_STATUS_FILE };
 
 /**
  * One aftercare run serves exactly one updater PR, so the status is flat: no
- * group array, one terminal status string. The workflow writes it
+ * group array, one terminal status string. The ANALYZE workflow writes it
  * incrementally (starting at the red `in-progress` crash marker that only a
- * graceful finish upgrades), the token-holding publish step patches the
- * publish outcome in, and report-status.ts projects it into annotations, the
- * step summary, and the action outputs.
+ * graceful finish upgrades), and report-status.ts projects it into
+ * annotations, the step summary, and the analyze action's outputs. The
+ * publish job runs on another runner and never touches this file; its
+ * outcomes are its own outputs (publish.ts).
  */
 
 /**
@@ -67,8 +68,6 @@ export interface RunStatus {
    * Record-only, like `testChanges` — NOT in RUN_OUTPUT_SCHEMA.
    */
   usage?: OpUsage[];
-  /** URL of the published report comment, patched in by the publish step. */
-  commentUrl: string | null;
 }
 
 /** A fresh status shell; callers override what they know. */
@@ -83,7 +82,6 @@ export function emptyRunStatus(status: string, summary: string): RunStatus {
     changes: [],
     verification: [],
     repaired: false,
-    commentUrl: null,
   };
 }
 
@@ -110,23 +108,19 @@ export function toRunOutput(run: RunStatus): v.InferOutput<typeof RUN_OUTPUT_SCH
   return v.parse(RUN_OUTPUT_SCHEMA, run);
 }
 
-// Charset gates for the `$GITHUB_OUTPUT` boundary. Outputs feed `${{ }}`
+// Charset gate for the `$GITHUB_OUTPUT` boundary. Outputs feed `${{ }}`
 // interpolation in consumer workflows — a classic command/shell-injection
-// surface — so only fixed-vocabulary statuses (every depvisor status is
-// kebab-case, `readRunStatus`'s "unknown" fallback included) and
-// strictly-shaped comment URLs pass; free text (summaries) is never emitted.
-// The URL charset allows `#` for GitHub's `#issuecomment-<id>` anchors and has
-// no `:` beyond the scheme, so a GHES `server_url` with a custom port fails
-// the gate — the URL is dropped (fail-closed), nothing else.
+// surface — so only fixed-vocabulary statuses pass (every depvisor status is
+// kebab-case, `readRunStatus`'s "unknown" fallback included); free text
+// (summaries) is never emitted. The publish job's outputs (comment URL,
+// pushed) live in publish.ts, which applies the same stance.
 const OUTPUT_STATUS_RE = /^[a-z-]+$/;
-const OUTPUT_URL_RE = /^https:\/\/[A-Za-z0-9./_#-]+$/;
 
 /** The action's `outputs:` values, keyed exactly as action.yml declares them. */
 export type ActionOutputs = {
   status: string;
   failed: string;
   repaired: string;
-  comment_url: string;
   total_tokens: string;
   est_cost_usd: string;
 };
@@ -212,7 +206,6 @@ export function toActionOutputs(run: RunStatus | null): ActionOutputs {
       status: "",
       failed: "true",
       repaired: "false",
-      comment_url: "",
       ...UNAVAILABLE_USAGE_OUTPUTS,
     };
   }
@@ -223,27 +216,22 @@ export function toActionOutputs(run: RunStatus | null): ActionOutputs {
     status: OUTPUT_STATUS_RE.test(run.status) ? run.status : "",
     failed: runFailsJob(run) ? "true" : "false",
     repaired: run.repaired ? "true" : "false",
-    comment_url: run.commentUrl && OUTPUT_URL_RE.test(run.commentUrl) ? run.commentUrl : "",
     ...usageActionOutputs(run.usage),
   };
 }
 
-// Benign outcomes that stay green. `not-an-update-pr` is green because a
-// human taking over an updater branch (or a non-dependency PR reaching the
+// Benign ANALYZE outcomes that stay green. `not-an-update-pr` is green because
+// a human taking over an updater branch (or a non-dependency PR reaching the
 // workflow) is expected, not a failure; `deferred` is green because the fixer
 // declining an unsafe repair is the designed behavior and the report comment
-// explains it; `publish-blocked` is green because the updater rebasing or the
-// PR closing mid-run is normal churn. Everything else — including the
-// `in-progress` marker the workflow writes up front (which only a graceful
-// finish upgrades) and `verification-failed` (analysis ran but the PR remains
-// red — the outcome users must notice) — fails the job.
-const OK_STATUSES = new Set([
-  "report-prepared",
-  "repair-prepared",
-  "not-an-update-pr",
-  "deferred",
-  "publish-blocked",
-]);
+// explains it. Everything else — including the `in-progress` marker the
+// workflow writes up front (which only a graceful finish upgrades) and
+// `verification-failed` (analysis ran but the PR remains red — the outcome
+// users must notice) — fails the job. The PUBLISH job's outcomes
+// (published / publish-blocked / publish-failed / no-payload) are its own
+// outputs, written by publish.ts on its separate runner — they never appear
+// in this status file.
+const OK_STATUSES = new Set(["report-prepared", "repair-prepared", "not-an-update-pr", "deferred"]);
 
 /** Whether the run's status is a job-failing outcome. */
 export function statusFailsJob(status: string): boolean {
@@ -323,7 +311,6 @@ export function readRunStatus(file: string): RunStatus | null {
     changes: Array.isArray(parsed.changes) ? parsed.changes : [],
     verification: Array.isArray(parsed.verification) ? parsed.verification : [],
     repaired: parsed.repaired === true,
-    commentUrl: typeof parsed.commentUrl === "string" ? parsed.commentUrl : null,
   };
   // Preserve the record-only fields across the publish read→rewrite round-trip;
   // this parser rebuilds the object field-by-field, so an omitted field would
@@ -334,23 +321,6 @@ export function readRunStatus(file: string): RunStatus | null {
   const usage = parseUsageList(parsed.usage);
   if (usage.length > 0) run.usage = usage;
   return run;
-}
-
-/**
- * Record the publish outcome from the token-holding publish step: patch the
- * status file without disturbing the analysis record. Returns null when the
- * status file is missing/unreadable — report-status's null path already
- * reports that as a failure.
- */
-export function recordPublishOutcome(
-  file: string,
-  patch: Partial<Pick<RunStatus, "status" | "summary" | "commentUrl">>,
-): RunStatus | null {
-  const current = readRunStatus(file);
-  if (!current) return null;
-  const next: RunStatus = { ...current, ...patch };
-  writeFileSync(file, JSON.stringify(next, null, 2));
-  return next;
 }
 
 function oneLine(value: string): string {
@@ -367,7 +337,6 @@ export function runLogLine(run: RunStatus): string {
   if (run.baseRef) parts.push(`base=${run.baseRef}`);
   if (run.prNumber !== null) parts.push(`pr=#${run.prNumber}`);
   if (run.repaired) parts.push("repaired=true");
-  if (run.commentUrl) parts.push(`comment=${run.commentUrl}`);
   const usage = sumUsage(run.usage);
   if (usage) parts.push(`tokens=${usage.totalTokens} cost=${fmtCost(usage.costUsd)}`);
   const summary = oneLine(run.summary);
@@ -443,7 +412,6 @@ export function renderStepSummary(run: RunStatus): string {
     `| Base | ${run.baseRef ? `\`${mdCell(run.baseRef)}\`` : "none"} |`,
     `| Repaired | ${run.repaired ? "yes" : "no"} |`,
   ];
-  if (run.commentUrl) rows.push(`| Report | ${mdCell(run.commentUrl)} |`);
   if (usage) {
     const cacheRead = usage.cacheRead > 0 ? ` · cache read ${fmtTokens(usage.cacheRead)}` : "";
     const cacheWrite = usage.cacheWrite > 0 ? ` · cache write ${fmtTokens(usage.cacheWrite)}` : "";

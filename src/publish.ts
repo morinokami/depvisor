@@ -1,58 +1,85 @@
-import { existsSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { parsePrNumber, parseRefName } from "./core/config.ts";
 import { publishAftercare, type PublishResult } from "./core/github.ts";
-import { parseReportPayload, REPORT_PAYLOAD_FILE } from "./core/report.ts";
-import { recordPublishOutcome, RUN_STATUS_FILE } from "./core/status.ts";
-import { REPO } from "./shared/target.ts";
+import { parseReportPayload, REPAIR_BUNDLE_FILE, REPORT_PAYLOAD_FILE } from "./core/report.ts";
 
 /**
- * Deterministic, token-holding entrypoint. Publishes the run's payload —
- * fast-forward-push of the repair commit (when one exists) plus the
- * marker-deduplicated report comment — onto the updater's PR.
+ * Deterministic, token-holding entrypoint — the PUBLISH job's whole runtime.
+ * It runs on a fresh runner that never executed target code (the job split is
+ * the token-separation boundary: the analyze runner's files are taintable by
+ * target scripts), consumes the analyze job's artifact (payload + repair
+ * bundle — both untrusted data here), and publishes: a compare-and-swap
+ * fast-forward push of the re-verified repair range, plus the
+ * marker-deduplicated report comment.
  *
- *   node src/publish.ts [payloadFile]
+ *   node src/publish.ts
  *
- * The PR identity comes from trusted env (DEPVISOR_PR_NUMBER /
- * DEPVISOR_HEAD_REF, set by action.yml from the Actions event context), never
- * from the payload, which is an untrusted read-back at this boundary. A
- * missing payload is a no-op (the workflow prepared nothing publishable); a
- * blocked publish stays green (expected churn); everything else exits 1.
+ * Env: DEPVISOR_PAYLOAD_DIR (the downloaded artifact directory; local dev
+ * points it at pr-preview/), DEPVISOR_PR_NUMBER / DEPVISOR_HEAD_REF (trusted
+ * PR identity from the Actions event context — never the payload), and
+ * DEPVISOR_REMOTE_URL (the trusted push target). A missing payload is a
+ * benign no-op; a blocked publish stays green; everything else exits 1.
+ *
+ * Outputs go straight to $GITHUB_OUTPUT (status / pushed / comment_url),
+ * machine-shaped only, so the publish action can expose them.
  */
+
+// Same charset stance as status.ts's action outputs: outputs feed consumer
+// `${{ }}` interpolation. `#` allowed for GitHub's #issuecomment anchors.
+const OUTPUT_URL_RE = /^https:\/\/[A-Za-z0-9./_#-]+$/;
+
+function writeOutputs(outputs: Record<string, string>): void {
+  const file = process.env.GITHUB_OUTPUT;
+  if (!file) return;
+  const lines = Object.entries(outputs).flatMap(([name, value]) => {
+    const delimiter = `DEPVISOR_OUTPUT_${randomUUID()}`;
+    return [`${name}<<${delimiter}`, value, delimiter];
+  });
+  appendFileSync(file, `${lines.join("\n")}\n`);
+}
+
+function finish(status: string, pushed: boolean, commentUrl: string | null, exitCode = 0): never {
+  writeOutputs({
+    status,
+    pushed: pushed ? "true" : "false",
+    comment_url: commentUrl && OUTPUT_URL_RE.test(commentUrl) ? commentUrl : "",
+  });
+  process.exit(exitCode);
+}
 
 function errorMessage(err: unknown): string {
   return Error.isError(err) ? err.message : String(err);
 }
 
 function main(): void {
-  const explicit = process.argv.slice(2).find((a) => !a.startsWith("--"));
-  const file =
-    explicit ?? fileURLToPath(new URL(`../pr-preview/${REPORT_PAYLOAD_FILE}`, import.meta.url));
-  const statusFile = fileURLToPath(new URL(`../pr-preview/${RUN_STATUS_FILE}`, import.meta.url));
+  const payloadDir = resolve(process.env.DEPVISOR_PAYLOAD_DIR || "pr-preview");
+  const payloadFile = join(payloadDir, REPORT_PAYLOAD_FILE);
+  const bundleFile = join(payloadDir, REPAIR_BUNDLE_FILE);
 
-  if (!existsSync(file)) {
-    console.log(`No publish payload at ${file} — nothing to publish.`);
-    return;
+  if (!existsSync(payloadFile)) {
+    console.log(`No publish payload at ${payloadFile} — nothing to publish.`);
+    finish("no-payload", false, null);
   }
 
-  // Trusted PR identity from the workflow env — required at this boundary.
+  // Trusted PR identity and push target from the workflow env — required at
+  // this boundary; the payload is an untrusted read-back that must merely
+  // agree.
   const prNumber = parsePrNumber(process.env.DEPVISOR_PR_NUMBER || "");
   const headRef = parseRefName(process.env.DEPVISOR_HEAD_REF || "");
-  if (prNumber === null || prNumber === "" || headRef === null || headRef === "") {
+  const remoteUrl = (process.env.DEPVISOR_REMOTE_URL || "").trim();
+  if (prNumber === null || prNumber === "" || headRef === null || headRef === "" || !remoteUrl) {
     console.error(
-      "publish: DEPVISOR_PR_NUMBER and DEPVISOR_HEAD_REF must be set from the trusted " +
-        "Actions event context; refusing to publish from payload data alone.",
+      "::error::publish needs DEPVISOR_PR_NUMBER, DEPVISOR_HEAD_REF, and DEPVISOR_REMOTE_URL " +
+        "from the trusted Actions event context; refusing to publish from payload data alone.",
     );
-    recordPublishOutcome(statusFile, {
-      status: "publish-failed",
-      summary: "The publish step had no trusted PR identity (pr_number/head_ref unset or invalid).",
-    });
-    process.exit(1);
+    finish("publish-failed", false, null, 1);
   }
 
   let result: PublishResult;
   try {
-    const payload = parseReportPayload(JSON.parse(readFileSync(file, "utf8")));
+    const payload = parseReportPayload(JSON.parse(readFileSync(payloadFile, "utf8")));
     if (!payload) {
       throw new Error(
         "not a publish payload (headRef/expectedHeadSha/commentBody missing or mistyped)",
@@ -62,51 +89,31 @@ function main(): void {
       `Publishing to PR #${prNumber} (${headRef}): ` +
         (payload.repairSha ? `repair ${payload.repairSha.slice(0, 8)} + report` : "report only"),
     );
-    // CI supplies a trusted push target; only trusted local dev falls back to
-    // the target checkout's .git/config. Empty string = unset (composite
-    // actions forward unset inputs as ""), so `|| undefined` lets github.ts
-    // fall back.
-    result = publishAftercare(REPO, payload, {
-      prNumber,
-      headRef,
-      remoteUrl: process.env.DEPVISOR_REMOTE_URL || undefined,
-    });
+    result = publishAftercare(
+      payload,
+      { prNumber, headRef, remoteUrl },
+      existsSync(bundleFile) ? bundleFile : null,
+    );
   } catch (err) {
     const message = errorMessage(err);
-    console.error(`  failed: ${message}`);
-    recordPublishOutcome(statusFile, {
-      status: "publish-failed",
-      summary: `Publishing crashed: ${message}`,
-    });
-    process.exit(1);
+    console.error(`::error::publishing crashed: ${message}`);
+    finish("publish-failed", false, null, 1);
   }
 
   if (result.ok) {
     console.log(
       `  published${result.pushed ? " (repair pushed)" : ""}: ${result.commentUrl ?? "(no comment URL returned)"}`,
     );
-    // Keep the workflow's analysis status; record only the comment URL so the
-    // step summary and outputs can link the report.
-    recordPublishOutcome(statusFile, { commentUrl: result.commentUrl });
-    return;
+    finish("published", result.pushed, result.commentUrl);
   }
   if (result.action === "blocked") {
     // Expected churn (PR closed/merged, or the updater rebased mid-run): not a
-    // process failure. Record it but stay green — the next trigger re-runs on
-    // the new head.
+    // process failure. Stay green — the next PR event re-runs on the new head.
     console.log(`  blocked: ${result.error}`);
-    recordPublishOutcome(statusFile, {
-      status: "publish-blocked",
-      summary: `Publishing was blocked: ${result.error}`,
-    });
-    return;
+    finish("publish-blocked", false, null);
   }
-  console.error(`  failed: ${result.error}`);
-  recordPublishOutcome(statusFile, {
-    status: "publish-failed",
-    summary: `Publishing failed: ${result.error}`,
-  });
-  process.exit(1);
+  console.error(`::error::publishing failed: ${result.error}`);
+  finish("publish-failed", result.pushed, result.commentUrl, 1);
 }
 
 main();

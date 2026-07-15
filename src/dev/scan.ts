@@ -109,8 +109,11 @@ async function main(): Promise<void> {
     const at = where.length > 0 ? `  @ ${where.join(", ")}` : "";
     console.log(`  ${c.name.padEnd(22)} ${c.from} → ${c.to}  [${c.updateType}, ${c.kind}]${at}`);
   }
-  if (diff.transitives.length > 0) {
-    console.log(`  (+ ${diff.transitives.length} transitive package(s) moved)`);
+  for (const t of diff.transitives.slice(0, 10)) {
+    console.log(`  ${t.name.padEnd(22)} ${t.from} → ${t.to}  [transitive]`);
+  }
+  if (diff.transitives.length > 10) {
+    console.log(`  (+ ${diff.transitives.length - 10} further transitive package(s) moved)`);
   }
   if (diff.direct.length === 0 && diff.transitives.length === 0) {
     console.log("  (no dependency change found)");
