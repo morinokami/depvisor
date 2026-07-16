@@ -37,6 +37,24 @@ creation, or open-PR budget. Those are updater responsibilities.
 8. `report-status.ts` exposes fixed machine outputs and fails the Action for any
    incomplete/unsafe/infrastructure outcome.
 
+## Local run
+
+There is no standalone discovery mode: `flue run repair` consumes the files
+`prepare.ts` produces for a real updater PR.
+
+```bash
+run=/tmp/depvisor-run
+GH_TOKEN=… DEPVISOR_REPOSITORY=owner/repo DEPVISOR_PR_NUMBER=123 \
+  DEPVISOR_TARGET_REPO=/path/to/pr-head-checkout \
+  DEPVISOR_RUN_DIR="$run" DEPVISOR_STATUS_FILE="$run/status.json" node src/prepare.ts
+DEPVISOR_TARGET_REPO=/path/to/pr-head-checkout DEPVISOR_LLM_MODEL=openai/gpt-5.5 \
+  DEPVISOR_CONTEXT_FILE="$run/context.json" DEPVISOR_STATUS_FILE="$run/status.json" \
+  DEPVISOR_PAYLOAD_FILE="$run/repair.json" pnpm exec flue run repair
+```
+
+The checkout must be the PR's current head with a clean tree, and the model
+provider key must sit in the provider env var (`OPENAI_API_KEY` etc.).
+
 ## Statuses
 
 Green: `reviewed`, `repair-published`, `deferred`, `unsupported-pr`, `stale-pr`.

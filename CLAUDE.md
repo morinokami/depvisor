@@ -1,9 +1,10 @@
 # depvisor v2
 
-depvisor is a GitHub composite action that consumes existing Dependabot/Renovate
-PRs. It no longer discovers versions, edits dependency state, groups updates, or
-owns PR lifecycle. One run reviews one updater PR, repairs it when needed, and
-maintains an evidence-grounded comment.
+depvisor is a GitHub composite action that reviews and repairs existing
+Dependabot/Renovate PRs. Version discovery, dependency-state edits, update
+grouping, and PR lifecycle belong to the updater — never to depvisor. One run
+reviews one updater PR, repairs it when needed, and maintains an
+evidence-grounded comment.
 
 ## Commands
 
@@ -16,33 +17,25 @@ actionlint
 zizmor --persona=auditor --min-confidence=high .
 ```
 
-A local `flue run repair` needs the files `prepare.ts` produces for a real
-updater PR (there is no standalone discovery mode in v2):
-
-```bash
-run=/tmp/depvisor-run
-GH_TOKEN=… DEPVISOR_REPOSITORY=owner/repo DEPVISOR_PR_NUMBER=123 \
-  DEPVISOR_TARGET_REPO=/path/to/pr-head-checkout \
-  DEPVISOR_RUN_DIR="$run" DEPVISOR_STATUS_FILE="$run/status.json" node src/prepare.ts
-DEPVISOR_TARGET_REPO=/path/to/pr-head-checkout DEPVISOR_LLM_MODEL=openai/gpt-5.5 \
-  DEPVISOR_CONTEXT_FILE="$run/context.json" DEPVISOR_STATUS_FILE="$run/status.json" \
-  DEPVISOR_PAYLOAD_FILE="$run/repair.json" pnpm exec flue run repair
-```
+A local `flue run repair` needs a context prepared by `prepare.ts` for a real
+updater PR; the `depvisor-update-flow` skill documents the exact sequence.
 
 ## Architecture
 
-`src/prepare.ts` resolves the updater PR and failed workflow jobs with `GH_TOKEN`,
-then writes a token-free context and dependency-state snapshot outside the
-checkout. `src/workflows/repair.ts` prompts the single `depvisor` agent in Flue's
-`local()` sandbox. `src/publish.ts` rechecks the snapshot/current PR head, creates
-at most one commit in a fresh clone, pushes to the existing updater branch, and
-updates one marker comment. `src/report-status.ts` owns Action outputs and the
-step summary.
+One pipeline: `prepare.ts` (GH_TOKEN, read-only PR/CI snapshot) → single
+`depvisor` agent in Flue's `local()` sandbox (no GitHub token) → `publish.ts`
+(GH_TOKEN, fresh-clone transport of the captured repair and report) →
+`report-status.ts` (Action outputs). `src/CLAUDE.md` maps entrypoints and
+credentials; `src/core/CLAUDE.md` owns the deterministic publication boundary.
 
-The agent is intentionally powerful: it has the host checkout, shell, runner
-tooling, and network. Its model-directed shell gets Flue's default local env
-allowlist, not `GH_TOKEN` or the LLM provider key. This is an autonomous coding
-agent threat model, not v1's jailed fixer/digest model.
+Security model, stated once: the agent is intentionally powerful — host
+checkout, shell, runner tooling, and network. Env filtering keeps `GH_TOKEN`
+and the provider key out of its shell, and source hashing plus env scrubbing
+harden the later token steps, but none of this is OS isolation. The agent and
+token steps share a job and UID; a residual background process, runner-writable
+executable/PATH entry, run-temp status write, or malicious target install
+script stays in scope. This is an accepted, user-documented coding-agent risk
+until publication moves to an isolated job on a fresh runner.
 
 ## Invariants
 
@@ -61,9 +54,7 @@ agent threat model, not v1's jailed fixer/digest model.
   push from the agent-visible checkout's `.git`.
 - Snapshot every `src/` file before `local()` and verify that digest in the
   publisher/reporter steps. Keep their explicit shell/loader env scrubbing and
-  `env -i` child process as file/environment hardening. Do not claim this
-  isolates a later token process: a same-UID residual process, runner-writable
-  executable/PATH entry, or temporary status-file writer remains in scope.
+  `env -i` child process as file/environment hardening.
 - PR text, diffs, CI logs, dependency code, web content, and agent output are
   untrusted. Bound logs/context, validate structured handoffs, and never place
   free text in Action outputs or shell interpolation.
@@ -90,11 +81,6 @@ Whenever behavior changes, update the owning reference in the same change.
 - A repair push triggers CI and then depvisor again. The second green pass should
   update the same marker comment and make no new commit unless more repair is
   genuinely needed.
-- `local()` has no host isolation. Do not describe absence of env vars as an OS
-  security boundary. The agent and token step share a job/UID, and malicious
-  target install scripts have the same authority. The product explicitly accepts
-  this residual coding-agent-level risk until publication moves to an isolated
-  job on a fresh runner.
 - Flue is exact-pinned beta. Use the `flue` skill and bundled `flue docs` rather
   than guessing APIs.
 - Composite nested `uses:` cannot evaluate `github.action_path`, and
