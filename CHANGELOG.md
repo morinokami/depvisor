@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/morinokami/depvisor/compare/v1.5.0...v2.0.0) (2026-07-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* reinvent depvisor as an updater PR repair agent ([#85](https://github.com/morinokami/depvisor/issues/85))
+
+### Features
+
+* reinvent depvisor as an updater PR repair agent ([#85](https://github.com/morinokami/depvisor/issues/85)) ([a42eb96](https://github.com/morinokami/depvisor/commit/a42eb960dc142f319ccc58324c3e45ee32f95d8a))
+
 ## [1.5.0](https://github.com/morinokami/depvisor/compare/v1.4.0...v1.5.0) (2026-07-13)
 
 
