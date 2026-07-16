@@ -4,19 +4,33 @@ You are configuring depvisor in the repository currently open in your coding
 environment. depvisor consumes existing Dependabot or Renovate PRs after normal
 CI finishes. It does not select or update dependencies itself.
 
-## 1. Identify the CI workflow name
+## 1. Confirm the model provider
+
+Ask the user which LLM provider and model depvisor should use before writing
+any file; propose `openai/gpt-5.5` as a default only when they have no
+preference. The secret in step 4 must hold that provider's key, so never
+proceed on a guessed provider. The prefixes `openai/*`, `anthropic/*` (for
+example `anthropic/claude-sonnet-5`), and `openrouter/*` infer the credential
+variable automatically; any other provider also needs the `llm_api_key_env`
+input.
+
+## 2. Identify the CI workflow name
 
 Inspect `.github/workflows/` and find the workflow that represents the complete
 required build/test/lint suite for pull requests. Its top-level `name:` is used
 by `workflow_run`. In the template below it is `CI`; replace that value if the
-repository uses another name.
+repository uses another name. A workflow without `name:` is addressed by its
+file path, which GitHub treats as the name — prefer adding a `name:`. If the
+repository has no PR verification workflow at all, stop and tell the user that
+depvisor needs one first: it consumes that workflow's conclusion and logs.
 
 The CI workflow must run for Dependabot/Renovate PRs. Do not add model or GitHub
 credentials to that untrusted PR workflow.
 
-## 2. Add the depvisor workflow
+## 3. Add the depvisor workflow
 
-Create `.github/workflows/depvisor.yml`:
+Create `.github/workflows/depvisor.yml`, substituting the model chosen in
+step 1:
 
 ```yaml
 name: depvisor
@@ -54,20 +68,18 @@ jobs:
           llm_model: openai/gpt-5.5
 ```
 
-Keep the action's minimal configuration at those two inputs unless the user asks
-for another provider. `persist-credentials: false` and the exact head SHA are
-required: depvisor refuses a credentialed or stale checkout.
+Keep the action's minimal configuration at those two inputs unless the chosen
+provider requires `llm_api_key_env`. `persist-credentials: false` and the exact
+head SHA are required: depvisor refuses a credentialed or stale checkout.
 
-For Anthropic use a model such as `anthropic/claude-sonnet-5`; for OpenRouter use
-`openrouter/<model>`. Those prefixes infer the credential variable. An unusual
-provider also needs `llm_api_key_env`.
-
-## 3. Ask the user to add the secret
+## 4. Ask the user to add the secret
 
 Tell the user to add the repository Actions secret `LLM_API_KEY` containing the
-provider key. Never request or handle the secret value yourself.
+key for the provider chosen in step 1, and name that provider explicitly. They
+can run `gh secret set LLM_API_KEY` or use Settings → Secrets and variables →
+Actions. Never request or handle the secret value yourself.
 
-## 4. Explain the authority
+## 5. Explain the authority
 
 Tell the user that v2 intentionally runs a coding agent in Flue's local sandbox.
 It can read and edit the checkout, execute runner commands, install target tools,
@@ -91,7 +103,7 @@ the existing updater branch and update one reviewer-report comment.
 Recommend normal branch protection and required CI. depvisor evidence is not a
 security attestation and does not replace human review.
 
-## 5. Validate the workflow
+## 6. Validate the workflow
 
 Check the YAML syntax and confirm:
 
@@ -101,8 +113,12 @@ Check the YAML syntax and confirm:
 - permissions are scoped to `actions: read`, `contents: write`, and
   `pull-requests: write` on the job;
 - the workflow itself is committed to the default branch, because GitHub only
-  delivers `workflow_run` to workflows present there; and
-- Dependabot or Renovate is configured separately and already creates PRs.
+  delivers `workflow_run` to workflows present there — when you deliver this
+  change as a pull request, tell the user depvisor activates only once that PR
+  merges; and
+- Dependabot or Renovate is configured separately and already creates PRs. If
+  neither exists, offer to add a minimal `.github/dependabot.yml` as well;
+  without an updater, depvisor has nothing to review.
 
 Then summarize the files changed and the one manual secret-setting step.
 
