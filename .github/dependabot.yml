@@ -16,3 +16,7 @@ updates:
       default-days: 7
     ignore:
       - dependency-name: "@flue/*"
+      # Types follow the pinned Node runtime major; bump together with
+      # .node-version, engines, and action.yml's node_version default.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
