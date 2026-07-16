@@ -57,6 +57,15 @@ The default local environment exposes ordinary runner variables such as `PATH`,
 provider key. Network access is unrestricted so the agent can install the target
 and consult ecosystem-specific upstream sources.
 
+This environment filtering prevents ordinary inheritance; it is not an OS
+security boundary. The composite action runs agent and publisher steps in the
+same job under the same UID. Source hashing and `env -i` do not stop a lingering
+background process, modification of runner-writable toolchain/PATH entries,
+temporary status-file tampering, or malicious target install scripts from
+observing or interfering with a later token-holding step. Use an ephemeral
+GitHub-hosted runner. Shared or persistent self-hosted runners are outside the
+supported threat model.
+
 Repositories needing private registries or additional credentials must arrange
 those outside depvisor. Adding such credentials to the agent environment expands
 its authority and is not a depvisor input.
@@ -76,3 +85,7 @@ updater's ownership without reintroducing v1 package-manager logic.
 
 The publication handoff also rejects repairs exceeding 200 files or 5 MiB of
 binary patch/new-file content.
+
+PR patch text supplied to the agent is independently capped at 16,000 characters
+per file and 180,000 characters per run. Failed workflow jobs are paginated up
+to 3,000 jobs, while downloaded log tails share a 180,000-character run budget.

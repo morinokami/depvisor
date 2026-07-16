@@ -6,10 +6,11 @@ test("supports Dependabot and common Renovate bot identities", () => {
   assert.equal(isSupportedUpdater("dependabot[bot]"), true);
   assert.equal(isSupportedUpdater("renovate[bot]"), true);
   assert.equal(isSupportedUpdater("renovate-bot"), true);
-  assert.equal(isSupportedUpdater("acme-renovate[bot]"), true);
 });
 
 test("does not process ordinary contributor PRs", () => {
   assert.equal(isSupportedUpdater("octocat"), false);
+  assert.equal(isSupportedUpdater("renovate-maintainer"), false);
+  assert.equal(isSupportedUpdater("acme-renovate[bot]"), false);
   assert.equal(isSupportedUpdater("renovation-helper"), false);
 });

@@ -8,22 +8,16 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { join } from "node:path";
+import { materializeNewRepairFiles } from "./core/apply-repair.ts";
 import { changedDependencyState, readDependencySnapshot } from "./core/dependency-state.ts";
-import { captureRepairChanges } from "./core/git.ts";
+import { captureRepairChanges, sameRepairChanges } from "./core/git.ts";
 import { readRepairPayload } from "./core/repair-payload.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
+import { cleanReportText } from "./core/text.ts";
 import { REPO } from "./shared/target.ts";
 
 const REPORT_MARKER = "<!-- depvisor-v2-report -->";
@@ -86,18 +80,6 @@ function verifySnapshotFiles(contextFile: string): ReturnType<typeof readRunCont
   return context;
 }
 
-function safePath(root: string, path: string): string {
-  if (!path || path.startsWith("/") || path.includes("\0") || path.includes("\\")) {
-    throw new Error(`Unsafe repair path: ${path}`);
-  }
-  const absolute = resolve(root, path);
-  const rel = relative(root, absolute);
-  if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) {
-    throw new Error(`Unsafe repair path: ${path}`);
-  }
-  return absolute;
-}
-
 function secureGitEnv(home: string, token = ""): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     HOME: home,
@@ -138,16 +120,7 @@ function applyRepair(
 ): void {
   if (changes.patch)
     git(clone, env, ["apply", "--binary", "--whitespace=nowarn", "-"], changes.patch);
-  for (const file of changes.newFiles) {
-    const absolute = safePath(clone, file.path);
-    mkdirSync(dirname(absolute), { recursive: true });
-    const content = Buffer.from(file.contentBase64, "base64");
-    if (file.symlink) symlinkSync(content.toString("utf8"), absolute);
-    else {
-      writeFileSync(absolute, content);
-      chmodSync(absolute, file.executable ? 0o755 : 0o644);
-    }
-  }
+  materializeNewRepairFiles(clone, changes.newFiles);
 }
 
 function publishCommit(
@@ -206,12 +179,6 @@ function publishCommit(
   }
 }
 
-function cleanText(value: string, max = 4_000): string {
-  // oxlint-disable-next-line no-control-regex -- remove control bytes from PR markdown
-  const stripped = value.replace(/[\u0000-\u001f\u007f]/g, "");
-  return stripped.replaceAll("<!--", "&lt;!--").replaceAll("-->", "--&gt;").slice(0, max).trim();
-}
-
 function evidenceLink(value: string | undefined): string {
   if (!value) return "";
   try {
@@ -224,7 +191,9 @@ function evidenceLink(value: string | undefined): string {
 }
 
 function bullets(items: readonly string[], empty: string): string {
-  return items.length > 0 ? items.map((item) => `- ${cleanText(item)}`).join("\n") : `- ${empty}`;
+  return items.length > 0
+    ? items.map((item) => `- ${cleanReportText(item)}`).join("\n")
+    : `- ${empty}`;
 }
 
 function reportBody(
@@ -238,8 +207,8 @@ function reportBody(
       ? agent.upstream_changes
           .map(
             (item) =>
-              `- **${cleanText(item.dependency, 200)}:** ${cleanText(item.change)} ` +
-              `_${cleanText(item.relevance)}_${evidenceLink(item.evidence_url)}`,
+              `- **${cleanReportText(item.dependency, 200)}:** ${cleanReportText(item.change)} ` +
+              `_${cleanReportText(item.relevance)}_${evidenceLink(item.evidence_url)}`,
           )
           .join("\n")
       : "- No repository-relevant upstream change stood out from the available evidence.";
@@ -248,8 +217,8 @@ function reportBody(
       ? agent.verification
           .map(
             (item) =>
-              `- \`${cleanText(item.command, 500).replaceAll("`", "\\`")}\` — **${item.outcome}**: ` +
-              cleanText(item.evidence),
+              `- \`${cleanReportText(item.command, 500).replaceAll("`", "\\`")}\` — **${item.outcome}**: ` +
+              cleanReportText(item.evidence),
           )
           .join("\n")
       : "- No local verification result was available.";
@@ -262,7 +231,7 @@ function reportBody(
   const body = `${REPORT_MARKER}
 ## ${heading}
 
-${cleanText(agent.summary)}
+${cleanReportText(agent.summary)}
 
 ### Relevant upstream changes
 
@@ -280,9 +249,9 @@ ${verification}
 ### Residual risks
 
 ${bullets(agent.risks, "No additional repository-specific risk was identified.")}
-${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${cleanText(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
+${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${cleanReportText(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
 
-Initial CI: **${cleanText(context.trigger.conclusion, 100)}**${context.trigger.url ? ` — ${cleanText(context.trigger.workflowName || "workflow run", 200)}${evidenceLink(context.trigger.url)}` : ""}.
+Initial CI: **${cleanReportText(context.trigger.conclusion, 100)}**${context.trigger.url ? ` — ${cleanReportText(context.trigger.workflowName || "workflow run", 200)}${evidenceLink(context.trigger.url)}` : ""}.
 
 _Generated from the updater diff, repository inspection, upstream sources, and the command evidence shown above. Review before merging._`;
   return body.slice(0, MAX_COMMENT_CHARS);
@@ -354,7 +323,6 @@ async function main(): Promise<void> {
           "The updater PR changed or closed while depvisor was working; nothing was published.",
       };
       writeRunRecord(statusFile, record);
-      process.exitCode = 1;
       return;
     }
 
@@ -364,7 +332,7 @@ async function main(): Promise<void> {
       throw new Error(`Dependency state changed: ${dependencyChanges.join(", ")}`);
     }
     const liveChanges = captureRepairChanges(REPO);
-    if (JSON.stringify(liveChanges) !== JSON.stringify(payload.changes)) {
+    if (!sameRepairChanges(liveChanges, payload.changes)) {
       throw new Error("The working-tree repair changed after the agent result was captured");
     }
 

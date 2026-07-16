@@ -20,4 +20,8 @@ subagents or custom repository tools remain.
 The provider key is needed by Flue itself but is not passed through `local()`'s
 default shell env allowlist. The GitHub token is absent from the entire agent
 step. This reduces accidental credential exposure but is not host isolation:
-model-directed code runs as the runner user.
+model-directed code runs as the runner user. A background process can survive
+into the later step, and runner-writable executables, PATH entries, and run-temp
+status files are not attested. Malicious target install scripts share that
+authority; keep this residual risk explicit until publisher/reporter run on a
+fresh isolated runner.

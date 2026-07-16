@@ -147,11 +147,5 @@ export function readRunContext(path: string): RunContext {
 
 export function isSupportedUpdater(author: string): boolean {
   const login = author.toLowerCase();
-  return (
-    login === "dependabot[bot]" ||
-    login === "renovate[bot]" ||
-    login === "renovate-bot" ||
-    login.startsWith("renovate-") ||
-    login.endsWith("-renovate[bot]")
-  );
+  return login === "dependabot[bot]" || login === "renovate[bot]" || login === "renovate-bot";
 }

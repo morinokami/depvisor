@@ -1,5 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { readRunRecord, statusFails } from "./core/status.ts";
+import { escapeStepSummaryText } from "./core/text.ts";
 
 function writeOutput(name: string, value: string): void {
   const file = process.env.GITHUB_OUTPUT;
@@ -37,13 +38,13 @@ writeOutput(
 );
 
 const summary = record
-  ? `## depvisor\n\n**${record.status}** — ${record.summary}\n\n` +
-    `PR: ${record.prUrl || "unavailable"}\n\n` +
+  ? `## depvisor\n\n**${record.status}** — ${escapeStepSummaryText(record.summary)}\n\n` +
+    `PR: ${safeUrl(record.prUrl) || "unavailable"}\n\n` +
     (record.changedFiles.length > 0
-      ? `Repair files:\n${record.changedFiles.map((path) => `- \`${path.replaceAll("`", "\\`")}\``).join("\n")}\n\n`
+      ? `Repair files:\n${record.changedFiles.map((path) => `- ${escapeStepSummaryText(path, 500)}`).join("\n")}\n\n`
       : "") +
     (record.usage
-      ? `Model: \`${record.usage.model}\` · tokens: ${record.usage.totalTokens} · estimated cost: $${record.usage.costUsd.toFixed(6)}\n`
+      ? `Model: ${escapeStepSummaryText(record.usage.model, 500)} · tokens: ${record.usage.totalTokens} · estimated cost: $${record.usage.costUsd.toFixed(6)}\n`
       : "")
   : "## depvisor\n\n**unknown** — no readable run status was produced.\n";
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);

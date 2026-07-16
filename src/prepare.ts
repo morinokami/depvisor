@@ -7,7 +7,9 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { MAX_PATCH_CHARS, MAX_TOTAL_PATCH_CHARS, takeText } from "./core/context-budget.ts";
 import { snapshotDependencyState } from "./core/dependency-state.ts";
+import { collectPages } from "./core/pagination.ts";
 import {
   isSupportedUpdater,
   type FailedJob,
@@ -17,9 +19,9 @@ import {
 import { initialRecord, writeRunRecord } from "./core/status.ts";
 import { REPO } from "./shared/target.ts";
 
-const MAX_PATCH_CHARS = 16_000;
 const MAX_JOB_LOG_CHARS = 60_000;
 const MAX_TOTAL_LOG_CHARS = 180_000;
+const MAX_JOB_PAGES = 30;
 
 type Json = Record<string, unknown>;
 
@@ -106,6 +108,7 @@ async function resolvePullRequestNumber(repository: string, runId: number | null
 
 async function pullRequestFiles(repository: string, number: number): Promise<PullRequestFile[]> {
   const files: PullRequestFile[] = [];
+  const patchBudget = { remaining: MAX_TOTAL_PATCH_CHARS };
   for (let page = 1; page <= 30; page += 1) {
     const raw = await github(
       `/repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
@@ -127,7 +130,9 @@ async function pullRequestFiles(repository: string, number: number): Promise<Pul
         entry.previousFilename = previous;
       }
       const patch = str(file.patch);
-      if (patch) entry.patch = patch.slice(0, MAX_PATCH_CHARS);
+      if (patch && patchBudget.remaining > 0) {
+        entry.patch = takeText(patch, MAX_PATCH_CHARS, patchBudget);
+      }
       files.push(entry);
     }
     if (raw.length < 100) return files;
@@ -158,11 +163,17 @@ async function jobLog(repository: string, jobId: number): Promise<string> {
 
 async function failedJobs(repository: string, runId: number | null): Promise<FailedJob[]> {
   if (runId === null) return [];
-  const raw = object(
-    await github(`/repos/${repository}/actions/runs/${runId}/jobs?per_page=100`),
-    "workflow jobs",
+  const jobs = await collectPages(
+    async (page) => {
+      const raw = object(
+        await github(`/repos/${repository}/actions/runs/${runId}/jobs?per_page=100&page=${page}`),
+        "workflow jobs",
+      );
+      if (!Array.isArray(raw.jobs)) throw new Error("GitHub returned an invalid workflow job list");
+      return raw.jobs;
+    },
+    { pageSize: 100, maxPages: MAX_JOB_PAGES, label: "Workflow job list" },
   );
-  const jobs = Array.isArray(raw.jobs) ? raw.jobs : [];
   const failed = jobs.filter((value) => {
     if (!isObject(value)) return false;
     const conclusion = str(value.conclusion);

@@ -64,7 +64,13 @@ export interface RunRecord {
   usage: UsageRecord | null;
 }
 
-const GREEN = new Set<RunStatus>(["reviewed", "repair-published", "deferred", "unsupported-pr"]);
+const GREEN = new Set<RunStatus>([
+  "reviewed",
+  "repair-published",
+  "deferred",
+  "unsupported-pr",
+  "stale-pr",
+]);
 
 export function statusFails(status: RunStatus): boolean {
   return !GREEN.has(status);

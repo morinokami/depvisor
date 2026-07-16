@@ -72,6 +72,23 @@ export interface RepairChanges {
   paths: string[];
 }
 
+/** Compare the repair handoff by value, never by JavaScript object insertion order. */
+export function sameRepairChanges(left: RepairChanges, right: RepairChanges): boolean {
+  if (left.patch !== right.patch || left.paths.length !== right.paths.length) return false;
+  if (left.paths.some((path, index) => path !== right.paths[index])) return false;
+  if (left.newFiles.length !== right.newFiles.length) return false;
+  return left.newFiles.every((file, index) => {
+    const other = right.newFiles[index];
+    return (
+      other !== undefined &&
+      file.path === other.path &&
+      file.contentBase64 === other.contentBase64 &&
+      file.executable === other.executable &&
+      file.symlink === other.symlink
+    );
+  });
+}
+
 function safeRelativePath(repo: string, path: string): string {
   const absolute = resolve(repo, path);
   const rel = relative(repo, absolute);

@@ -21,7 +21,8 @@ Order is load-bearing:
 6. snapshot depvisor's publisher source;
 7. local-sandbox agent with model key and no GitHub token;
 8. scrub loader/shell env, verify source integrity, then run token-holding
-   fresh-clone publication when a payload exists;
+   fresh-clone publication when a payload exists; these are file/environment
+   checks, not protection from a same-UID residual process or writable toolchain;
 9. always verify source again and report status/outputs.
 
 Keep the two runner workarounds documented in action.yml: nested `uses:` cannot

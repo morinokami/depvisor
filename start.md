@@ -75,6 +75,14 @@ and access the network. It does not receive the GitHub token or provider key in
 its model-directed shell, but it processes untrusted PR content, CI logs,
 dependency code, and web pages.
 
+Be explicit that environment-variable omission is not credential isolation. The
+agent and later token-holding publisher run in the same job as the same runner
+user. Source hashing and a scrubbed child environment do not stop a background
+process, runner-tool/PATH replacement, temporary status-file tampering, or a
+malicious dependency install script from interfering with the later step. Use a
+fresh GitHub-hosted runner; do not recommend a shared or persistent self-hosted
+runner for this workflow.
+
 depvisor freezes the updater's original changed paths and recognized dependency
 state. If the agent changes any of it, or changes Git history, no repair or report
 is published. Otherwise a later token-holding step may push one repair commit to
@@ -100,10 +108,10 @@ Then summarize the files changed and the one manual secret-setting step.
 
 ## Result vocabulary
 
-Green: `reviewed`, `repair-published`, `deferred`, `unsupported-pr`.
+Green: `reviewed`, `repair-published`, `deferred`, `unsupported-pr`, `stale-pr`.
 
 Failing: `setup-failed`, `wrong-head`, `agent-failed`,
-`dependency-state-changed`, `stale-pr`, `publish-failed`, `in-progress`.
+`dependency-state-changed`, `publish-failed`, `in-progress`.
 
 See `docs/configuration.md` and `docs/results.md` in the depvisor repository for
 the complete reference.

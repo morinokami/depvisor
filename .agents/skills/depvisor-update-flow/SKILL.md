@@ -14,8 +14,9 @@ creation, or open-PR budget. Those are updater responsibilities.
 1. A consumer `workflow_run` starts after its named CI completes and checks out
    `workflow_run.head_sha` with persisted credentials disabled.
 2. `prepare.ts` uses a token read-only to resolve the PR, require an open
-   same-repository Dependabot/Renovate head, validate checkout HEAD, list the
-   original changed paths, and collect bounded failed-job logs.
+   same-repository recognized Dependabot/Renovate head, validate checkout HEAD,
+   list the original changed paths, and collect globally bounded patches plus
+   paginated jobs and bounded failed-job logs.
 3. It freezes every updater path plus recognized dependency manifests/lockfiles.
    The context and snapshot live under `runner.temp`, outside the target repo.
 4. `flue run repair` prompts the root agent once. The agent uses `local()` with
@@ -38,10 +39,10 @@ creation, or open-PR budget. Those are updater responsibilities.
 
 ## Statuses
 
-Green: `reviewed`, `repair-published`, `deferred`, `unsupported-pr`.
+Green: `reviewed`, `repair-published`, `deferred`, `unsupported-pr`, `stale-pr`.
 
 Failing: `setup-failed`, `wrong-head`, `agent-failed`,
-`dependency-state-changed`, `stale-pr`, `publish-failed`, `in-progress`.
+`dependency-state-changed`, `publish-failed`, `in-progress`.
 
 Update status classification in `core/status.ts`, `action.yml`,
 `docs/results.md`, and `start.md` together.
@@ -51,5 +52,8 @@ Update status classification in `core/status.ts`, `action.yml`,
 The agent is intentionally auto-mode powerful and local() is not an isolation
 boundary. GitHub credentials remain out of its step, and the updater-ownership
 check remains mechanical. External CI is the merge authority; agent verification
-is recorded evidence. Never reintroduce a claim that the model's verdict itself
-proves CI green.
+is recorded evidence. Source hashing and env scrubbing do not stop same-UID
+residual processes, runner-writable toolchain/PATH replacement, run-temp status
+tampering, or malicious install scripts from reaching a later step. Never
+reintroduce a claim that the model's verdict itself proves CI green or that the
+current same-job token boundary is OS isolation.

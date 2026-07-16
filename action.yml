@@ -117,8 +117,9 @@ runs:
       run: node "$DEPVISOR_HOME/src/prepare.ts"
 
     # local() is intentionally host-powerful. Snapshot every depvisor source
-    # file before the model runs so a later token-holding step never executes a
-    # publisher the model rewrote through an absolute host path.
+    # file before the model runs to detect direct publisher-source rewrites.
+    # This is file-level hardening, not isolation from same-UID processes or
+    # runner-writable executables; the residual risk is documented for users.
     - name: Snapshot depvisor publisher
       id: integrity
       shell: bash

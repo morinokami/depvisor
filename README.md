@@ -86,7 +86,18 @@ PR comment.
 Because the local agent shares the runner host, depvisor also snapshots its own
 publisher source before model work. The token step clears inherited loader/shell
 configuration and refuses to execute if that source changed. This reduces
-cross-step tampering but does not turn `local()` into an OS isolation boundary.
+file- and inherited-environment-based cross-step tampering, but it does not turn
+`local()` into an OS isolation boundary.
+
+In particular, the current composite action runs the agent and token-holding
+publisher in the same job and as the same runner user. It does not isolate a
+background process left by model-directed code, attest runner-writable Node/git
+executables or `PATH` directories, or authenticate the temporary status file
+against another same-UID process. A malicious dependency install script has the
+same opportunities. Such a process may observe or interfere with the later
+token step even though `GH_TOKEN` is absent from the agent process environment.
+Use a fresh GitHub-hosted runner, do not run depvisor on a shared or persistent
+self-hosted runner, and treat this as an explicitly accepted residual risk.
 
 Publication is bounded to at most 200 changed files and 5 MiB of captured
 patch/new-file content. A larger migration is left for a human-sized review.
@@ -98,12 +109,15 @@ merge; depvisor's report is review evidence, not a security attestation.
 
 ## Behavior
 
-- Only open, same-repository PRs authored by Dependabot or Renovate are processed.
-- A failed CI run gives the agent failed-job steps and bounded log tails.
+- Only open, same-repository PRs authored by the recognized Dependabot or
+  Renovate bot accounts are processed.
+- A failed CI run gives the agent bounded patches plus failed-job steps and
+  bounded log tails, including paginated job matrices.
 - A green CI run still gets a repository-specific upstream review, normally
   without a code change.
 - A repair is one commit pushed with a force-with-lease against the snapshotted
-  PR head. A concurrent updater/human change causes a safe failure.
+  PR head. A concurrent updater/human change supersedes the run without making
+  the depvisor job fail.
 - The same PR comment is updated on later runs. A repair push naturally reruns
   CI; the following green run refreshes the evidence report without another
   commit when no further work is needed.

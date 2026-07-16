@@ -24,6 +24,7 @@ step summary, maintains one PR comment, and exposes machine-shaped outputs.
 | `repair-published` | One repair commit was pushed to the existing updater branch and the report was posted. CI is expected to run again for that new head. |
 | `deferred`         | The agent identified a concrete blocker and reported it without publishing its working-tree edits.                                    |
 | `unsupported-pr`   | The triggering run did not belong to an open, same-repository Dependabot/Renovate PR, so it was ignored.                              |
+| `stale-pr`         | The PR closed or its head moved while depvisor was working. The superseded run published nothing and completed without an error.      |
 
 ## Failing statuses
 
@@ -33,10 +34,11 @@ step summary, maintains one PR comment, and exposes machine-shaped outputs.
 | `wrong-head`               | The checkout was not the current updater PR head. Usually the workflow omitted `ref: ${{ github.event.workflow_run.head_sha }}`. |
 | `agent-failed`             | The checkout was dirty, the model operation failed, or no valid structured result was produced.                                  |
 | `dependency-state-changed` | The agent changed updater-owned dependency state or Git history. Nothing was published.                                          |
-| `stale-pr`                 | The PR closed or its head moved while depvisor was working. Nothing was overwritten.                                             |
 | `publish-failed`           | The clean-clone commit/push or PR comment update failed. The summary carries the concrete error.                                 |
 | `in-progress`              | The process stopped before reaching a final status. It fails closed.                                                             |
 
 `deferred` is green because it is a complete, reviewer-visible outcome rather
-than an infrastructure failure. Your repository's required CI remains the merge
-gate; a green depvisor job does not make a failing dependency PR mergeable.
+than an infrastructure failure. `stale-pr` is green because a newer updater or
+human head superseded the run and force-with-lease prevented an overwrite. Your
+repository's required CI remains the merge gate; a green depvisor job does not
+make a failing dependency PR mergeable.

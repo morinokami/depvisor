@@ -13,6 +13,10 @@ Pipeline:
 - `git.ts` captures tracked binary diffs plus untracked files without accepting
   an agent-authored commit. Publication is capped at 200 files / 5 MiB. The
   module also supplies repo-local credential inspection.
+- `context-budget.ts` and `pagination.ts` bound PR patches and workflow-job
+  context before it reaches the model.
+- `apply-repair.ts` materializes new files without following symlink parents.
+- `text.ts` owns PR-comment and step-summary rendering boundaries.
 - `agent-result.ts` is evidence/report structure, never an attestation.
 - `repair-payload.ts` validates the token-free handoff to publication.
 - `run-context.ts` validates the prepared PR/CI snapshot and updater identity.
@@ -24,8 +28,9 @@ Keep these properties:
   added/removed paths. A new recognized manifest/lockfile must also be detected.
 - Every path crossing into the publisher is repository-relative and rejects
   traversal, absolute paths, backslashes, and NUL.
-- The publisher must compare the live captured repair byte-for-byte with its
-  payload before applying it to a clean clone.
+- The publisher must compare every live captured repair field byte-for-byte with
+  its parsed payload, without depending on JavaScript object key order, before
+  applying it to a clean clone.
 - Free text may go to the PR comment/step summary after control/marker handling,
   never to Action outputs, command arguments, refs, repository names, or paths.
 - Unknown/incomplete state fails closed. `unsupported-pr` is the sole skip path.

@@ -6,7 +6,13 @@ import { join } from "node:path";
 import { initialRecord, readRunRecord, statusFails } from "../src/core/status.ts";
 
 test("classifies published, reviewed, deferred and irrelevant PRs as green", () => {
-  for (const status of ["reviewed", "repair-published", "deferred", "unsupported-pr"] as const) {
+  for (const status of [
+    "reviewed",
+    "repair-published",
+    "deferred",
+    "unsupported-pr",
+    "stale-pr",
+  ] as const) {
     assert.equal(statusFails(status), false, status);
   }
 });
