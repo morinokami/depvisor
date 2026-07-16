@@ -52,12 +52,6 @@ release-please remains manifest-mode. Merging its Release PR creates immutable
 `vX.Y.Z`; `tag-major` moves the released major/minor tags. Do not move `v1`; it
 remains the old updater line.
 
-Until v2.0.0 exists (delete this paragraph once it ships): consumer docs use
-`@v2`, so the first v2 release must be `2.0.0` — the rewrite's squash/merge
-commit must use a breaking Conventional Commit (`feat!:` or a
-`BREAKING CHANGE:` footer), or an explicit `Release-As: 2.0.0`, so
-release-please does not cut a v1 minor.
-
 ## Dependency bump commit types
 
 - No observable behavior: `chore(deps):` or `build(deps):` (no release).
