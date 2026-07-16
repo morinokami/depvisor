@@ -129,13 +129,3 @@ ephemeral GitHub-hosted runners, keep branch protection with your normal CI as
 the merge gate, and treat the report as review evidence, not a security
 attestation. The [configuration docs](docs/configuration.md) describe the
 remaining same-job risks in detail.
-
-## Versioning
-
-`morinokami/depvisor@v2` follows the latest v2 release. Pin an immutable commit
-SHA when your supply-chain policy requires it. v1 remains the old standalone
-updater and is not configuration-compatible with v2.
-
-## License
-
-[MIT](LICENSE)
