@@ -58,11 +58,14 @@ provider key. Network access is unrestricted so the agent can install the target
 and consult ecosystem-specific upstream sources.
 
 This environment filtering prevents ordinary inheritance; it is not an OS
-security boundary. The composite action runs agent and publisher steps in the
-same job under the same UID. Source hashing and `env -i` do not stop a lingering
-background process, modification of runner-writable toolchain/PATH entries,
-temporary status-file tampering, or malicious target install scripts from
-observing or interfering with a later token-holding step. Use an ephemeral
+security boundary. depvisor hashes its own source before model work and the
+token-holding steps refuse to run if it changed, starting their child processes
+from a scrubbed environment. Still, the composite action runs agent and
+publisher steps in the same job under the same UID, and those checks do not
+stop a lingering background process, modification of runner-writable
+toolchain/PATH entries, temporary status-file tampering, or malicious target
+install scripts from observing or interfering with a later token-holding step.
+Use an ephemeral
 GitHub-hosted runner. Shared or persistent self-hosted runners are outside the
 supported threat model.
 

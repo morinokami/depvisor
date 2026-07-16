@@ -68,49 +68,22 @@ That two-input `uses:` step is the complete minimum depvisor configuration. The
 PR number, head SHA, failed jobs, logs, repository, GitHub API, and token are
 derived from the `workflow_run` event.
 
-## What gets published
+## Model providers
 
-The updater-owned dependency state is frozen before the agent starts. This
-includes every path in the original updater diff plus recognized manifests and
-lockfiles across common ecosystems. If the agent changes any of it—or changes
-Git history—depvisor publishes neither the repair nor its report.
+Known model prefixes infer the provider credential automatically:
 
-Everything else is agent-driven. The agent may inspect and edit the checkout,
-run commands, install tools, and research upstream sources. It does not receive
-the GitHub token. A later transport step rechecks the PR head and frozen state,
-then publishes the captured working-tree repair and updates a marker-deduplicated
-PR comment.
+- `openai/*` → `OPENAI_API_KEY`
+- `anthropic/*` → `ANTHROPIC_API_KEY`
+- `openrouter/*` → `OPENROUTER_API_KEY`
 
-Because the local agent shares the runner host, depvisor also snapshots its own
-publisher source before model work. The token step clears inherited loader/shell
-configuration and refuses to execute if that source changed. This reduces
-file- and inherited-environment-based cross-step tampering, but it does not turn
-`local()` into an OS isolation boundary.
-
-In particular, the current composite action runs the agent and token-holding
-publisher in the same job and as the same runner user. It does not isolate a
-background process left by model-directed code, attest runner-writable Node/git
-executables or `PATH` directories, or authenticate the temporary status file
-against another same-UID process. A malicious dependency install script has the
-same opportunities. Such a process may observe or interfere with the later
-token step even though `GH_TOKEN` is absent from the agent process environment.
-Use a fresh GitHub-hosted runner, do not run depvisor on a shared or persistent
-self-hosted runner, and treat this as an explicitly accepted residual risk.
-
-Publication is bounded to at most 200 changed files and 5 MiB of captured
-patch/new-file content. A larger migration is left for a human-sized review.
-
-This is intentionally close to running Codex or Claude Code in an autonomous
-mode on the PR. Repository files, dependency code, CI logs, and web pages are
-untrusted model inputs. Use branch protection and require your normal CI before
-merge; depvisor's report is review evidence, not a security attestation.
+For another provider, set the optional `llm_api_key_env` input.
 
 ## Behavior
 
 - Only open, same-repository PRs authored by the recognized Dependabot or
   Renovate bot accounts are processed.
-- A failed CI run gives the agent bounded patches plus failed-job steps and
-  bounded log tails, including paginated job matrices.
+- A failed CI run gives the agent the PR diff plus the failed jobs and their
+  log tails.
 - A green CI run still gets a repository-specific upstream review, normally
   without a code change.
 - A repair is one commit pushed with a force-with-lease against the snapshotted
@@ -125,15 +98,37 @@ merge; depvisor's report is review evidence, not a security attestation.
 See [configuration](docs/configuration.md) for the five inputs and
 [results](docs/results.md) for outputs and statuses.
 
-## Model providers
+## What gets published
 
-Known model prefixes infer the provider credential automatically:
+The updater-owned dependency state is frozen before the agent starts. This
+includes every path in the original updater diff plus recognized manifests and
+lockfiles across common ecosystems. If the agent changes any of it—or changes
+Git history—depvisor publishes neither the repair nor its report.
 
-- `openai/*` → `OPENAI_API_KEY`
-- `anthropic/*` → `ANTHROPIC_API_KEY`
-- `openrouter/*` → `OPENROUTER_API_KEY`
+Everything else is agent-driven. The agent may inspect and edit the checkout,
+run commands, install tools, and research upstream sources. It does not receive
+the GitHub token. A later transport step rechecks the PR head and frozen state,
+then publishes the captured working-tree repair and updates a marker-deduplicated
+PR comment.
 
-For another provider, set the optional `llm_api_key_env` input.
+Publication is bounded to at most 200 changed files and 5 MiB of captured
+patch/new-file content. A larger migration is left for a human-sized review.
+
+## Security model
+
+Running depvisor is intentionally close to running Codex or Claude Code in an
+autonomous mode on the PR. Repository files, dependency code, CI logs, and web
+pages are untrusted model inputs, and the target's install scripts execute on
+the runner. depvisor keeps the GitHub token out of the agent's environment and
+verifies its own publisher source before the token-holding steps run, but the
+agent and publisher still share one job and one runner user — this is not an OS
+isolation boundary.
+
+Accept it the way you would an autonomous coding agent: run depvisor only on
+ephemeral GitHub-hosted runners, keep branch protection with your normal CI as
+the merge gate, and treat the report as review evidence, not a security
+attestation. The [configuration docs](docs/configuration.md) describe the
+remaining same-job risks in detail.
 
 ## Versioning
 
