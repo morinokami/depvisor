@@ -2,8 +2,8 @@
 # built-in minimumReleaseAge default is non-strict for backward compatibility;
 # setting it explicitly turns strict resolution failures on, and
 # minimumReleaseAgeIgnoreMissingTime: false keeps missing registry time
-# metadata from becoming a silent bypass. Note this also gates our own bump
-# PRs: a version published <24h ago fails CI until it matures.
+# metadata from becoming a silent bypass. Note this also gates dependency PRs
+# for depvisor itself: a version published <24h ago fails CI until it matures.
 minimumReleaseAge: 1440
 minimumReleaseAgeStrict: true
 minimumReleaseAgeIgnoreMissingTime: false

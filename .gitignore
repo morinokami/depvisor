@@ -3,11 +3,3 @@ dist/
 .env
 *.log
 .pnpm-store/
-
-pr-preview/
-fixtures/sample-app/
-fixtures/sample-app-pnpm/
-fixtures/sample-app-bun/
-fixtures/sample-app-workspaces/
-fixtures/sample-app-bun-workspaces/
-fixtures/sample-app-pnpm-workspaces/

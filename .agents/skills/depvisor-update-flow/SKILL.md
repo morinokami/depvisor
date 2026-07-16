@@ -1,49 +1,77 @@
 ---
 name: depvisor-update-flow
-description: Use when changing or reasoning about depvisor's per-group update loop in src/workflows/update.ts — preflight, the collect/ignore/cooldown/grouping/prioritization pipeline, the deterministic bump, the two scope gates, the fixer and digest steps, the per-group outcomes, and which statuses fail the job.
+description: Use when changing or reasoning about depvisor v2's one-PR repair/review flow — workflow_run context, updater ownership, the local Flue agent, dependency-state publication boundary, fresh-clone repair push, report comment, and statuses.
 ---
 
-# The depvisor update flow
+# depvisor v2 per-PR flow
 
-The workflow (`flue run update`) imports the `depvisor` root agent and drives the deterministic bump/install/verify itself, delegating only the fixer and digest to its subagent profiles. Preflight, PM detection, and collect+group run **once**; then it **loops over groups** up to the `open_pull_requests_limit` open-PR ceiling (`budget.ts`). `workflows/update.ts` owns cross-group state; nested `workflows/update/process-group.ts` owns one processable group's gates and returns an explicit outcome.
+v2 consumes one existing Dependabot/Renovate PR. It contains no outdated scan,
+version selection, grouping, cooldown, deterministic bump, branch naming, PR
+creation, or open-PR budget. Those are updater responsibilities.
 
-The invariants this flow must preserve are in the repo-root `CLAUDE.md`. Read them before changing any step below.
+## Flow
 
-## The loop
+1. A consumer `workflow_run` starts after its named CI completes and checks out
+   `workflow_run.head_sha` with persisted credentials disabled.
+2. `prepare.ts` uses a token read-only to resolve the PR, require an open
+   same-repository recognized Dependabot/Renovate head, validate checkout HEAD,
+   list the original changed paths, and collect globally bounded patches plus
+   paginated jobs and bounded failed-job logs.
+3. It freezes every updater path plus recognized dependency manifests/lockfiles.
+   The context and snapshot live under `runner.temp`, outside the target repo.
+4. `flue run repair` prompts the root agent once. The agent uses `local()` with
+   the checkout as cwd, giving it real files, shell, tools, and network. It may
+   investigate upstream changes, run installs/checks, and edit source/tests/config.
+   It must leave edits uncommitted and return structured evidence.
+5. The workflow requires unchanged HEAD and unchanged frozen dependency state,
+   then captures tracked binary diff plus untracked files. A `defer` may produce
+   a report but never publishes its leftover edits.
+6. `publish.ts` revalidates the context/snapshot, current open PR head, dependency
+   state, and byte-identical captured repair. For a ready repair it applies the
+   repair in a fresh clone, creates one commit, and pushes with force-with-lease
+   to the existing updater ref. It never creates a PR or targets a fork. The
+   handoff is capped at 200 files and 5 MiB of patch/new-file content.
+7. The publisher creates or updates one marker comment containing upstream
+   relevance, repair details, command evidence, and residual risks. A later CI
+   run updates the same comment.
+8. `report-status.ts` exposes fixed machine outputs and fails the Action for any
+   incomplete/unsafe/infrastructure outcome.
 
-0. The composite Action first calls the same `parseRunConfig` through `check-config.ts`, before target install, so input typos return their `bad-*` status without waiting for lifecycle scripts. Next, still before target lifecycle code, token-holding `snapshot-open-prs.ts` lists open PRs from the trusted Actions repository identifier and bounded-polls explicit `UNKNOWN` mergeability (fixed attempts + global deadline + concurrency); the initial list fails closed, while individual REST failures remain `UNKNOWN`. The workflow repeats `parseRunConfig` (`core/config.ts`: every `DEPVISOR_*` knob, first rejection wins) and then preflight (`core/preflight.ts`: repo root, credentials, clean tree, PM detection, base, verify steps) — any failure is a run-level stop, no loop.
+## Local run
 
-1. Collect, then the `ignore` filter (`ignore.ts`, when rules are set), then the `minimum_release_age` clamp (`release-age.ts`, when N > 0), then grouping. Ignore runs **first** so an ignored package never costs a packument fetch, an agent run, or a red `release-age-unavailable` — its `name@<major>` therefore matches the raw registry `latest`, not a clamped version (conservative; documented). The clamp must sit between ignore and grouping because it can reclassify `updateType`, which the group key (branch/PR identity) depends on. Candidates the registry cannot vouch for are dropped here and later recorded as `release-age-unavailable` group entries (branch/group null, red); ignore drops, cooldown clamps, and not-yet-mature exclusions are all normal operation (green), reported via the run summary/log only. Then **security prioritization** (`advisories.ts`, once, after grouping): `fetchAdvisories` + `prioritizeGroups` stable-promote groups whose update resolves an OSV advisory to the front so the budget below spends slots on security fixes first — ordering only (identity untouched), fail-soft (an OSV outage keeps the neutral order), evaluated on the post-clamp `latest`. The resolved-advisory map also drives the PR body's Security column.
+There is no standalone discovery mode: `flue run repair` consumes the files
+`prepare.ts` produces for a real updater PR.
 
-2. Normalize each snapshot entry with precedence `CONFLICTING`/`DIRTY` > known non-conflict > explicit `UNKNOWN` > absent/invalid. Count open depvisor PRs (`gh pr list --limit 1000`; the ceiling **fails open** if the snapshot is truncated or absent locally) → `newSlots = max(0, open_pull_requests_limit - openCount)`. For each group in stable order, first a **branch-collision guard** (distinct group keys can slugify to the same branch, e.g. `prod/@babel/core` vs `prod/babel-core`; colliders after the first are recorded `branch-collision`, red, and skipped so they cannot `ensureBranch`-reset the first group's commits away), then `classifyGroup` decides: unchanged+non-conflicting → skip-up-to-date; target drift or explicit conflict → refresh; otherwise open-new / held-back (`held-back-by-limit`, green). An explicit-UNKNOWN skip says mergeability was deferred in its summary.
+```bash
+run=/tmp/depvisor-run
+GH_TOKEN=… DEPVISOR_REPOSITORY=owner/repo DEPVISOR_PR_NUMBER=123 \
+  DEPVISOR_TARGET_REPO=/path/to/pr-head-checkout \
+  DEPVISOR_RUN_DIR="$run" DEPVISOR_STATUS_FILE="$run/status.json" node src/prepare.ts
+DEPVISOR_TARGET_REPO=/path/to/pr-head-checkout DEPVISOR_LLM_MODEL=openai/gpt-5.5 \
+  DEPVISOR_CONTEXT_FILE="$run/context.json" DEPVISOR_STATUS_FILE="$run/status.json" \
+  DEPVISOR_PAYLOAD_FILE="$run/repair.json" pnpm exec flue run repair
+```
 
-   **`conflict_refresh_only: true` (the composite action's default on push events) filters immediately after grouping, before advisories and budget classification.** Only groups whose corresponding open branch is explicitly conflicted remain; non-conflicting existing groups (even target-drifted) and new groups produce no per-group status, advisory lookup, payload, or provisional disposition. Zero selected groups finishes `completed` with a suppression/UNKNOWN count. This push-mode closed world cannot increase the open-PR set; every selected group is `refresh(base-conflict)` and consumes no slot. The selection reads the run-start snapshot, so the token-holding open-pr step re-enforces the mode (via `DEPVISOR_CONFLICT_REFRESH_ONLY`, trusted env — never the payload): it re-verifies the target PR is still open before pushing and never calls `gh pr create`; a PR merged/closed mid-run is the green `open-pr-blocked`, an unverifiable PR state is a red `open-pr-failed`.
+The checkout must be the PR's current head with a clean tree, and the model
+provider key must sit in the provider env var (`OPENAI_API_KEY` etc.).
 
-   **`dry_run: true` stops here.** It emits a schema-validated plan and `dry-run-completed`, with no baseline/update verification, bump, agent task, payload, push, or PR. Existing-PR `refresh` / `skip-up-to-date` are exact for the snapshot. New groups are `open-new-provisional` / `held-back-provisional`: the planner optimistically decrements a slot for every earlier planned open-new, whereas production decrements only after `processGroup` returns `prepared`. Deterministic red findings (`release-age-unavailable`, `branch-collision`) remain red group statuses. The Action does not pass LLM credentials and structurally skips its token-holding push step.
+## Statuses
 
-3. Between processed groups, reset the tree to base (`resetToBase` = `git checkout -f base` + `clean -fd`) and reinstall (`runInstall` with the resolved reset command) so node_modules returns to the base lockfile state. This reinstall also runs under `install_command: skip` (skip only skips the pre-agent install step); with `skip` **and** no committed lockfile no reset command exists, so every processable group after the first is recorded `reinstall-unavailable` (red — a fixable config gap, not the ceiling). `processGroup` captures a `RefGuard` **before** the reinstall — the iteration's first untrusted execution (the base lockfile's lifecycle scripts run with `.git` reachable) — and checks it right after, success or failure; drift is restored and recorded as `unexpected-commits` (group failed, run continues). A successful reinstall must also leave the tracked/untracked tree clean; any file side effect is `reset-failed`. The outcome's `requiresResetNext` replaces the old implicit `firstProcessed` mutation: it turns true only after a clean baseline passes, then stays true for the run.
+Green: `reviewed`, `repair-published`, `deferred`, `unsupported-pr`, `stale-pr`.
 
-4. Baseline verification **per processed group** — the ref check runs right after it (its scripts execute the base tree's code), before the red/green verdict is honored, and the tree must still be clean (verification is a gate, never a source author); then `baseline-red` on the first processed group (base itself is broken/dirty), `reset-failed` on a later one (the reset was incomplete). Both are fail-closed, run-level stops. The reset uses `git clean -fd` (no `-x`) on purpose, so gitignored verify artifacts can survive between groups; this per-group baseline re-verification is the safety net that catches such a leak as `reset-failed`.
+Failing: `setup-failed`, `wrong-head`, `agent-failed`,
+`dependency-state-changed`, `publish-failed`, `in-progress`.
 
-5. **Deterministic bump** (`bump.ts`'s `applyUpdatePlan` on `pm.updatePlan(members, REPO, { pinExact })`): capture the IMMUTABLE pre-bump sha (the branch tip trusted code just created — also the maintained snapshot's entry for this branch), then apply the update, install, and manifest edits (incl. pnpm's catalog YAML edit) with LLM-free code. The bump ran the newly installed version's lifecycle scripts with `.git` reachable — exactly the supply-chain vector the deny list exists for — so refs AND HEAD are checked against the snapshot right after it, **success or failure** (a failing install still ran its scripts): a script `git commit`-ing its edits (so the working-tree gates never see them) or moving any other ref is `unexpected-commits`, restored from the snapshot. Only then a failure is `bump-failed` (red, per-group, the run continues — the fixer cannot help, it may not touch manifests). No tree changes → `no-changes`.
+Update status classification in `core/status.ts`, `action.yml`,
+`docs/results.md`, and `start.md` together.
 
-6. **Bump-scope gate, then bump commit, then the fast/fixer split.** Before committing, `checkBumpScope(REPO, preBumpSha, members, plan.catalogEdits)` (`core/scope.ts`) diffs the working tree against the pre-bump sha (never a movable ref name — the same scripts it defends against can move refs) and allows only what the plan itself writes to the files that WOULD enter the bump commit — member values moving to exactly `latest`/`^latest`/`~latest` (a whole-string grammar, so `npm:evil@<latest>` alias redirects and `git:`/`file:`/URL specifiers all fail), pnpm-workspace.yaml changes keyed to the plan's own `catalogEdits` (a same-named entry in a catalog the plan did not target may not change), and (uninspected) lockfiles; anything else (an install lifecycle script that rewrote `scripts`/`overrides`/`trustedDependencies`/a non-catalog workspace key, a de-catalog, a planted package.json) is `scope-violation` (red, nothing committed) — this closes the window where such tampering would ride along in the "mechanical" bump commit, invisible to `checkFixScope` (which diffs FROM the bump commit). Then commit the mechanical bump (`deps: bump <pkgs>`) _before any agent runs_ — the AI provably wrote none of it — via `commitPaths(manifestBumpPaths(…))`; if that returns null (the tree changed but no manifest/lockfile did, e.g. a lifecycle side effect) it is `bump-failed` (red, the changed files discarded). **Immediately after that commit the tree must be clean**: any source/test leftover from install scripts is `scope-violation`, never a second commit. Advance the maintained ref snapshot's branch entry to the bump sha, run full verification, re-check refs, and again require a clean tree (verification is a gate, not a source author):
+## Trust model
 
-   - **Fast path** (verification green): no fixer runs and no second commit exists.
-   - **Fixer path** (verification red): `session.task(..., { agent: "fixer", result: FixerResult })` gets a bounded prompt — targets, **manifest diff hunks only** (`git.ts:manifestDiff`; lockfiles never as hunks), failing steps with bounded output tails (`verify.ts` captures a `tail` internally; `stripVerifyTails` removes it before persistence), the source-only constraint, and verify command names. The fixer inspects/edits only through the repo-jailed custom tools and cannot run checks itself. Verdict is `fixed`/`defer` (a `defer` discards leftovers → `deferred`; no validated result → fail-closed `no-structured-result`).
-
-7. **Fixer-path gates** — authoritative regardless of what the fixer claims: `checkFixScope(REPO, bumpSha)` runs before verification; `snapshotWorktree` captures the exact allowed fixer diff; full re-verification runs; refs/HEAD are checked; `worktreeDrift` rejects ANY verification-authored content/mode/path change; then `checkFixScope` runs a second time **immediately before `commitAll`** so no denied path can cross the commit boundary. A red check is `scope-violation`/`verification-failed`; only then is the fix commit created as the second commit.
-
-8. Classify the committed `base..HEAD` diff (`test-changes.ts`, display only — a ⚠️ PR-body/step-summary warning when a test file changed, no gate) → classify per-package license changes from fetched packuments (`license.ts`) → run the **digest** (`session.task(..., { agent: "digest", result: DigestResult })`, always, strictly after commits are sealed; fail-soft on `FlueError` / `ResultUnavailableError` / Valibot rejection). The digest has only repo-jailed read tools inside a virtual sandbox, so release-note prompt injection cannot write the target, depvisor's action checkout, payload directory, or later token-holding entrypoint. The post-digest ref/tree seal remains defense in depth for delayed target processes; unexpected drift restores the sealed state and drops the report. Then compose the narrative and emit the payload/status.
-
-## Outcomes and the status vocabulary
-
-- Per-group outcomes (`defer` → `deferred`, `no-structured-result`, `unexpected-commits`, `scope-violation`, `verification-failed`, `bump-failed`, `no-changes`, `branch-collision`, `reinstall-unavailable`, `release-age-unavailable`) record that group and **continue to the next group**; leftover changes from a defer or a failed bump are discarded deterministically by the next group's reset, not trusted away. Only preflight, `bad-dry-run`, `bad-conflict-refresh-only`, `bad-open-pull-requests-limit`, `bad-minimum-release-age`, `bad-minimum-release-age-exclude`, `bad-ignore`, `bad-groups`, `bad-suggest-features`, `bad-language`, `baseline-red`, and `reset-failed` stop the whole run.
-- The composite action reports the status file after the token-holding open-pr step (or after that step is skipped in dry-run). Run-level `completed`/`dry-run-completed`/`no-updates` and group-level `pr-prepared`, `pr-up-to-date`, `deferred`, `open-pr-blocked` (a human took over the PR branch, or the refresh-only target PR was merged/closed mid-run), and `held-back-by-limit` stay green. A human-takeover refusal leaves one fixed, marker-deduplicated comment on the still-open PR through the scrubbed token boundary; comment read/post failures stay fail-soft, while the already-closed refresh-only case has no comment target. `baseline-red`, `reset-failed`, `bad-dry-run`, `bad-conflict-refresh-only`, `bad-open-pull-requests-limit`, `bad-minimum-release-age`, `bad-minimum-release-age-exclude`, `bad-ignore`, `bad-groups`, `bad-suggest-features`, `bad-language`, `no-verify-scripts`, `bump-failed`, `scope-violation`, `verification-failed`, `missing-base-branch`, `reinstall-unavailable`, `release-age-unavailable`, `branch-collision`, `open-pr-failed`, and the `in-progress` crash marker fail the job — a green run-level status is still red if any group failed — so silent no-PR outcomes notify users.
-- `open_pull_requests_limit` is a ceiling on **open depvisor PRs** (Dependabot's open-pull-requests-limit model, default `5` like Dependabot's): it never opens a new PR while the ceiling is already met by pre-existing open PRs. Refreshing an existing PR (target drift or base conflict) is unlimited and consumes no slot.
-
-`update.ts` writes `pr-preview/status.json` incrementally — after every group, under the red `in-progress` run status that only a graceful finish upgrades to `completed` — so a mid-loop crash leaves a status consistent with the payloads emitted so far AND fails the job instead of impersonating a green run.
-
-## Adding a status
-
-A new status must be classified in `status.ts:runFailsJob` (green vs red) and, if it is a config-parse stop, follow the `bad-*` convention. Statuses also appear in the composite action's `outputs:` via `toActionOutputs`, which drops anything off the kebab-case vocabulary. Mirror any new status name into `docs/results.md` (the status reference) and `start.md`, which duplicate the list on purpose.
+The agent is intentionally auto-mode powerful and local() is not an isolation
+boundary. GitHub credentials remain out of its step, and the updater-ownership
+check remains mechanical. External CI is the merge authority; agent verification
+is recorded evidence. Source hashing and env scrubbing do not stop same-UID
+residual processes, runner-writable toolchain/PATH replacement, run-temp status
+tampering, or malicious install scripts from reaching a later step. Never
+reintroduce a claim that the model's verdict itself proves CI green or that the
+current same-job token boundary is OS isolation.

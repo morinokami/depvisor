@@ -6,3 +6,13 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+  # The npm cooldown pairs with pnpm-workspace.yaml's strict minimumReleaseAge.
+  # @flue/* stays exact-pinned beta and is upgraded deliberately, not by bot.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "@flue/*"

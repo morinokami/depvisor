@@ -1,32 +1,46 @@
-/**
- * Bounded-text helpers shared by the modules that hand process output or
- * registry text across a boundary (the fixer prompt, the CI log, status
- * summaries). A tiny leaf, in the style of version-core.ts.
- */
+/** Rendering boundaries for agent-authored and otherwise untrusted text. */
 
-// The fixer only needs the END of a failing command's log to diagnose it; the
-// same budget bounds verify.ts's step tails and bump.ts's command tails, which
-// feed the same fixer-prompt diagnostics.
-const TAIL_MAX = 4000;
+// oxlint-disable no-control-regex -- normalize control bytes at a rendering boundary
+function inline(value: string, max: number): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .slice(0, max)
+    .trim();
+}
+// oxlint-enable no-control-regex
 
-/** The last `max` characters of `s` — the end of a log names the failure. */
-export function tail(s: string, max = TAIL_MAX): string {
-  return s.length <= max ? s : s.slice(-max);
+/** Preserve ordinary punctuation while preventing marker injection in the PR report. */
+export function cleanReportText(value: string, max = 4_000): string {
+  return inline(value, max).replaceAll("<!--", "&lt;!--").replaceAll("-->", "--&gt;");
 }
 
-/**
- * Collapse untrusted text to a single-line, length-capped form safe for the CI
- * log and status summaries. Unlike the PR body (charset-gated in pr.ts), the
- * log is a raw stdout stream: an embedded newline could split the line so a
- * `::`-prefixed fragment is read as a GitHub Actions workflow command (a fake
- * annotation), and an unbounded string could flood the log. Control characters
- * (\p{Cc}, incl. CR/LF and the C1 block) become spaces, whitespace runs
- * collapse, and the result is capped with an ellipsis.
- */
-export function logSafeText(s: string, max: number): string {
-  const collapsed = s
-    .replace(/\p{Cc}+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return collapsed.length > max ? `${collapsed.slice(0, max)}…` : collapsed;
+/** Render a single untrusted value as literal inline text in a step summary. */
+export function escapeStepSummaryText(value: string, max = 2_000): string {
+  const html = inline(value, max)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+  let escaped = html;
+  for (const character of [
+    "\\",
+    "`",
+    "*",
+    "_",
+    "{",
+    "}",
+    "[",
+    "]",
+    "(",
+    ")",
+    "#",
+    "+",
+    "-",
+    ".",
+    "!",
+    "|",
+    "~",
+  ]) {
+    escaped = escaped.replaceAll(character, `\\${character}`);
+  }
+  return escaped;
 }

@@ -1,114 +1,51 @@
-import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync } from "node:fs";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  dryRunPlanPath,
-  readDryRunPlan,
-  renderDryRunPlan,
-  type DryRunPlan,
-} from "./core/dry-run.ts";
-import {
-  appendStepSummary,
-  groupLogLine,
-  readRunStatus,
-  runFailsJob,
-  runLogLine,
-  RUN_STATUS_FILE,
-  statusFailsJob,
-  toActionOutputs,
-} from "./core/status.ts";
+import { appendFileSync } from "node:fs";
+import { readRunRecord, statusFails } from "./core/status.ts";
+import { escapeStepSummaryText } from "./core/text.ts";
+import { writeOutput } from "./shared/actions.ts";
 
-const DEFAULT_STATUS_FILE = fileURLToPath(
-  new URL(`../pr-preview/${RUN_STATUS_FILE}`, import.meta.url),
+function safeUrl(value: string | null): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !/[\r\n]/.test(value) ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+function logText(value: string): string {
+  // oxlint-disable-next-line no-control-regex -- workflow-command boundary
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 2_000);
+}
+
+const file = process.env.DEPVISOR_STATUS_FILE || "";
+const record = file ? readRunRecord(file) : null;
+const failed = record ? statusFails(record.status) : true;
+writeOutput("status", record?.status ?? "");
+writeOutput("failed", failed ? "true" : "false");
+writeOutput("repaired", record?.repaired ? "true" : "false");
+writeOutput("pr_url", safeUrl(record?.prUrl ?? null));
+writeOutput("commit_sha", /^[0-9a-f]{40}$/.test(record?.commitSha ?? "") ? record!.commitSha! : "");
+writeOutput("comment_url", safeUrl(record?.commentUrl ?? null));
+writeOutput("total_tokens", String(record?.usage?.totalTokens ?? 0));
+writeOutput(
+  "est_cost_usd",
+  record?.usage && Number.isFinite(record.usage.costUsd) ? record.usage.costUsd.toFixed(6) : "",
 );
 
-function workflowEscape(value: string): string {
-  return value.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-}
+const summary = record
+  ? `## depvisor\n\n**${record.status}** — ${escapeStepSummaryText(record.summary)}\n\n` +
+    `PR: ${safeUrl(record.prUrl) || "unavailable"}\n\n` +
+    (record.changedFiles.length > 0
+      ? `Repair files:\n${record.changedFiles.map((path) => `- ${escapeStepSummaryText(path, 500)}`).join("\n")}\n\n`
+      : "") +
+    (record.usage
+      ? `Model: ${escapeStepSummaryText(record.usage.model, 500)} · tokens: ${record.usage.totalTokens} · estimated cost: $${record.usage.costUsd.toFixed(6)}\n`
+      : "")
+  : "## depvisor\n\n**unknown** — no readable run status was produced.\n";
+if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
 
-function emitAnnotation(level: "notice" | "error", message: string): void {
-  if (process.env.GITHUB_ACTIONS) {
-    console.log(`::${level}::${workflowEscape(message)}`);
-  } else {
-    console.log(`${level}: ${message}`);
-  }
-}
-
-function appendMissingSummary(message: string): void {
-  const file = process.env.GITHUB_STEP_SUMMARY;
-  if (file) appendFileSync(file, `## depvisor\n\n${message}\n`);
-}
-
-/**
- * Write the action outputs the composite `outputs:` mapping picks up. Values
- * are charset-gated in toActionOutputs; the uniform heredoc form with a random
- * delimiter is the standard defense against delimiter-collision injection, and
- * keeps holding if a future output ever carries freer text. Must run before
- * any exit(1) — outputs a failed step wrote still reach the mapping.
- */
-function writeActionOutputs(outputs: Record<string, string>): void {
-  const file = process.env.GITHUB_OUTPUT;
-  if (!file) return;
-  const lines = Object.entries(outputs).flatMap(([name, value]) => {
-    const delimiter = `DEPVISOR_OUTPUT_${randomUUID()}`;
-    return [`${name}<<${delimiter}`, value, delimiter];
-  });
-  appendFileSync(file, `${lines.join("\n")}\n`);
-}
-
-function main(): void {
-  const file = process.argv.find((arg, i) => i > 1 && !arg.startsWith("--")) ?? DEFAULT_STATUS_FILE;
-  const status = readRunStatus(file);
-  if (!status) {
-    // The crash-before-reporting case is when consumers most need a signal, so
-    // outputs (failed=true) are written even on this path, before the exit.
-    // Missing and corrupt read the same (readRunStatus fails both toward
-    // null); only the message distinguishes them.
-    writeActionOutputs(toActionOutputs(null));
-    const message = existsSync(file)
-      ? `depvisor wrote an unreadable ${RUN_STATUS_FILE} (corrupt or truncated); ` +
-        "treating the run as failed."
-      : `depvisor did not emit ${RUN_STATUS_FILE}; a setup or agent step likely failed ` +
-        "before reporting a result.";
-    emitAnnotation("error", message);
-    appendMissingSummary(message);
-    process.exit(1);
-  }
-  let dryRunPlan: DryRunPlan | null = null;
-  if (status.status === "dry-run-completed") {
-    const planFile = dryRunPlanPath(dirname(file));
-    dryRunPlan = readDryRunPlan(planFile);
-    if (!dryRunPlan) {
-      writeActionOutputs(toActionOutputs(null));
-      const message = existsSync(planFile)
-        ? "depvisor wrote an unreadable dry-run plan (corrupt or truncated); treating the run as failed."
-        : "depvisor reported dry-run-completed without emitting its plan; treating the run as failed.";
-      emitAnnotation("error", message);
-      appendMissingSummary(message);
-      process.exit(1);
-    }
-  }
-  writeActionOutputs(toActionOutputs(status));
-
-  // Run-level annotation reflects the overall job outcome (a completed run with
-  // a failed group is still a red job), then one error annotation per failing
-  // group so each no-PR/failed outcome is surfaced individually.
-  const runFails = runFailsJob(status);
-  emitAnnotation(runFails ? "error" : "notice", `depvisor ${runLogLine(status)}`);
-  for (const group of status.groups) {
-    if (statusFailsJob(group.status)) {
-      emitAnnotation("error", `depvisor ${groupLogLine(group)}`);
-    }
-  }
-
-  const summaryFile = process.env.GITHUB_STEP_SUMMARY;
-  if (summaryFile) {
-    appendStepSummary(summaryFile, status);
-    if (dryRunPlan) appendFileSync(summaryFile, `${renderDryRunPlan(dryRunPlan)}\n`);
-  }
-
-  if (runFails) process.exit(1);
-}
-
-main();
+console.log(
+  `depvisor → ${record?.status ?? "unknown"}: ${logText(record?.summary ?? "no status")}`,
+);
+if (failed) process.exitCode = 1;
