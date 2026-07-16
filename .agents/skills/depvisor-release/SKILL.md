@@ -41,20 +41,27 @@ allowlist.
 actionlint/zizmor job. There is no fixture matrix: v2 has no package-manager
 implementation or credential-free dry-run.
 
+`.github/dependabot.yml` updates GitHub Actions and npm weekly with a 7-day
+cooldown, pairing with pnpm-workspace.yaml's strict `minimumReleaseAge`.
+`@flue/*` is ignored there: Flue stays exact-pinned beta and is upgraded
+deliberately.
+
 ## Releases
 
 release-please remains manifest-mode. Merging its Release PR creates immutable
-`vX.Y.Z`; `tag-major` moves the released major/minor tags. Consumer docs now use
-`@v2`, so the first v2 release must be `2.0.0` and movable `v2`/`v2.0` will follow
-automatically from release-please outputs. Do not move `v1`; it remains the old
-updater line.
+`vX.Y.Z`; `tag-major` moves the released major/minor tags. Do not move `v1`; it
+remains the old updater line.
 
-This rewrite is a breaking release. Its squash/merge commit must use a breaking
-Conventional Commit (`feat!:` or a `BREAKING CHANGE:` footer), or an explicit
-`Release-As: 2.0.0`, so release-please does not cut a v1 minor.
+Until v2.0.0 exists (delete this paragraph once it ships): consumer docs use
+`@v2`, so the first v2 release must be `2.0.0` — the rewrite's squash/merge
+commit must use a breaking Conventional Commit (`feat!:` or a
+`BREAKING CHANGE:` footer), or an explicit `Release-As: 2.0.0`, so
+release-please does not cut a v1 minor.
 
 ## Dependency bump commit types
 
 - No observable behavior: `chore(deps):` or `build(deps):` (no release).
 - Bundled security fix: `fix(deps):`.
 - Observable behavior: `fix:` / `feat:` describing the behavior.
+- The bare `deps:` type is a pre-v2 legacy that survives in old history; do not
+  use it in new commits.

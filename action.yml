@@ -161,6 +161,8 @@ runs:
 
     # local() gives the model the checkout, shell, installed runner tools, and
     # network. This step intentionally has the LLM key but no GitHub token.
+    # Key/model validation is deliberately this late: unsupported PRs skip this
+    # step and must complete cleanly without any LLM configuration.
     - name: Review and repair with depvisor
       id: agent
       if: steps.prepare.outputs.processable == 'true'

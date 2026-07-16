@@ -55,7 +55,7 @@ jobs:
           # keyed on the tag/release this creates, and GitHub suppresses
           # recursive triggers from GITHUB_TOKEN anyway. Revisit (PAT / GitHub
           # App) if a `release: published` publish workflow is ever added — see
-          # CLAUDE.md "Development workflow".
+          # .agents/skills/depvisor-release/SKILL.md.
           token: ${{ github.token }}
 
   # release-please stops at immutable vX.Y.Z tags. Re-point the movable major
