@@ -3,6 +3,3 @@ dist/
 .env
 *.log
 .pnpm-store/
-
-# Local v1 fixture checkouts may remain after upgrading a development clone.
-fixtures/

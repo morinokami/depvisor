@@ -34,7 +34,6 @@
       }
     }
   ],
-  "ignorePatterns": ["fixtures/"],
   "env": {
     "builtin": true
   }
