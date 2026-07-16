@@ -2,17 +2,12 @@
   "name": "depvisor",
   "version": "1.5.0",
   "private": true,
-  "description": "GitHub Action that investigates, updates, fixes and explains dependency updates.",
+  "description": "GitHub Action that repairs and reviews existing Dependabot and Renovate PRs.",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run fmt:check && pnpm run knip && pnpm test",
-    "fixture:init": "bash scripts/init-fixture.sh",
-    "fixture:init:bun": "bash scripts/init-fixture.sh --pm bun",
-    "fixture:init:pnpm": "bash scripts/init-fixture.sh --pm pnpm",
-    "fixture:init:workspaces": "bash scripts/init-fixture.sh --workspaces",
-    "fixture:init:workspaces:bun": "bash scripts/init-fixture.sh --pm bun --workspaces",
-    "fixture:init:workspaces:pnpm": "bash scripts/init-fixture.sh --pm pnpm --workspaces",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run fmt:check && pnpm run knip && pnpm test && pnpm run flue:build",
+    "flue:build": "flue build --target node",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "knip": "knip && knip --strict",
@@ -22,8 +17,7 @@
   },
   "dependencies": {
     "@flue/runtime": "1.0.0-beta.9",
-    "valibot": "1.4.2",
-    "yaml": "2.9.0"
+    "valibot": "1.4.2"
   },
   "devDependencies": {
     "@flue/cli": "1.0.0-beta.9",

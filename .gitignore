@@ -4,10 +4,5 @@ dist/
 *.log
 .pnpm-store/
 
-pr-preview/
-fixtures/sample-app/
-fixtures/sample-app-pnpm/
-fixtures/sample-app-bun/
-fixtures/sample-app-workspaces/
-fixtures/sample-app-bun-workspaces/
-fixtures/sample-app-pnpm-workspaces/
+# Local v1 fixture checkouts may remain after upgrading a development clone.
+fixtures/

@@ -1,141 +1,78 @@
 name: depvisor
 description: >-
-  Updates your dependencies, fixes any breakage the update causes with an AI
-  agent, verifies with your build/test suite, and opens an explained PR.
+  Reviews an existing Dependabot or Renovate PR, repairs CI breakage with an AI
+  coding agent, verifies the repair, and posts an evidence-grounded report.
 branding:
   icon: package
   color: purple
 
 inputs:
   llm_api_key:
-    description: LLM provider API key. Exposed only to a non-dry-run agent step; required unless dry_run is true.
+    description: LLM provider API key.
     required: false
     default: ""
   llm_model:
-    description: Model specifier for the provider, e.g. openai/gpt-5.5; required unless dry_run is true.
+    description: Model specifier, for example openai/gpt-5.5.
     required: false
     default: ""
-  dry_run:
-    description: When "true", show the deterministic candidate/group/PR plan without applying updates, calling an LLM, pushing, or opening PRs.
-    required: false
-    default: "false"
-  conflict_refresh_only:
-    description: When "true", refresh only explicitly conflicted existing depvisor PRs and never open a new PR. Defaults to "true" on push events and "false" otherwise, so a dependency-state push trigger repairs conflicts without replenishing the open-PR queue; set it explicitly to override.
-    required: false
-    default: ${{ github.event_name == 'push' }}
-  install_command:
-    description: Dependency install command; use "auto" for npm/pnpm/bun lockfile installs or "skip" if already installed.
-    required: false
-    default: auto
   llm_api_key_env:
     description: Environment variable name used for llm_api_key; inferred for known providers.
     required: false
     default: ""
   github_token:
-    description: Token used only by the PR snapshot, push, and PR creation steps.
+    description: Token used only to read the triggering CI run and publish to the existing PR.
     required: false
     default: ${{ github.token }}
-  base_branch:
-    description: Base branch for update branches and PRs.
-    required: false
-    default: ${{ github.event.repository.default_branch }}
-  verify_commands:
-    description: Newline-separated verification commands; replaces automatic build/lint/test script detection.
-    required: false
-    default: ""
-  open_pull_requests_limit:
-    description: Maximum number of open depvisor PRs to keep at once; a run opens new PRs only up to this ceiling.
-    required: false
-    default: "5"
-  minimum_release_age:
-    description: Minimum number of days a version must have been public on the npm registry before depvisor updates to it; "0" disables the cooldown.
-    required: false
-    default: "1"
-  minimum_release_age_exclude:
-    description: Newline-separated package names exempted from the minimum_release_age check — for private-registry packages the public npm registry cannot vouch for. Exact names or trailing-"*" prefix globs like "@acme/*" (full-line "#" comments are allowed); version ranges, majors, and other pattern forms are not supported.
-    required: false
-    default: ""
-  ignore:
-    description: Newline-separated packages to never update; use "name" to skip a package entirely, "name@<major>" to skip only a specific major, or a trailing-"*" prefix glob like "@acme-forks/*" to skip every matching package (no major suffix on globs). Full-line "#" comments are allowed.
-    required: false
-    default: ""
-  groups:
-    description: 'Newline-separated package groups updated together in one PR, each line "<group-name>: <package> <package> ..." (members separated by spaces or commas). Exact package names or trailing-"*" prefix globs like "@acme/*"; each package may belong to at most one group; full-line "#" comments are allowed. Ungrouped packages keep getting their own PR.'
-    required: false
-    default: ""
-  suggest_features:
-    description: When "true", the agent also surfaces newly added capabilities from the release notes it already read that may be relevant to your code, as a display-only PR-body section (never adopted). Off by default; costs extra tokens and widens the agent's engagement with untrusted release notes.
-    required: false
-    default: "false"
-  language:
-    description: Restricted BCP-47-style language tag (e.g. "ja", "pt-BR") the agent writes the PR's narrative text in. Only the LLM-written free text is localized; statuses, commit messages, branch names, PR titles, and section headings stay English. Empty means English.
-    required: false
-    default: ""
   node_version:
-    description: Node version used for depvisor and target verification scripts. Must be >= 24, depvisor's engines floor.
+    description: Node version used to run depvisor itself.
     required: false
     default: "24"
 
-# Machine-shaped values only (fixed-vocabulary statuses, numbers, and
-# charset-gated URLs — never the agent's free text), so consumer workflows can
-# branch on them without a workflow-command/shell-injection surface. A red run
-# fails the job, so consuming steps need `if: always()`. Known runner bug:
-# nesting this action inside another composite action loses step outputs
-# (actions/runner#2009) — consume these from a workflow step directly.
 outputs:
   status:
-    description: >-
-      Run-level status (completed, dry-run-completed, no-updates, or a red status like
-      baseline-red — see the status reference in docs/results.md). Empty when
-      the run crashed before writing a status file.
+    description: reviewed, repair-published, deferred, unsupported-pr, or a failing status.
     value: ${{ steps.report.outputs.status }}
   failed:
-    description: >-
-      "true" when this run fails the job (a completed run with a failed group
-      included), "false" otherwise — for `if: always()` consumers.
+    description: '"true" when depvisor could not safely complete the review or publication.'
     value: ${{ steps.report.outputs.failed }}
-  prepared_count:
-    description: >-
-      Number of dependency groups whose PR this run prepared (newly opened and
-      refreshed alike).
-    value: ${{ steps.report.outputs.prepared_count }}
-  pr_urls:
-    description: >-
-      Newline-separated URLs of the PRs this run opened or refreshed.
-    value: ${{ steps.report.outputs.pr_urls }}
+  repaired:
+    description: '"true" when depvisor published a repair commit to the updater PR.'
+    value: ${{ steps.report.outputs.repaired }}
+  pr_url:
+    description: URL of the updater PR.
+    value: ${{ steps.report.outputs.pr_url }}
+  commit_sha:
+    description: SHA of the repair commit, or empty when no repair was needed.
+    value: ${{ steps.report.outputs.commit_sha }}
+  comment_url:
+    description: URL of depvisor's maintained reviewer-report comment.
+    value: ${{ steps.report.outputs.comment_url }}
   total_tokens:
-    description: >-
-      Total LLM tokens used across every fixer and digest operation in the run.
-      "0" when no usage was recorded or the run crashed before reporting.
+    description: Total model tokens used by the repair/review agent.
     value: ${{ steps.report.outputs.total_tokens }}
   est_cost_usd:
-    description: >-
-      Estimated run cost in USD as a decimal string (provider-priced, not an
-      invoice). "0.000000" when no agent ran; empty when the run did not report
-      or any token-bearing model had no known price.
+    description: Provider-priced estimated model cost in USD.
     value: ${{ steps.report.outputs.est_cost_usd }}
 
 runs:
   using: composite
   steps:
-    # Resolve two runner quirks in one place: nested `uses:` steps cannot read
-    # `github.action_path`, and pnpm/action-setup mangles absolute
-    # package_json_file paths by joining them to GITHUB_WORKSPACE.
-    - name: Resolve action path and pnpm version
+    # Nested `uses:` steps cannot evaluate github.action_path. Resolve it once,
+    # together with the run-scoped handoff directory used outside the target.
+    - name: Resolve depvisor paths
       shell: bash
-      run: | # zizmor: ignore[github-env] trusted action path and manifest only
+      env:
+        RUN_DIR: ${{ runner.temp }}/depvisor-v2-${{ github.run_id }}-${{ github.run_attempt }}
+      run: | # zizmor: ignore[github-env] trusted action path and runner temp only
         echo "DEPVISOR_HOME=$GITHUB_ACTION_PATH" >> "$GITHUB_ENV"
+        echo "DEPVISOR_RUN_DIR=$RUN_DIR" >> "$GITHUB_ENV"
+        echo "DEPVISOR_STATUS_FILE=$RUN_DIR/status.json" >> "$GITHUB_ENV"
+        echo "DEPVISOR_CONTEXT_FILE=$RUN_DIR/context.json" >> "$GITHUB_ENV"
+        echo "DEPVISOR_PAYLOAD_FILE=$RUN_DIR/repair.json" >> "$GITHUB_ENV"
         echo "DEPVISOR_PNPM_VERSION=$(node -p "require(process.env.GITHUB_ACTION_PATH + '/package.json').packageManager.split('@')[1]")" >> "$GITHUB_ENV"
 
-    # We pin depvisor's own pnpm via `version`, but action-setup ALSO reads the
-    # `packageManager` field from `package_json_file` (default `package.json`,
-    # resolved against GITHUB_WORKSPACE = the target checkout) and refuses with
-    # "Multiple versions of pnpm specified" when it differs from `version`. Point
-    # `package_json_file` at depvisor's own manifest so the target repo's
-    # `packageManager` is never read: the absolute path mangles (joined to
-    # GITHUB_WORKSPACE) to a nonexistent file, action-setup swallows the ENOENT,
-    # and `version` alone stands — and if the mangling is ever fixed it would
-    # read depvisor's own pin, which equals `version`. Either way, no conflict.
+    # package_json_file deliberately points at depvisor's own manifest. See the
+    # release skill for the pnpm/action-setup absolute-path runner quirk.
     - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       with:
         version: ${{ env.DEPVISOR_PNPM_VERSION }}
@@ -144,14 +81,8 @@ runs:
     - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version: ${{ inputs.node_version }}
-        # setup-node v5+ auto-caches based on the target repo's package.json;
-        # keep the composite action's behavior independent of the target.
         package-manager-cache: false
 
-    # Fail-closed credentials gate: the agent step and the target's install
-    # scripts must never see a token, but actions/checkout defaults to
-    # persist-credentials: true, which leaves it in the checkout's .git/config.
-    # Refuse to run the rest of the pipeline next to it.
     - name: Refuse persisted credentials in the target checkout
       shell: bash
       env:
@@ -163,144 +94,239 @@ runs:
       working-directory: ${{ env.DEPVISOR_HOME }}
       run: pnpm install --frozen-lockfile
 
-    # Parse every behavior knob before target install/lifecycle scripts. The
-    # workflow repeats the same core parser for defense in depth and status
-    # ownership; this early pass exists so a typo fails in seconds, not after
-    # waiting for target dependency installation.
-    - name: Validate depvisor configuration
-      id: config
-      shell: bash
-      working-directory: ${{ env.DEPVISOR_HOME }}
-      env:
-        DEPVISOR_DRY_RUN: ${{ inputs.dry_run }}
-        DEPVISOR_CONFLICT_REFRESH_ONLY: ${{ inputs.conflict_refresh_only }}
-        DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
-        DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
-        DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: ${{ inputs.open_pull_requests_limit }}
-        DEPVISOR_MINIMUM_RELEASE_AGE: ${{ inputs.minimum_release_age }}
-        DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: ${{ inputs.minimum_release_age_exclude }}
-        DEPVISOR_IGNORE: ${{ inputs.ignore }}
-        DEPVISOR_GROUPS: ${{ inputs.groups }}
-        DEPVISOR_SUGGEST_FEATURES: ${{ inputs.suggest_features }}
-        DEPVISOR_LANGUAGE: ${{ inputs.language }}
-        DEPVISOR_INSTALL_COMMAND: ${{ inputs.install_command }}
-      run: node "$DEPVISOR_HOME/src/check-config.ts"
-
-    # Deterministic, token-holding, and intentionally before target install:
-    # lifecycle scripts can taint runner files and inherited config for later
-    # steps. The entrypoint uses a trusted repository identifier, scrubbed gh
-    # environment, and bounded REST polling so lazily-computed mergeability can
-    # still repair a conflicted PR in this run. The initial list is fail-closed;
-    # individual poll failures remain UNKNOWN and fail soft.
-    - name: Snapshot open PRs
+    # Read-only and before the agent: resolve the updater PR, snapshot its exact
+    # dependency state, and collect failed-job logs. The resulting context has
+    # no credentials and is treated as untrusted text by the agent.
+    - name: Prepare updater PR context
+      id: prepare
       shell: bash
       working-directory: ${{ env.DEPVISOR_HOME }}
       env:
         GH_TOKEN: ${{ inputs.github_token }}
+        DEPVISOR_TARGET_REPO: ${{ github.workspace }}
         DEPVISOR_REPOSITORY: ${{ github.repository }}
         DEPVISOR_API_URL: ${{ github.api_url }}
-        DEPVISOR_OPEN_PRS_FILE: ${{ runner.temp }}/depvisor-open-prs.json
-      run: node "$DEPVISOR_HOME/src/snapshot-open-prs.ts"
+        DEPVISOR_SERVER_URL: ${{ github.server_url }}
+        DEPVISOR_PR_NUMBER: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
+        DEPVISOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
+        DEPVISOR_EVENT_NAME: ${{ github.event_name }}
+        DEPVISOR_WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+        DEPVISOR_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+        DEPVISOR_WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        DEPVISOR_WORKFLOW_URL: ${{ github.event.workflow_run.html_url }}
+      run: node "$DEPVISOR_HOME/src/prepare.ts"
 
-    # Keep the install command in an env var so shell metacharacters cannot
-    # break out while GitHub generates the run script. `eval` then runs the
-    # intended shell command; "auto" delegates to src/install-target.ts.
-    - name: Install target dependencies
-      if: inputs.install_command != 'skip'
+    # local() is intentionally host-powerful. Snapshot every depvisor source
+    # file before the model runs so a later token-holding step never executes a
+    # publisher the model rewrote through an absolute host path.
+    - name: Snapshot depvisor publisher
+      id: integrity
       shell: bash
       env:
-        DEPVISOR_INSTALL_COMMAND: ${{ inputs.install_command }}
-        DEPVISOR_TARGET_REPO: ${{ github.workspace }}
+        BASH_ENV: ""
+        ENV: ""
+        NODE_OPTIONS: ""
+        NODE_PATH: ""
       run: |
-        if [ "$DEPVISOR_INSTALL_COMMAND" = "auto" ]; then
-          node "$DEPVISOR_HOME/src/install-target.ts"
-        else
-          eval "$DEPVISOR_INSTALL_COMMAND"
-        fi
+        node_bin="$(command -v node)"
+        source_sha="$("$node_bin" -e '
+          const crypto = require("node:crypto");
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = path.resolve(process.argv[1]);
+          const files = [];
+          const walk = (dir) => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const file = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(file);
+              else if (entry.isFile()) files.push(file);
+            }
+          };
+          walk(root);
+          const hash = crypto.createHash("sha256");
+          for (const file of files.sort()) {
+            hash.update(path.relative(root, file));
+            hash.update("\0");
+            hash.update(fs.readFileSync(file));
+          }
+          process.stdout.write(hash.digest("hex"));
+        ' "$DEPVISOR_HOME/src")"
+        echo "node_bin=$node_bin" >> "$GITHUB_OUTPUT"
+        echo "trusted_path=$PATH" >> "$GITHUB_OUTPUT"
+        echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
 
-    # Token-free update step: a normal run performs the deterministic
-    # bump/install/verification and uses the LLM only for the bounded
-    # fixer/digest roles; dry-run stops before all of those operations. Their
-    # built-in workspace is virtual; repo access is through profile-owned jailed
-    # tools, so neither can reach this action checkout or the later token-holding
-    # entrypoint. A normal run has the LLM key; dry-run has no LLM credentials;
-    # neither path has a GitHub token.
-    - name: Run depvisor (agent — no tokens)
+    # local() gives the model the checkout, shell, installed runner tools, and
+    # network. This step intentionally has the LLM key but no GitHub token.
+    - name: Review and repair with depvisor
+      id: agent
+      if: steps.prepare.outputs.processable == 'true'
       shell: bash
       working-directory: ${{ env.DEPVISOR_HOME }}
       env:
-        # Never place LLM credentials/model selection in the dry-run process.
-        LLM_API_KEY: ${{ steps.config.outputs.dry_run != 'true' && inputs.llm_api_key || '' }}
-        LLM_API_KEY_ENV: ${{ steps.config.outputs.dry_run != 'true' && inputs.llm_api_key_env || '' }}
-        DEPVISOR_LLM_MODEL: ${{ steps.config.outputs.dry_run != 'true' && inputs.llm_model || '' }}
-        DEPVISOR_DRY_RUN: ${{ steps.config.outputs.dry_run }}
-        DEPVISOR_CONFLICT_REFRESH_ONLY: ${{ inputs.conflict_refresh_only }}
+        LLM_API_KEY: ${{ inputs.llm_api_key }}
+        LLM_API_KEY_ENV: ${{ inputs.llm_api_key_env }}
+        DEPVISOR_LLM_MODEL: ${{ inputs.llm_model }}
         DEPVISOR_TARGET_REPO: ${{ github.workspace }}
-        DEPVISOR_BASE_BRANCH: ${{ inputs.base_branch }}
-        DEPVISOR_VERIFY_COMMANDS: ${{ inputs.verify_commands }}
-        DEPVISOR_OPEN_PULL_REQUESTS_LIMIT: ${{ inputs.open_pull_requests_limit }}
-        DEPVISOR_MINIMUM_RELEASE_AGE: ${{ inputs.minimum_release_age }}
-        DEPVISOR_MINIMUM_RELEASE_AGE_EXCLUDE: ${{ inputs.minimum_release_age_exclude }}
-        DEPVISOR_IGNORE: ${{ inputs.ignore }}
-        DEPVISOR_GROUPS: ${{ inputs.groups }}
-        DEPVISOR_SUGGEST_FEATURES: ${{ inputs.suggest_features }}
-        DEPVISOR_LANGUAGE: ${{ inputs.language }}
-        # Forwarded for the reset between dependency groups: a custom command is
-        # reused verbatim; "auto"/"skip" fall back to the PM's lockfile-faithful
-        # install ("skip" skips only the pre-agent install step above, not the
-        # between-groups reinstall, which needs a committed lockfile).
-        DEPVISOR_INSTALL_COMMAND: ${{ inputs.install_command }}
-        DEPVISOR_OPEN_PRS_FILE: ${{ runner.temp }}/depvisor-open-prs.json
       run: |
-        if [ "$DEPVISOR_DRY_RUN" != "true" ]; then
-          # Composite actions cannot express conditionally-required inputs, so
-          # enforce both credentials here for normal runs.
-          if [ -z "$LLM_API_KEY" ]; then
-            echo "::error::The llm_api_key input is required unless dry_run is true."
-            exit 1
-          fi
-          if [ -z "$DEPVISOR_LLM_MODEL" ]; then
-            echo "::error::The llm_model input is required (e.g. openai/gpt-5.5, anthropic/claude-sonnet-5) unless dry_run is true."
-            exit 1
-          fi
-          # Hand the key to Flue under the env var its provider expects
-          # (@flue/cli docs/guide/models.md).
-          if [ -z "$LLM_API_KEY_ENV" ]; then
-            case "$DEPVISOR_LLM_MODEL" in
-              openai/*)     LLM_API_KEY_ENV=OPENAI_API_KEY ;;
-              anthropic/*)  LLM_API_KEY_ENV=ANTHROPIC_API_KEY ;;
-              openrouter/*) LLM_API_KEY_ENV=OPENROUTER_API_KEY ;;
-              *)
-                echo "::error::No default key env var for llm_model '$DEPVISOR_LLM_MODEL'; set the llm_api_key_env input."
-                exit 1 ;;
-            esac
-          fi
-          export "$LLM_API_KEY_ENV=$LLM_API_KEY"
+        if [ -z "$LLM_API_KEY" ]; then
+          echo "::error::The llm_api_key input is required."
+          exit 1
         fi
+        if [ -z "$DEPVISOR_LLM_MODEL" ]; then
+          echo "::error::The llm_model input is required (for example openai/gpt-5.5)."
+          exit 1
+        fi
+        if [ -z "$LLM_API_KEY_ENV" ]; then
+          case "$DEPVISOR_LLM_MODEL" in
+            openai/*) LLM_API_KEY_ENV=OPENAI_API_KEY ;;
+            anthropic/*) LLM_API_KEY_ENV=ANTHROPIC_API_KEY ;;
+            openrouter/*) LLM_API_KEY_ENV=OPENROUTER_API_KEY ;;
+            *)
+              echo "::error::Set llm_api_key_env for model '$DEPVISOR_LLM_MODEL'."
+              exit 1 ;;
+          esac
+        fi
+        export "$LLM_API_KEY_ENV=$LLM_API_KEY"
         unset LLM_API_KEY
-        pnpm --silent exec flue run update --target node
+        pnpm --silent exec flue run repair --target node
+        if [ -f "$DEPVISOR_PAYLOAD_FILE" ]; then
+          echo "publishable=true" >> "$GITHUB_OUTPUT"
+        fi
 
-    # Deterministic, token-holding: push the branch and open (or refresh) the
-    # PR from the emitted payload. Refuses to force-push over human commits.
-    - name: Push branch & open PR
-      if: steps.config.outputs.dry_run != 'true'
+    # Transport only: recheck the frozen dependency state and PR head, then
+    # publish the captured repair and agent-authored report to this one PR.
+    - name: Publish repair and reviewer report
+      if: steps.agent.outputs.publishable == 'true'
       shell: bash
+      working-directory: ${{ env.DEPVISOR_HOME }}
       env:
+        BASH_ENV: ""
+        ENV: ""
+        NODE_OPTIONS: ""
+        NODE_PATH: ""
+        LD_PRELOAD: ""
+        DYLD_INSERT_LIBRARIES: ""
+        PATH: ${{ steps.integrity.outputs.trusted_path }}
         GH_TOKEN: ${{ inputs.github_token }}
         DEPVISOR_TARGET_REPO: ${{ github.workspace }}
-        # Trusted push target from the Actions context. Do not derive it from
-        # the target checkout's .git/config; target lifecycle/verification
-        # commands can rewrite that to a local bare repo whose server-side hooks
-        # would run here with GH_TOKEN.
-        DEPVISOR_REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}
-        # The closed-world mode is re-enforced at this boundary (a snapshot-time
-        # selection cannot see a PR merged/closed mid-run); it must come from
-        # this trusted input, never from the agent-adjacent payload files.
-        DEPVISOR_CONFLICT_REFRESH_ONLY: ${{ inputs.conflict_refresh_only }}
-      run: node "$DEPVISOR_HOME/src/open-pr.ts"
+        DEPVISOR_REPOSITORY: ${{ github.repository }}
+        DEPVISOR_API_URL: ${{ github.api_url }}
+        DEPVISOR_SERVER_URL: ${{ github.server_url }}
+        DEPVISOR_CONTEXT_SHA: ${{ steps.prepare.outputs.context_sha }}
+        DEPVISOR_SNAPSHOT_SHA: ${{ steps.prepare.outputs.snapshot_sha }}
+        EXPECTED_SOURCE_SHA: ${{ steps.integrity.outputs.source_sha }}
+        NODE_BIN: ${{ steps.integrity.outputs.node_bin }}
+      run: |
+        actual_source_sha="$("$NODE_BIN" -e '
+          const crypto = require("node:crypto");
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = path.resolve(process.argv[1]);
+          const files = [];
+          const walk = (dir) => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const file = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(file);
+              else if (entry.isFile()) files.push(file);
+            }
+          };
+          walk(root);
+          const hash = crypto.createHash("sha256");
+          for (const file of files.sort()) {
+            hash.update(path.relative(root, file));
+            hash.update("\0");
+            hash.update(fs.readFileSync(file));
+          }
+          process.stdout.write(hash.digest("hex"));
+        ' "$DEPVISOR_HOME/src")"
+        if [ "$actual_source_sha" != "$EXPECTED_SOURCE_SHA" ]; then
+          echo "::error::The agent changed depvisor's publisher source; refusing the token boundary."
+          exit 1
+        fi
+        /usr/bin/env -i \
+          HOME="$RUNNER_TEMP/depvisor-v2-publisher-home" \
+          PATH="$PATH" \
+          GH_TOKEN="$GH_TOKEN" \
+          DEPVISOR_TARGET_REPO="$DEPVISOR_TARGET_REPO" \
+          DEPVISOR_REPOSITORY="$DEPVISOR_REPOSITORY" \
+          DEPVISOR_API_URL="$DEPVISOR_API_URL" \
+          DEPVISOR_SERVER_URL="$DEPVISOR_SERVER_URL" \
+          DEPVISOR_RUN_DIR="$DEPVISOR_RUN_DIR" \
+          DEPVISOR_STATUS_FILE="$DEPVISOR_STATUS_FILE" \
+          DEPVISOR_CONTEXT_FILE="$DEPVISOR_CONTEXT_FILE" \
+          DEPVISOR_PAYLOAD_FILE="$DEPVISOR_PAYLOAD_FILE" \
+          DEPVISOR_CONTEXT_SHA="$DEPVISOR_CONTEXT_SHA" \
+          DEPVISOR_SNAPSHOT_SHA="$DEPVISOR_SNAPSHOT_SHA" \
+          "$NODE_BIN" "$DEPVISOR_HOME/src/publish.ts"
 
     - name: Report depvisor result
       id: report
       if: always()
       shell: bash
-      run: node "$DEPVISOR_HOME/src/report-status.ts"
+      env:
+        BASH_ENV: ""
+        ENV: ""
+        NODE_OPTIONS: ""
+        NODE_PATH: ""
+        LD_PRELOAD: ""
+        DYLD_INSERT_LIBRARIES: ""
+        PATH: ${{ steps.integrity.outputs.trusted_path }}
+        EXPECTED_SOURCE_SHA: ${{ steps.integrity.outputs.source_sha }}
+        NODE_BIN: ${{ steps.integrity.outputs.node_bin }}
+        PR_URL: ${{ steps.prepare.outputs.pr_url }}
+      run: |
+        if [ -z "$NODE_BIN" ] || [ -z "$EXPECTED_SOURCE_SHA" ]; then
+          echo "status=setup-failed" >> "$GITHUB_OUTPUT"
+          echo "failed=true" >> "$GITHUB_OUTPUT"
+          echo "repaired=false" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=" >> "$GITHUB_OUTPUT"
+          echo "comment_url=" >> "$GITHUB_OUTPUT"
+          echo "total_tokens=0" >> "$GITHUB_OUTPUT"
+          echo "est_cost_usd=" >> "$GITHUB_OUTPUT"
+          echo "## depvisor" >> "$GITHUB_STEP_SUMMARY"
+          echo "Setup failed before depvisor could create a run record." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+        actual_source_sha="$("$NODE_BIN" -e '
+          const crypto = require("node:crypto");
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const root = path.resolve(process.argv[1]);
+          const files = [];
+          const walk = (dir) => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const file = path.join(dir, entry.name);
+              if (entry.isDirectory()) walk(file);
+              else if (entry.isFile()) files.push(file);
+            }
+          };
+          walk(root);
+          const hash = crypto.createHash("sha256");
+          for (const file of files.sort()) {
+            hash.update(path.relative(root, file));
+            hash.update("\0");
+            hash.update(fs.readFileSync(file));
+          }
+          process.stdout.write(hash.digest("hex"));
+        ' "$DEPVISOR_HOME/src")"
+        if [ "$actual_source_sha" != "$EXPECTED_SOURCE_SHA" ]; then
+          echo "status=publish-failed" >> "$GITHUB_OUTPUT"
+          echo "failed=true" >> "$GITHUB_OUTPUT"
+          echo "repaired=false" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=" >> "$GITHUB_OUTPUT"
+          echo "comment_url=" >> "$GITHUB_OUTPUT"
+          echo "total_tokens=0" >> "$GITHUB_OUTPUT"
+          echo "est_cost_usd=" >> "$GITHUB_OUTPUT"
+          echo "## depvisor" >> "$GITHUB_STEP_SUMMARY"
+          echo "Publisher source integrity failed after the agent step." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+        /usr/bin/env -i \
+          HOME="$RUNNER_TEMP/depvisor-v2-reporter-home" \
+          PATH="$PATH" \
+          DEPVISOR_STATUS_FILE="$DEPVISOR_STATUS_FILE" \
+          GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+          GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+          "$NODE_BIN" "$DEPVISOR_HOME/src/report-status.ts"

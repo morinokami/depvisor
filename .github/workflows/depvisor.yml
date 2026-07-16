@@ -1,78 +1,51 @@
 name: depvisor
 
 on:
-  # Keep the schedule disabled here; consumers enable it in their own workflow.
-  # schedule:
-  #   - cron: '0 3 * * 1'
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Preview candidates, groups, and PR actions without changing anything
-        type: boolean
-        default: false
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions: {}
 
 concurrency:
-  group: depvisor
-  cancel-in-progress: false
+  group: depvisor-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
 
 jobs:
-  update:
-    name: Prepare dependency updates
+  repair:
+    if: github.event.workflow_run.event == 'pull_request'
+    name: Repair and review dependency PR
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
-      contents: write # push prepared update branches
-      pull-requests: write # open or refresh dependency PRs
+      actions: read # read failed jobs and their logs
+      contents: write # add one repair commit to the updater branch
+      pull-requests: write # maintain the reviewer report comment
     steps:
+      # The agent needs unrestricted research/install access in v2. Harden-runner
+      # remains in audit mode here so the development workflow records egress
+      # without preventing repository-specific package registries or docs.
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            api.github.com:443
-            codeload.github.com:443
-            objects.githubusercontent.com:443
-            *.actions.githubusercontent.com:443
-            registry.npmjs.org:443
-            api.osv.dev:443
-            api.openai.com:443
-            api.anthropic.com:443
+          egress-policy: audit
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: ./
         id: depvisor
         with:
-          dry_run: ${{ inputs.dry_run }}
-          # A GitHub Environment would add consumer setup; the composite action
-          # keeps this key in its structurally token-free step.
-          llm_api_key: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] dedicated token-free step
+          llm_api_key: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] agent step has no GitHub token
           llm_model: openai/gpt-5.5
-          install_command: skip
-          # The target here is depvisor itself; auto-detection would only find
-          # lint/test, so name the full CI gate set explicitly.
-          verify_commands: |
-            pnpm run typecheck
-            pnpm run lint
-            pnpm run fmt:check
-            pnpm run knip
-            pnpm run test
 
-      # Consume the action outputs the way docs/results.md documents (env-mediated,
-      # if: always()) — doubles as an end-to-end check that outputs survive a
-      # red run.
       - name: Show depvisor outputs
         if: always()
         env:
-          DEPVISOR_STATUS: ${{ steps.depvisor.outputs.status }}
-          DEPVISOR_FAILED: ${{ steps.depvisor.outputs.failed }}
-          DEPVISOR_PREPARED_COUNT: ${{ steps.depvisor.outputs.prepared_count }}
-          DEPVISOR_PR_URLS: ${{ steps.depvisor.outputs.pr_urls }}
-        run: |
-          echo "status=$DEPVISOR_STATUS failed=$DEPVISOR_FAILED prepared_count=$DEPVISOR_PREPARED_COUNT"
-          echo "pr_urls:"
-          echo "$DEPVISOR_PR_URLS"
+          STATUS: ${{ steps.depvisor.outputs.status }}
+          FAILED: ${{ steps.depvisor.outputs.failed }}
+          REPAIRED: ${{ steps.depvisor.outputs.repaired }}
+          PR_URL: ${{ steps.depvisor.outputs.pr_url }}
+        run: echo "status=$STATUS failed=$FAILED repaired=$REPAIRED pr=$PR_URL"
