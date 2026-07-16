@@ -14,55 +14,19 @@ import { join } from "node:path";
 import { materializeNewRepairFiles } from "./core/apply-repair.ts";
 import { changedDependencyState, readDependencySnapshot } from "./core/dependency-state.ts";
 import { captureRepairChanges, sameRepairChanges } from "./core/git.ts";
+import { isRecord } from "./core/json.ts";
 import { readRepairPayload } from "./core/repair-payload.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
 import { cleanReportText } from "./core/text.ts";
+import { required } from "./shared/env.ts";
+import { github, object } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
 
 const REPORT_MARKER = "<!-- depvisor-v2-report -->";
 const MAX_COMMENT_CHARS = 60_000;
 
 type Json = Record<string, unknown>;
-
-function required(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
-}
-
-function apiBase(): string {
-  return (process.env.DEPVISOR_API_URL || "https://api.github.com").replace(/\/$/, "");
-}
-
-async function github(path: string, options: { method?: string; body?: unknown } = {}) {
-  const init: RequestInit = {
-    method: options.method || "GET",
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${required("GH_TOKEN")}`,
-      "Content-Type": "application/json",
-      "User-Agent": "depvisor-v2",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  };
-  if (options.body !== undefined) init.body = JSON.stringify(options.body);
-  const response = await fetch(`${apiBase()}${path}`, init);
-  if (!response.ok) throw new Error(`GitHub API ${path} returned ${response.status}`);
-  const value: unknown = await response.json();
-  return value;
-}
-
-function isObject(value: unknown): value is Json {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function object(value: unknown, label: string): Json {
-  if (!isObject(value)) {
-    throw new Error(`GitHub returned an invalid ${label}`);
-  }
-  return value;
-}
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -269,7 +233,7 @@ async function upsertComment(repository: string, prNumber: number, body: string)
   }
   let existing: Json | undefined;
   for (const value of comments.toReversed()) {
-    if (isObject(value) && typeof value.body === "string" && value.body.includes(REPORT_MARKER)) {
+    if (isRecord(value) && typeof value.body === "string" && value.body.includes(REPORT_MARKER)) {
       existing = value;
       break;
     }

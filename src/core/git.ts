@@ -2,9 +2,10 @@
 
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
+import { isSafeRepoPath } from "./paths.ts";
 
-export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"] as const;
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"] as const;
 const MAX_REPAIR_FILES = 200;
 const MAX_REPAIR_BYTES = 5 * 1024 * 1024;
 
@@ -89,17 +90,10 @@ export function sameRepairChanges(left: RepairChanges, right: RepairChanges): bo
   });
 }
 
-function safeRelativePath(repo: string, path: string): string {
-  const absolute = resolve(repo, path);
-  const rel = relative(repo, absolute);
-  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || rel.includes("\0")) {
-    throw new Error(`Unsafe repair path: ${path}`);
-  }
-  for (const character of rel) {
-    const code = character.codePointAt(0) ?? 0;
-    if (code < 32 || code === 127) throw new Error(`Repair path contains a control byte`);
-  }
-  return rel.split(sep).join("/");
+/** Git already emits repository-relative paths; hold them to the one shared rule set. */
+function safeRelativePath(path: string): string {
+  if (!isSafeRepoPath(path)) throw new Error(`Unsafe repair path: ${path}`);
+  return path;
 }
 
 /** Capture exactly what the agent changed without trusting a commit it made. */
@@ -108,7 +102,7 @@ export function captureRepairChanges(repo: string): RepairChanges {
   const tracked = nulList(git(repo, ["diff", "--name-only", "-z", "HEAD", "--"]));
   const untracked = nulList(git(repo, ["ls-files", "--others", "--exclude-standard", "-z", "--"]));
   const newFiles = untracked.map((rawPath) => {
-    const path = safeRelativePath(repo, rawPath);
+    const path = safeRelativePath(rawPath);
     const absolute = resolve(repo, path);
     const stat = lstatSync(absolute);
     if (!stat.isFile() && !stat.isSymbolicLink()) {
@@ -124,9 +118,7 @@ export function captureRepairChanges(repo: string): RepairChanges {
       symlink: stat.isSymbolicLink(),
     };
   });
-  const paths = [
-    ...new Set([...tracked, ...untracked].map((path) => safeRelativePath(repo, path))),
-  ].toSorted();
+  const paths = [...new Set([...tracked, ...untracked].map(safeRelativePath))].toSorted();
   const totalBytes =
     Buffer.byteLength(patch) +
     newFiles.reduce((sum, file) => sum + Buffer.from(file.contentBase64, "base64").byteLength, 0);

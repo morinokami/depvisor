@@ -2,7 +2,10 @@
 
 `agents/depvisor.ts` imports Markdown instructions and uses `local()` from
 `@flue/runtime/node`; it is Flue-bundler-only. Nested core/shared modules remain
-plain-Node-safe and use explicit `.ts` imports.
+plain-Node-safe and use explicit `.ts` imports. `shared/` carries the entrypoint
+plumbing (`env`, `github-api`, `actions`, `target`); entrypoints must not grow
+private copies of these helpers — the token boundary lives in which step runs
+them, not in duplicated code.
 
 | Entrypoint             | Role                                                      | Credentials                                    |
 | ---------------------- | --------------------------------------------------------- | ---------------------------------------------- |

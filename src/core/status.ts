@@ -2,21 +2,9 @@
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { isRecord } from "./json.ts";
 
-export type RunStatus =
-  | "in-progress"
-  | "reviewed"
-  | "repair-published"
-  | "deferred"
-  | "unsupported-pr"
-  | "setup-failed"
-  | "wrong-head"
-  | "agent-failed"
-  | "dependency-state-changed"
-  | "stale-pr"
-  | "publish-failed";
-
-const STATUSES: ReadonlySet<string> = new Set([
+export const RUN_STATUSES = [
   "in-progress",
   "reviewed",
   "repair-published",
@@ -28,14 +16,14 @@ const STATUSES: ReadonlySet<string> = new Set([
   "dependency-state-changed",
   "stale-pr",
   "publish-failed",
-]);
+] as const;
+
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+const STATUSES: ReadonlySet<string> = new Set(RUN_STATUSES);
 
 function isRunStatus(value: string): value is RunStatus {
   return STATUSES.has(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function nonnegative(value: unknown): value is number {

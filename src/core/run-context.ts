@@ -1,6 +1,7 @@
 /** Trusted, token-free handoff from the GitHub snapshot step to the agent. */
 
 import { readFileSync } from "node:fs";
+import { isRecord } from "./json.ts";
 
 export interface PullRequestFile {
   filename: string;
@@ -56,10 +57,6 @@ function number(value: unknown, field: string): number {
     throw new Error(`Invalid run context: ${field}`);
   }
   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function record(value: unknown, field: string): Record<string, unknown> {

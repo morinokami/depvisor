@@ -11,6 +11,7 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, join, relative, sep } from "node:path";
+import { isSafeRepoPath } from "./paths.ts";
 
 export interface DependencySnapshot {
   version: 1;
@@ -27,9 +28,7 @@ export function readDependencySnapshot(path: string): DependencySnapshot {
   const files: Record<string, string | null> = {};
   for (const [name, hash] of Object.entries(value.files)) {
     if (
-      !name ||
-      name.startsWith("/") ||
-      name.split("/").includes("..") ||
+      !isSafeRepoPath(name) ||
       (hash !== null && (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)))
     ) {
       throw new Error("Invalid dependency snapshot entry");

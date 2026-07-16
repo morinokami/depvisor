@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import type { AgentResult } from "./agent-result.ts";
 import type { RepairChanges } from "./git.ts";
+import { isRecord } from "./json.ts";
 
 export interface RepairPayload {
   version: 2;
@@ -12,10 +13,6 @@ export interface RepairPayload {
   headSha: string;
   agent: AgentResult;
   changes: RepairChanges;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {

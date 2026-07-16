@@ -10,7 +10,7 @@
     "flue.config.ts",
     "test/*.test.ts"
   ],
-  "project": ["src/**/*.ts!", "!src/dev/**!", "test/**/*.ts"],
+  "project": ["src/**/*.ts!", "test/**/*.ts"],
   "ignoreExportsUsedInFile": true,
   "treatConfigHintsAsErrors": true
 }

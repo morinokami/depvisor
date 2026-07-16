@@ -3,13 +3,15 @@
  * Runs before the local-sandbox agent and writes a token-free context file.
  */
 
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { MAX_PATCH_CHARS, MAX_TOTAL_PATCH_CHARS, takeText } from "./core/context-budget.ts";
 import { snapshotDependencyState } from "./core/dependency-state.ts";
+import { isRecord } from "./core/json.ts";
 import { collectPages } from "./core/pagination.ts";
+import { isSafeRepoPath } from "./core/paths.ts";
 import {
   isSupportedUpdater,
   type FailedJob,
@@ -17,52 +19,14 @@ import {
   type RunContext,
 } from "./core/run-context.ts";
 import { initialRecord, writeRunRecord } from "./core/status.ts";
+import { writeOutput as output } from "./shared/actions.ts";
+import { required } from "./shared/env.ts";
+import { apiBase, github, githubHeaders, object } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
 
 const MAX_JOB_LOG_CHARS = 60_000;
 const MAX_TOTAL_LOG_CHARS = 180_000;
 const MAX_JOB_PAGES = 30;
-
-type Json = Record<string, unknown>;
-
-function isObject(value: unknown): value is Json {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function required(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
-}
-
-function output(name: string, value: string): void {
-  const file = process.env.GITHUB_OUTPUT;
-  if (file) appendFileSync(file, `${name}=${value}\n`);
-}
-
-function apiBase(): string {
-  return (process.env.DEPVISOR_API_URL || "https://api.github.com").replace(/\/$/, "");
-}
-
-async function github(path: string): Promise<unknown> {
-  const response = await fetch(`${apiBase()}${path}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${required("GH_TOKEN")}`,
-      "User-Agent": "depvisor-v2",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
-  if (!response.ok) throw new Error(`GitHub API ${path} returned ${response.status}`);
-  return response.json();
-}
-
-function object(value: unknown, label: string): Json {
-  if (!isObject(value)) {
-    throw new Error(`GitHub returned an invalid ${label}`);
-  }
-  return value;
-}
 
 function str(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -70,12 +34,6 @@ function str(value: unknown): string {
 
 function int(value: unknown): number {
   return typeof value === "number" && Number.isSafeInteger(value) ? value : 0;
-}
-
-function validPath(path: string): boolean {
-  return (
-    path !== "" && !path.startsWith("/") && !path.split("/").includes("..") && !path.includes("\\")
-  );
 }
 
 async function resolvePullRequestNumber(repository: string, runId: number | null): Promise<number> {
@@ -86,7 +44,7 @@ async function resolvePullRequestNumber(repository: string, runId: number | null
     const run = object(await github(`/repos/${repository}/actions/runs/${runId}`), "workflow run");
     const prs = Array.isArray(run.pull_requests) ? run.pull_requests : [];
     const first = prs[0];
-    if (isObject(first)) {
+    if (isRecord(first)) {
       const number = int(first.number);
       if (number > 0) return number;
     }
@@ -96,8 +54,8 @@ async function resolvePullRequestNumber(repository: string, runId: number | null
   if (headSha) {
     const associated = await github(`/repos/${repository}/commits/${headSha}/pulls`);
     if (Array.isArray(associated)) {
-      const open = associated.find((value) => isObject(value) && value.state === "open");
-      if (isObject(open)) {
+      const open = associated.find((value) => isRecord(value) && value.state === "open");
+      if (isRecord(open)) {
         const number = int(open.number);
         if (number > 0) return number;
       }
@@ -117,7 +75,7 @@ async function pullRequestFiles(repository: string, number: number): Promise<Pul
     for (const value of raw) {
       const file = object(value, "PR file");
       const filename = str(file.filename);
-      if (!validPath(filename)) throw new Error("GitHub returned an unsafe PR path");
+      if (!isSafeRepoPath(filename)) throw new Error("GitHub returned an unsafe PR path");
       const entry: PullRequestFile = {
         filename,
         status: str(file.status),
@@ -126,7 +84,9 @@ async function pullRequestFiles(repository: string, number: number): Promise<Pul
       };
       const previous = str(file.previous_filename);
       if (previous) {
-        if (!validPath(previous)) throw new Error("GitHub returned an unsafe previous PR path");
+        if (!isSafeRepoPath(previous)) {
+          throw new Error("GitHub returned an unsafe previous PR path");
+        }
         entry.previousFilename = previous;
       }
       const patch = str(file.patch);
@@ -143,12 +103,7 @@ async function pullRequestFiles(repository: string, number: number): Promise<Pul
 async function jobLog(repository: string, jobId: number): Promise<string> {
   const first = await fetch(`${apiBase()}/repos/${repository}/actions/jobs/${jobId}/logs`, {
     redirect: "manual",
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${required("GH_TOKEN")}`,
-      "User-Agent": "depvisor-v2",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
+    headers: githubHeaders(),
   });
   if (first.status >= 300 && first.status < 400) {
     const location = first.headers.get("location");
@@ -175,7 +130,7 @@ async function failedJobs(repository: string, runId: number | null): Promise<Fai
     { pageSize: 100, maxPages: MAX_JOB_PAGES, label: "Workflow job list" },
   );
   const failed = jobs.filter((value) => {
-    if (!isObject(value)) return false;
+    if (!isRecord(value)) return false;
     const conclusion = str(value.conclusion);
     return conclusion !== "success" && conclusion !== "skipped" && conclusion !== "neutral";
   });

@@ -1,11 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { readRunRecord, statusFails } from "./core/status.ts";
 import { escapeStepSummaryText } from "./core/text.ts";
-
-function writeOutput(name: string, value: string): void {
-  const file = process.env.GITHUB_OUTPUT;
-  if (file) appendFileSync(file, `${name}=${value}\n`);
-}
+import { writeOutput } from "./shared/actions.ts";
 
 function safeUrl(value: string | null): string {
   if (!value) return "";

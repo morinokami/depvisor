@@ -120,6 +120,9 @@ runs:
     # file before the model runs to detect direct publisher-source rewrites.
     # This is file-level hardening, not isolation from same-UID processes or
     # runner-writable executables; the residual risk is documented for users.
+    # The hash script is deliberately inlined and repeated verbatim in the two
+    # later token-holding steps: each must recompute it independently with the
+    # pre-agent node binary instead of trusting any file the agent could edit.
     - name: Snapshot depvisor publisher
       id: integrity
       shell: bash

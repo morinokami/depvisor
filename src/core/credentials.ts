@@ -89,7 +89,7 @@ function httpUrlHasUserinfo(raw: string): boolean {
   return url.username !== "" || url.password !== "";
 }
 
-/** One message for both surfaces: the action step's ::error and the preflight summary. */
+/** Message for the check-credentials action step's ::error output. */
 export function persistedCredentialsSummary(findings: string[]): string {
   return (
     `The target checkout carries persisted git credentials (${findings.join("; ")}). ` +

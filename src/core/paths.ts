@@ -1,0 +1,15 @@
+/**
+ * The one lexical validator for untrusted repository-relative paths.
+ *
+ * Every path that crosses toward publication — updater-changed files, captured
+ * repair paths, snapshot entries, materialized new files — must pass this exact
+ * rule set so no boundary is quietly looser than another.
+ */
+export function isSafeRepoPath(path: string): boolean {
+  if (!path || path.startsWith("/") || path.includes("\\")) return false;
+  for (const character of path) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 32 || code === 127) return false;
+  }
+  return path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}

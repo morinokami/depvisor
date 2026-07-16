@@ -3,17 +3,13 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import type { NewRepairFile } from "./git.ts";
+import { isSafeRepoPath } from "./paths.ts";
 
 function safePath(root: string, path: string): string {
-  if (!path || path.startsWith("/") || path.includes("\0") || path.includes("\\")) {
+  if (!isSafeRepoPath(path)) {
     throw new Error(`Unsafe repair path: ${path}`);
   }
-  const absolute = resolve(root, path);
-  const rel = relative(root, absolute);
-  if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) {
-    throw new Error(`Unsafe repair path: ${path}`);
-  }
-  return absolute;
+  return resolve(root, path);
 }
 
 function ensureDirectories(root: string, parent: string): void {

@@ -6,21 +6,22 @@ import { changedDependencyState, readDependencySnapshot } from "../core/dependen
 import { captureRepairChanges, headSha, isClean, isRepoRoot } from "../core/git.ts";
 import { writeRepairPayload } from "../core/repair-payload.ts";
 import { readRunContext } from "../core/run-context.ts";
-import { initialRecord, writeRunRecord, type RunRecord, type UsageRecord } from "../core/status.ts";
+import {
+  RUN_STATUSES,
+  initialRecord,
+  writeRunRecord,
+  type RunRecord,
+  type UsageRecord,
+} from "../core/status.ts";
+import { required } from "../shared/env.ts";
 import { REPO } from "../shared/target.ts";
 
 const OutputSchema = v.object({
-  status: v.string(),
+  status: v.picklist(RUN_STATUSES),
   summary: v.string(),
   repaired: v.boolean(),
   changed_files: v.array(v.string()),
 });
-
-function required(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
-}
 
 function usageRecord(response: {
   usage: {

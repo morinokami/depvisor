@@ -16,6 +16,8 @@ Pipeline:
 - `context-budget.ts` and `pagination.ts` bound PR patches and workflow-job
   context before it reaches the model.
 - `apply-repair.ts` materializes new files without following symlink parents.
+- `paths.ts` is the one lexical validator for untrusted repository-relative
+  paths; `json.ts` is the shared record guard for validated handoffs.
 - `text.ts` owns PR-comment and step-summary rendering boundaries.
 - `agent-result.ts` is evidence/report structure, never an attestation.
 - `repair-payload.ts` validates the token-free handoff to publication.
@@ -26,8 +28,9 @@ Keep these properties:
 
 - Frozen paths are compared by content or symlink target, including
   added/removed paths. A new recognized manifest/lockfile must also be detected.
-- Every path crossing into the publisher is repository-relative and rejects
-  traversal, absolute paths, backslashes, and NUL.
+- Every path crossing into the publisher is repository-relative and passes the
+  single `paths.ts` rule set: no traversal, absolute paths, backslashes, or
+  control bytes. Do not fork per-module path validators again.
 - The publisher must compare every live captured repair field byte-for-byte with
   its parsed payload, without depending on JavaScript object key order, before
   applying it to a clean clone.

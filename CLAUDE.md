@@ -14,7 +14,19 @@ pnpm test
 pnpm run check
 actionlint
 zizmor --persona=auditor --min-confidence=high .
-DEPVISOR_TARGET_REPO="$PWD" DEPVISOR_LLM_MODEL=openai/gpt-5.5 pnpm exec flue run repair
+```
+
+A local `flue run repair` needs the files `prepare.ts` produces for a real
+updater PR (there is no standalone discovery mode in v2):
+
+```bash
+run=/tmp/depvisor-run
+GH_TOKEN=… DEPVISOR_REPOSITORY=owner/repo DEPVISOR_PR_NUMBER=123 \
+  DEPVISOR_TARGET_REPO=/path/to/pr-head-checkout \
+  DEPVISOR_RUN_DIR="$run" DEPVISOR_STATUS_FILE="$run/status.json" node src/prepare.ts
+DEPVISOR_TARGET_REPO=/path/to/pr-head-checkout DEPVISOR_LLM_MODEL=openai/gpt-5.5 \
+  DEPVISOR_CONTEXT_FILE="$run/context.json" DEPVISOR_STATUS_FILE="$run/status.json" \
+  DEPVISOR_PAYLOAD_FILE="$run/repair.json" pnpm exec flue run repair
 ```
 
 ## Architecture
