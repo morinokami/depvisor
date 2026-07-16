@@ -65,9 +65,8 @@ publisher steps in the same job under the same UID, and those checks do not
 stop a lingering background process, modification of runner-writable
 toolchain/PATH entries, temporary status-file tampering, or malicious target
 install scripts from observing or interfering with a later token-holding step.
-Use an ephemeral
-GitHub-hosted runner. Shared or persistent self-hosted runners are outside the
-supported threat model.
+Use an ephemeral GitHub-hosted runner. Shared or persistent self-hosted runners
+are outside the supported threat model.
 
 Repositories needing private registries or additional credentials must arrange
 those outside depvisor. Adding such credentials to the agent environment expands
