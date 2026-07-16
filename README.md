@@ -16,13 +16,16 @@ shell, installed runner tools, and network access. The agent:
 When a repair is needed, depvisor adds one commit to the existing updater branch.
 It never opens a replacement PR. The final merge decision stays with you.
 
-> v2 is intentionally incompatible with v1. v1 was a dependency updater; v2 is
-> an autonomous repair/review agent for PRs created by another updater.
-
 ## Setup
 
-Add one secret named `LLM_API_KEY`, then add this workflow. Change `CI` in
-`workflows: [CI]` when your verification workflow has another `name:`.
+The quickest way is to ask a coding agent to install it:
+
+> Read https://raw.githubusercontent.com/morinokami/depvisor/main/start.md and
+> set up depvisor in this repository.
+
+To set it up by hand instead: add one secret named `LLM_API_KEY`, then add this
+workflow. Change `CI` in `workflows: [CI]` when your verification workflow has
+another `name:`.
 
 ```yaml
 # .github/workflows/depvisor.yml
@@ -64,11 +67,6 @@ jobs:
 That two-input `uses:` step is the complete minimum depvisor configuration. The
 PR number, head SHA, failed jobs, logs, repository, GitHub API, and token are
 derived from the `workflow_run` event.
-
-You can also ask a coding agent to install it:
-
-> Read https://raw.githubusercontent.com/morinokami/depvisor/main/start.md and
-> set up depvisor in this repository.
 
 ## What gets published
 
