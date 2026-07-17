@@ -11,6 +11,7 @@
     "test/*.test.ts"
   ],
   "project": ["src/**/*.ts!", "test/**/*.ts"],
+  "ignoreBinaries": ["diff"],
   "ignoreExportsUsedInFile": true,
   "treatConfigHintsAsErrors": true
 }

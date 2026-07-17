@@ -57,6 +57,15 @@ The default local environment exposes ordinary runner variables such as `PATH`,
 provider key. Network access is unrestricted so the agent can install the target
 and consult ecosystem-specific upstream sources.
 
+The agent additionally has two read-only evidence tools: `fetch_release_notes`
+(GitHub releases with a CHANGELOG.md fallback) and `diff_npm_package` (the
+published contents of two npm versions, as file lists plus a unified diff).
+Both run unauthenticated against api.github.com, raw.githubusercontent.com, and
+registry.npmjs.org only, validate every model-supplied coordinate, and cap the
+returned text. They exist so the report's upstream claims cite sources the run
+actually fetched; their output remains untrusted data like any other upstream
+content.
+
 This environment filtering prevents ordinary inheritance; it is not an OS
 security boundary. depvisor hashes its own source before model work and the
 token-holding steps refuse to run if it changed, starting their child processes

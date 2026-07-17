@@ -3,9 +3,9 @@
 `agents/depvisor.ts` imports Markdown instructions and uses `local()` from
 `@flue/runtime/node`; it is Flue-bundler-only. Nested core/shared modules remain
 plain-Node-safe and use explicit `.ts` imports. `shared/` carries the entrypoint
-plumbing (`env`, `github-api`, `actions`, `target`); entrypoints must not grow
-private copies of these helpers — the token boundary lives in which step runs
-them, not in duplicated code.
+plumbing (`env`, `github-api`, `actions`, `target`); `tools/` holds one file
+per agent tool. Entrypoints must not grow private copies of these helpers —
+the token boundary lives in which step runs them, not in duplicated code.
 
 | Entrypoint             | Role                                                      | Credentials                                    |
 | ---------------------- | --------------------------------------------------------- | ---------------------------------------------- |
@@ -17,8 +17,12 @@ them, not in duplicated code.
 
 The root agent is prompted directly once through `session.prompt` with a Valibot
 result schema. It has the target checkout as `cwd` and Flue's local sandbox, so
-ordinary file/shell operations are the primary capability. No fixer/digest
-subagents or custom repository tools remain.
+ordinary file/shell operations are the primary capability. Two read-only
+upstream-evidence tools (`fetch_release_notes` and `diff_npm_package`, one
+file each under `tools/`, logic in `core/upstream.ts`) run in the Flue
+process with no credential, contact only api.github.com,
+raw.githubusercontent.com, and registry.npmjs.org with lexically validated
+coordinates, and return size-capped untrusted text. No fixer/digest subagents remain.
 
 The provider key is needed by Flue itself but is not passed through `local()`'s
 default shell env allowlist. The GitHub token is absent from the entire agent
