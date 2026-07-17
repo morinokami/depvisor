@@ -1,5 +1,7 @@
 /** Rendering boundaries for agent-authored and otherwise untrusted text. */
 
+import { isSafeRepoPath } from "./paths.ts";
+
 // oxlint-disable no-control-regex -- normalize control bytes at a rendering boundary
 function inline(value: string, max: number): string {
   return value
@@ -12,6 +14,44 @@ function inline(value: string, max: number): string {
 /** Preserve ordinary punctuation while preventing marker injection in the PR report. */
 export function cleanReportText(value: string, max = 4_000): string {
   return inline(value, max).replaceAll("<!--", "&lt;!--").replaceAll("-->", "--&gt;");
+}
+
+/**
+ * Build a blob URL pinned to one commit for a lexically safe repository path.
+ * Every component except the path is publisher-derived; a component that fails
+ * its shape check yields no URL rather than a loosely built one.
+ */
+export function repoFileUrl(
+  server: string,
+  repository: string,
+  sha: string,
+  path: string,
+): string | null {
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository)) return null;
+  if (!/^[0-9a-f]{40}$/.test(sha)) return null;
+  if (!isSafeRepoPath(path)) return null;
+  const encoded = path
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")
+    .replaceAll("(", "%28")
+    .replaceAll(")", "%29");
+  return `${server}/${repository}/blob/${sha}/${encoded}`;
+}
+
+const CODE_SPAN = /`([^`\n]{1,256})`/g;
+
+/**
+ * Turn backticked file mentions in untrusted report prose into Markdown links.
+ * Only lexically safe repository-relative tokens reach `link`; a null return
+ * (unknown file, unlinkable component) leaves the mention as literal text.
+ */
+export function linkifyRepoPaths(text: string, link: (path: string) => string | null): string {
+  return text.replace(CODE_SPAN, (span, token: string) => {
+    if (!isSafeRepoPath(token)) return span;
+    const url = link(token);
+    return url === null ? span : `[\`${token}\`](${url})`;
+  });
 }
 
 /** Render a single untrusted value as literal inline text in a step summary. */

@@ -8,7 +8,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { materializeNewRepairFiles } from "./core/apply-repair.ts";
@@ -18,7 +18,7 @@ import { isRecord } from "./core/json.ts";
 import { readRepairPayload } from "./core/repair-payload.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
-import { cleanReportText } from "./core/text.ts";
+import { cleanReportText, linkifyRepoPaths, repoFileUrl } from "./core/text.ts";
 import { required } from "./shared/env.ts";
 import { github, object } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
@@ -87,6 +87,14 @@ function applyRepair(
   materializeNewRepairFiles(clone, changes.newFiles);
 }
 
+function serverUrl(): string {
+  const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
+  if (!/^https:\/\/[A-Za-z0-9._-]+(?::\d+)?$/.test(server)) {
+    throw new Error("Refusing an invalid GitHub server URL");
+  }
+  return server;
+}
+
 function publishCommit(
   repository: string,
   headRef: string,
@@ -96,10 +104,7 @@ function publishCommit(
   if (repository !== required("DEPVISOR_REPOSITORY")) {
     throw new Error("Refusing to push outside the workflow repository");
   }
-  const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
-  if (!/^https:\/\/[A-Za-z0-9._-]+(?::\d+)?$/.test(server)) {
-    throw new Error("Refusing an invalid GitHub server URL");
-  }
+  const server = serverUrl();
   const root = mkdtempSync(join(tmpdir(), "depvisor-v2-publish-"));
   const home = join(root, "home");
   const clone = join(root, "repo");
@@ -154,10 +159,34 @@ function evidenceLink(value: string | undefined): string {
   }
 }
 
-function bullets(items: readonly string[], empty: string): string {
-  return items.length > 0
-    ? items.map((item) => `- ${cleanReportText(item)}`).join("\n")
-    : `- ${empty}`;
+function bullets(
+  items: readonly string[],
+  empty: string,
+  render: (value: string) => string,
+): string {
+  return items.length > 0 ? items.map((item) => `- ${render(item)}`).join("\n") : `- ${empty}`;
+}
+
+/**
+ * A mention becomes a link only when the file exists at the commit the link
+ * pins. The verified working tree carries exactly the published repair
+ * commit's content; without a repair the link pins the snapshotted head, whose
+ * tree may differ from an unpublished (deferred) working tree.
+ */
+function linkedFileExists(repaired: boolean, headSha: string, path: string): boolean {
+  if (repaired) {
+    try {
+      return statSync(join(REPO, path)).isFile();
+    } catch {
+      return false;
+    }
+  }
+  const result = spawnSync(
+    "git",
+    ["-c", "core.hooksPath=/dev/null", "cat-file", "-t", `${headSha}:${path}`],
+    { cwd: REPO, encoding: "utf8" },
+  );
+  return result.status === 0 && result.stdout.trim() === "blob";
 }
 
 function reportBody(
@@ -166,13 +195,21 @@ function reportBody(
   commitSha: string | null,
 ): string {
   const agent = payload.agent;
+  const server = serverUrl();
+  const linkSha = commitSha ?? context.pullRequest.headSha;
+  const fileUrl = (path: string): string | null =>
+    linkedFileExists(commitSha !== null, context.pullRequest.headSha, path)
+      ? repoFileUrl(server, payload.repository, linkSha, path)
+      : null;
+  const prose = (value: string, max?: number): string =>
+    linkifyRepoPaths(cleanReportText(value, max), fileUrl);
   const upstream =
     agent.upstream_changes.length > 0
       ? agent.upstream_changes
           .map(
             (item) =>
-              `- **${cleanReportText(item.dependency, 200)}:** ${cleanReportText(item.change)} ` +
-              `_${cleanReportText(item.relevance)}_${evidenceLink(item.evidence_url)}`,
+              `- **${cleanReportText(item.dependency, 200)}:** ${prose(item.change)} ` +
+              `_${prose(item.relevance)}_${evidenceLink(item.evidence_url)}`,
           )
           .join("\n")
       : "- No repository-relevant upstream change stood out from the available evidence.";
@@ -182,7 +219,7 @@ function reportBody(
           .map(
             (item) =>
               `- \`${cleanReportText(item.command, 500).replaceAll("`", "\\`")}\` — **${item.outcome}**: ` +
-              cleanReportText(item.evidence),
+              prose(item.evidence),
           )
           .join("\n")
       : "- No local verification result was available.";
@@ -195,7 +232,7 @@ function reportBody(
   const body = `${REPORT_MARKER}
 ## ${heading}
 
-${cleanReportText(agent.summary)}
+${prose(agent.summary)}
 
 ### Relevant upstream changes
 
@@ -203,7 +240,7 @@ ${upstream}
 
 ### Repair
 
-${bullets(agent.changes_made, commitSha ? "The repair commit contains the working-tree changes listed above." : "No code repair was needed.")}
+${bullets(agent.changes_made, commitSha ? "The repair commit contains the working-tree changes listed above." : "No code repair was needed.", prose)}
 ${commitSha ? `\nRepair commit: \`${commitSha}\`` : ""}
 
 ### Verification evidence
@@ -212,8 +249,8 @@ ${verification}
 
 ### Residual risks
 
-${bullets(agent.risks, "No additional repository-specific risk was identified.")}
-${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${cleanReportText(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
+${bullets(agent.risks, "No additional repository-specific risk was identified.", prose)}
+${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${prose(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
 
 Initial CI: **${cleanReportText(context.trigger.conclusion, 100)}**${context.trigger.url ? ` — ${cleanReportText(context.trigger.workflowName || "workflow run", 200)}${evidenceLink(context.trigger.url)}` : ""}.
 
