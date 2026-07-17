@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.0](https://github.com/morinokami/depvisor/compare/v2.0.0...v2.1.0) (2026-07-17)
+
+
+### Features
+
+* give the agent bounded read-only upstream-evidence tools ([#95](https://github.com/morinokami/depvisor/issues/95)) ([76b65af](https://github.com/morinokami/depvisor/commit/76b65af42bf322466db38f19d115d8f33bc43047))
+* link backticked file mentions in the PR report to the pinned commit ([#97](https://github.com/morinokami/depvisor/issues/97)) ([e7feac3](https://github.com/morinokami/depvisor/commit/e7feac366c2d608ddb5d8ce9acfd4a1e32aeeca3))
+
 ## [2.0.0](https://github.com/morinokami/depvisor/compare/v1.5.0...v2.0.0) (2026-07-16)
 
 
