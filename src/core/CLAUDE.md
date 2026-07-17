@@ -18,6 +18,10 @@ Pipeline:
 - `apply-repair.ts` materializes new files without following symlink parents.
 - `paths.ts` is the one lexical validator for untrusted repository-relative
   paths; `json.ts` is the shared record guard for validated handoffs.
+- `upstream.ts` fetches bounded upstream evidence (GitHub releases/CHANGELOG,
+  npm tarball diffs) for the agent's read-only tools. It holds no credential,
+  pins its hosts, validates every coordinate lexically, and extracts npm
+  tarballs itself — regular files only, each path through `paths.ts`.
 - `text.ts` owns PR-comment and step-summary rendering boundaries.
 - `agent-result.ts` is evidence/report structure, never an attestation.
 - `repair-payload.ts` validates the token-free handoff to publication.

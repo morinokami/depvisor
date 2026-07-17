@@ -20,9 +20,12 @@ creation, or open-PR budget. Those are updater responsibilities.
 3. It freezes every updater path plus recognized dependency manifests/lockfiles.
    The context and snapshot live under `runner.temp`, outside the target repo.
 4. `flue run repair` prompts the root agent once. The agent uses `local()` with
-   the checkout as cwd, giving it real files, shell, tools, and network. It may
-   investigate upstream changes, run installs/checks, and edit source/tests/config.
-   It must leave edits uncommitted and return structured evidence.
+   the checkout as cwd, giving it real files, shell, and network, plus the
+   read-only `fetch_release_notes`/`diff_npm_package` tools for bounded,
+   credential-free upstream evidence. It may investigate upstream changes, run
+   installs/checks, and edit source/tests/config. Upstream claims in its report
+   must cite fetched sources or the PR-body notes. It must leave edits
+   uncommitted and return structured evidence.
 5. The workflow requires unchanged HEAD and unchanged frozen dependency state,
    then captures tracked binary diff plus untracked files. A `defer` may produce
    a report but never publishes its leftover edits.
