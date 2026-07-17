@@ -30,12 +30,17 @@ export function repoFileUrl(
   if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository)) return null;
   if (!/^[0-9a-f]{40}$/.test(sha)) return null;
   if (!isSafeRepoPath(path)) return null;
-  const encoded = path
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/")
-    .replaceAll("(", "%28")
-    .replaceAll(")", "%29");
+  let encoded: string;
+  try {
+    // encodeURIComponent throws on lone surrogates; an unencodable path gets no link.
+    encoded = path
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+  } catch {
+    return null;
+  }
+  encoded = encoded.replaceAll("(", "%28").replaceAll(")", "%29");
   return `${server}/${repository}/blob/${sha}/${encoded}`;
 }
 

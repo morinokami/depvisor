@@ -32,6 +32,10 @@ test("repo file URLs refuse malformed components", () => {
   assert.equal(repoFileUrl("https://github.com", "owner/repo", SHA, "/etc/passwd"), null);
 });
 
+test("repo file URLs fail closed on unencodable paths instead of throwing", () => {
+  assert.equal(repoFileUrl("https://github.com", "owner/repo", SHA, "src/\ud800.ts"), null);
+});
+
 const url = (path: string): string | null =>
   path === "src/index.ts" ? `https://example.test/${path}` : null;
 
