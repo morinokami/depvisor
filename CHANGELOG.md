@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/morinokami/depvisor/compare/v2.1.0...v2.2.0) (2026-07-17)
+
+
+### Features
+
+* name the report generator with its released depvisor version ([#98](https://github.com/morinokami/depvisor/issues/98)) ([ad26d3c](https://github.com/morinokami/depvisor/commit/ad26d3cbb456b2be8424ba9373ba460ee9e3ec39))
+
 ## [2.1.0](https://github.com/morinokami/depvisor/compare/v2.0.0...v2.1.0) (2026-07-17)
 
 
