@@ -18,13 +18,14 @@ import { isRecord } from "./core/json.ts";
 import { readRepairPayload } from "./core/repair-payload.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
-import { cleanReportText } from "./core/text.ts";
+import { cleanReportText, linkifyRepoPaths, repoFileUrl } from "./core/text.ts";
 import { required } from "./shared/env.ts";
 import { github, object } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
 
 const REPORT_MARKER = "<!-- depvisor-v2-report -->";
 const MAX_COMMENT_CHARS = 60_000;
+const MAX_REPORT_LINKS = 500;
 
 type Json = Record<string, unknown>;
 
@@ -87,19 +88,29 @@ function applyRepair(
   materializeNewRepairFiles(clone, changes.newFiles);
 }
 
+function serverUrl(): string {
+  const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
+  if (!/^https:\/\/[A-Za-z0-9._-]+(?::\d+)?$/.test(server)) {
+    throw new Error("Refusing an invalid GitHub server URL");
+  }
+  return server;
+}
+
+interface PublishedCommit {
+  sha: string;
+  blobPaths: Set<string>;
+}
+
 function publishCommit(
   repository: string,
   headRef: string,
   headSha: string,
   changes: ReturnType<typeof captureRepairChanges>,
-): string {
+): PublishedCommit {
   if (repository !== required("DEPVISOR_REPOSITORY")) {
     throw new Error("Refusing to push outside the workflow repository");
   }
-  const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
-  if (!/^https:\/\/[A-Za-z0-9._-]+(?::\d+)?$/.test(server)) {
-    throw new Error("Refusing an invalid GitHub server URL");
-  }
+  const server = serverUrl();
   const root = mkdtempSync(join(tmpdir(), "depvisor-v2-publish-"));
   const home = join(root, "home");
   const clone = join(root, "repo");
@@ -130,6 +141,8 @@ function publishCommit(
       "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
     ]);
     const commitSha = git(clone, env, ["rev-parse", "HEAD"]);
+    // The report links files at this exact commit; read its tree before the clone goes away.
+    const blobPaths = treeBlobPaths(clone, commitSha);
     git(clone, env, [
       "push",
       "--quiet",
@@ -137,7 +150,7 @@ function publishCommit(
       "origin",
       `HEAD:refs/heads/${headRef}`,
     ]);
-    return commitSha;
+    return { sha: commitSha, blobPaths };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -154,25 +167,63 @@ function evidenceLink(value: string | undefined): string {
   }
 }
 
-function bullets(items: readonly string[], empty: string): string {
-  return items.length > 0
-    ? items.map((item) => `- ${cleanReportText(item)}`).join("\n")
-    : `- ${empty}`;
+function bullets(
+  items: readonly string[],
+  empty: string,
+  render: (value: string) => string,
+): string {
+  return items.length > 0 ? items.map((item) => `- ${render(item)}`).join("\n") : `- ${empty}`;
+}
+
+/**
+ * Enumerate the blob paths of one commit with a single read-only git call so
+ * per-mention existence checks never spawn a process. A failed enumeration
+ * renders a report without links instead of failing the run.
+ */
+function treeBlobPaths(cwd: string, ref: string): Set<string> {
+  const paths = new Set<string>();
+  const result = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "ls-tree", "-r", "-z", ref], {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status !== 0) return paths;
+  for (const entry of (result.stdout ?? "").split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab === -1) continue;
+    if (entry.slice(0, tab).split(" ")[1] === "blob") paths.add(entry.slice(tab + 1));
+  }
+  return paths;
 }
 
 function reportBody(
   payload: ReturnType<typeof readRepairPayload>,
   context: ReturnType<typeof readRunContext>,
-  commitSha: string | null,
+  published: PublishedCommit | null,
 ): string {
   const agent = payload.agent;
+  const commitSha = published?.sha ?? null;
+  const server = serverUrl();
+  const linkSha = commitSha ?? context.pullRequest.headSha;
+  // Without a repair the link pins the snapshotted head, whose tree may differ
+  // from an unpublished (deferred) working tree — so enumerate the commit, not the files.
+  const blobPaths = published?.blobPaths ?? treeBlobPaths(REPO, context.pullRequest.headSha);
+  let links = 0;
+  const fileUrl = (path: string): string | null => {
+    if (links >= MAX_REPORT_LINKS || !blobPaths.has(path)) return null;
+    const url = repoFileUrl(server, payload.repository, linkSha, path);
+    if (url !== null) links += 1;
+    return url;
+  };
+  const prose = (value: string, max?: number): string =>
+    linkifyRepoPaths(cleanReportText(value, max), fileUrl);
   const upstream =
     agent.upstream_changes.length > 0
       ? agent.upstream_changes
           .map(
             (item) =>
-              `- **${cleanReportText(item.dependency, 200)}:** ${cleanReportText(item.change)} ` +
-              `_${cleanReportText(item.relevance)}_${evidenceLink(item.evidence_url)}`,
+              `- **${cleanReportText(item.dependency, 200)}:** ${prose(item.change)} ` +
+              `_${prose(item.relevance)}_${evidenceLink(item.evidence_url)}`,
           )
           .join("\n")
       : "- No repository-relevant upstream change stood out from the available evidence.";
@@ -182,7 +233,7 @@ function reportBody(
           .map(
             (item) =>
               `- \`${cleanReportText(item.command, 500).replaceAll("`", "\\`")}\` — **${item.outcome}**: ` +
-              cleanReportText(item.evidence),
+              prose(item.evidence),
           )
           .join("\n")
       : "- No local verification result was available.";
@@ -195,7 +246,7 @@ function reportBody(
   const body = `${REPORT_MARKER}
 ## ${heading}
 
-${cleanReportText(agent.summary)}
+${prose(agent.summary)}
 
 ### Relevant upstream changes
 
@@ -203,7 +254,7 @@ ${upstream}
 
 ### Repair
 
-${bullets(agent.changes_made, commitSha ? "The repair commit contains the working-tree changes listed above." : "No code repair was needed.")}
+${bullets(agent.changes_made, commitSha ? "The repair commit contains the working-tree changes listed above." : "No code repair was needed.", prose)}
 ${commitSha ? `\nRepair commit: \`${commitSha}\`` : ""}
 
 ### Verification evidence
@@ -212,8 +263,8 @@ ${verification}
 
 ### Residual risks
 
-${bullets(agent.risks, "No additional repository-specific risk was identified.")}
-${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${cleanReportText(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
+${bullets(agent.risks, "No additional repository-specific risk was identified.", prose)}
+${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${prose(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
 
 Initial CI: **${cleanReportText(context.trigger.conclusion, 100)}**${context.trigger.url ? ` — ${cleanReportText(context.trigger.workflowName || "workflow run", 200)}${evidenceLink(context.trigger.url)}` : ""}.
 
@@ -300,18 +351,20 @@ async function main(): Promise<void> {
       throw new Error("The working-tree repair changed after the agent result was captured");
     }
 
+    let published: PublishedCommit | null = null;
     if (payload.agent.verdict === "ready" && liveChanges.paths.length > 0) {
-      commitSha = publishCommit(
+      published = publishCommit(
         payload.headRepository,
         payload.headRef,
         payload.headSha,
         liveChanges,
       );
+      commitSha = published.sha;
     }
     const commentUrl = await upsertComment(
       payload.repository,
       payload.prNumber,
-      reportBody(payload, context, commitSha),
+      reportBody(payload, context, published),
     );
     const status =
       payload.agent.verdict === "defer" ? "deferred" : commitSha ? "repair-published" : "reviewed";

@@ -2,6 +2,10 @@
 
 One depvisor run corresponds to one existing updater PR. The Action writes a
 step summary, maintains one PR comment, and exposes machine-shaped outputs.
+Backticked file mentions in the comment link to the file at the exact commit
+the report describes — the repair commit when one was pushed, otherwise the
+reviewed PR head — and only when the file actually exists there; the publisher
+builds these links itself and never renders an agent-authored URL.
 
 ## Outputs
 

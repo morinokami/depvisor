@@ -22,7 +22,9 @@ Pipeline:
   npm tarball diffs) for the agent's read-only tools. It holds no credential,
   pins its hosts, validates every coordinate lexically, and extracts npm
   tarballs itself — regular files only, each path through `paths.ts`.
-- `text.ts` owns PR-comment and step-summary rendering boundaries.
+- `text.ts` owns PR-comment and step-summary rendering boundaries, including
+  the publisher-built file links: only backticked mentions that pass `paths.ts`
+  and exist at the pinned commit become URLs; agent text never supplies one.
 - `agent-result.ts` is evidence/report structure, never an attestation.
 - `repair-payload.ts` validates the token-free handoff to publication.
 - `run-context.ts` validates the prepared PR/CI snapshot and updater identity.
