@@ -1,7 +1,7 @@
 import { defineWorkflow } from "@flue/runtime";
 import * as v from "valibot";
 import depvisor from "../agents/depvisor.ts";
-import { AgentResultSchema, validAgentVerdict } from "../core/agent-result.ts";
+import { AgentResultSchema, type AgentResult } from "../core/agent-result.ts";
 import { changedDependencyState, readDependencySnapshot } from "../core/dependency-state.ts";
 import { captureRepairChanges, headSha, isClean, isRepoRoot } from "../core/git.ts";
 import { writeRepairPayload } from "../core/repair-payload.ts";
@@ -106,13 +106,10 @@ export default defineWorkflow({
 
     try {
       const session = await harness.session("repair");
+      // AgentResultSchema enforces the defer_reason rule and evidence caps at
+      // the model boundary; an unrepairable result surfaces as agent-failed.
       const response = await session.prompt(promptFor(context), { result: AgentResultSchema });
-      const result = response.data;
-      if (!validAgentVerdict(result)) {
-        return output(
-          fail("agent-failed", "The agent deferred without identifying a concrete blocker."),
-        );
-      }
+      const result: AgentResult = response.data;
       if (headSha(REPO) !== context.pullRequest.headSha) {
         return output(
           fail("dependency-state-changed", "The agent changed Git history; nothing was published."),
