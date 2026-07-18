@@ -29,6 +29,7 @@ test("recognizes dependency state across common updater ecosystems", () => {
     ".yarnrc",
     ".yarnrc.yml",
     ".pnpmfile.cjs",
+    ".pnpmfile.mjs",
   ]) {
     assert.equal(isDependencyStatePath(path), true, path);
   }

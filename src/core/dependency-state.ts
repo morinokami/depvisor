@@ -43,6 +43,7 @@ const EXACT_NAMES = new Set([
   ".gitmodules",
   ".npmrc",
   ".pnpmfile.cjs",
+  ".pnpmfile.mjs",
   ".yarnrc",
   ".yarnrc.yml",
   "bun.lock",
