@@ -4,6 +4,7 @@ import {
   actionsRunUrl,
   cleanReportText,
   escapeStepSummaryText,
+  evidenceLink,
   linkifyRepoPaths,
   repoFileUrl,
 } from "../src/core/text.ts";
@@ -52,6 +53,19 @@ test("builds actions run URLs from validated components only", () => {
 
 test("repo file URLs fail closed on unencodable paths instead of throwing", () => {
   assert.equal(repoFileUrl("https://github.com", "owner/repo", SHA, "src/\ud800.ts"), null);
+});
+
+test("evidence links render only parseable https URLs and stay inside the link", () => {
+  assert.equal(
+    evidenceLink("https://github.com/o/r/releases/tag/v1.2.3"),
+    " ([source](https://github.com/o/r/releases/tag/v1.2.3))",
+  );
+  assert.equal(evidenceLink("https://example.com/a)b"), " ([source](https://example.com/a%29b))");
+  assert.equal(evidenceLink("http://example.com/notes"), "");
+  assert.equal(evidenceLink("javascript:alert(1)"), "");
+  assert.equal(evidenceLink("not a url"), "");
+  assert.equal(evidenceLink(""), "");
+  assert.equal(evidenceLink(undefined), "");
 });
 
 const url = (path: string): string | null =>

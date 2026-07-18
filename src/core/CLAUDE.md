@@ -26,8 +26,11 @@ Pipeline:
 - `text.ts` owns PR-comment and step-summary rendering boundaries, including
   the publisher-built file links: only backticked mentions that pass `paths.ts`
   and exist at the pinned commit become URLs; agent text never supplies one.
-  It is also the single home of the validated URL builders (`repoFileUrl`,
-  `actionsRunUrl`) shared by the publisher and the self-check reporter.
+  It is also the single home of the shared server-origin shape
+  (`isValidServerUrl`), the validated URL builders (`repoFileUrl`,
+  `actionsRunUrl`) used by the publisher and the self-check reporter, and
+  `evidenceLink`, the one place an agent-supplied URL renders — https-only and
+  fail-closed to empty.
 - `agent-result.ts` is evidence/report structure, never an attestation.
 - `report-state.ts` renders/parses the comment's reviewed-head state line and
   names the generator version. The line is duplicate-work suppression read from

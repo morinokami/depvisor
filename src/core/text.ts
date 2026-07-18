@@ -19,9 +19,14 @@ export function cleanReportText(value: string, max = 4_000): string {
 const SERVER_PATTERN = /^https:\/\/[A-Za-z0-9._-]+(?::\d+)?$/;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
+/** The one server-origin shape every rendered URL shares: https host, optional port, no path. */
+export function isValidServerUrl(server: string): boolean {
+  return SERVER_PATTERN.test(server);
+}
+
 /** Build one https://…/actions/runs/<id> URL from validated components only. */
 export function actionsRunUrl(server: string, repository: string, runId: number): string | null {
-  if (!SERVER_PATTERN.test(server)) return null;
+  if (!isValidServerUrl(server)) return null;
   if (!REPOSITORY_PATTERN.test(repository)) return null;
   if (!Number.isSafeInteger(runId) || runId <= 0) return null;
   return `${server}/${repository}/actions/runs/${runId}`;
@@ -38,7 +43,7 @@ export function repoFileUrl(
   sha: string,
   path: string,
 ): string | null {
-  if (!SERVER_PATTERN.test(server)) return null;
+  if (!isValidServerUrl(server)) return null;
   if (!REPOSITORY_PATTERN.test(repository)) return null;
   if (!/^[0-9a-f]{40}$/.test(sha)) return null;
   if (!isSafeRepoPath(path)) return null;
@@ -54,6 +59,23 @@ export function repoFileUrl(
   }
   encoded = encoded.replaceAll("(", "%28").replaceAll(")", "%29");
   return `${server}/${repository}/blob/${sha}/${encoded}`;
+}
+
+/**
+ * Render an untrusted evidence URL as a Markdown source-link suffix. This is
+ * the one rendered URL the agent may supply: anything but a parseable https
+ * URL renders as empty, and closing parens are encoded so the value cannot
+ * break out of the Markdown link.
+ */
+export function evidenceLink(value: string | undefined): string {
+  if (!value) return "";
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") return "";
+    return ` ([source](${url.href.replaceAll(")", "%29")}))`;
+  } catch {
+    return "";
+  }
 }
 
 const CODE_SPAN = /`([^`\n]{1,256})`/g;

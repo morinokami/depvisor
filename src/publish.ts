@@ -18,7 +18,14 @@ import { readRepairPayload } from "./core/repair-payload.ts";
 import { REPORT_MARKER, generatorName, renderReportState } from "./core/report-state.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
-import { actionsRunUrl, cleanReportText, linkifyRepoPaths, repoFileUrl } from "./core/text.ts";
+import {
+  actionsRunUrl,
+  cleanReportText,
+  evidenceLink,
+  isValidServerUrl,
+  linkifyRepoPaths,
+  repoFileUrl,
+} from "./core/text.ts";
 import { required } from "./shared/env.ts";
 import { github, latestMarkerComment, object } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
@@ -87,7 +94,7 @@ function applyRepair(
 
 function serverUrl(): string {
   const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
-  if (!/^https:\/\/[A-Za-z0-9._-]+(?::\d+)?$/.test(server)) {
+  if (!isValidServerUrl(server)) {
     throw new Error("Refusing an invalid GitHub server URL");
   }
   return server;
@@ -162,17 +169,6 @@ function reportRunUrl(): string | null {
   const repository = process.env.DEPVISOR_REPOSITORY?.trim() ?? "";
   const runId = Number(process.env.DEPVISOR_RUN_ID?.trim() || "");
   return actionsRunUrl(serverUrl(), repository, runId);
-}
-
-function evidenceLink(value: string | undefined): string {
-  if (!value) return "";
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:") return "";
-    return ` ([source](${url.href.replaceAll(")", "%29")}))`;
-  } catch {
-    return "";
-  }
 }
 
 function bullets(
