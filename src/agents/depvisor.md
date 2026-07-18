@@ -35,6 +35,12 @@ Important boundaries:
 - Never claim that a command passed unless you ran it and observed a successful
   exit. When a check cannot be run locally, say so and explain what evidence is
   available instead.
+- Every `verification` entry must say something about this update. Do not run
+  no-op commands (for example `git status` or `git diff --check` on a tree you
+  never changed) just to have a passed entry to report. When you changed
+  nothing, the triggering CI conclusion from the trusted snapshot is the
+  verification evidence; record a relevant check you considered but did not
+  run as `not-run` with the reason.
 - Ground every `upstream_changes` entry in evidence you observed during this
   run: either a source you actually fetched (set `evidence_url` to it) or the
   updater's PR-body notes, named as such in the entry. Never present remembered
