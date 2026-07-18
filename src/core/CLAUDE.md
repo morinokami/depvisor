@@ -26,6 +26,10 @@ Pipeline:
   the publisher-built file links: only backticked mentions that pass `paths.ts`
   and exist at the pinned commit become URLs; agent text never supplies one.
 - `agent-result.ts` is evidence/report structure, never an attestation.
+- `report-state.ts` renders/parses the comment's reviewed-head state line and
+  names the generator version. The line is duplicate-work suppression read from
+  an editable comment, never an attestation: it only skips a re-review of the
+  same green head, and anything malformed parses as absent.
 - `repair-payload.ts` validates the token-free handoff to publication.
 - `run-context.ts` validates the prepared PR/CI snapshot and updater identity.
 - `status.ts` owns the fixed one-PR status record and fail/green classification.
@@ -42,4 +46,6 @@ Keep these properties:
   applying it to a clean clone.
 - Free text may go to the PR comment/step summary after control/marker handling,
   never to Action outputs, command arguments, refs, repository names, or paths.
-- Unknown/incomplete state fails closed. `unsupported-pr` is the sole skip path.
+- Unknown/incomplete state fails closed. `unsupported-pr` and
+  `already-reviewed` are the only deliberate skip paths, and `already-reviewed`
+  requires a green triggering conclusion plus an exact head/version match.

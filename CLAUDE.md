@@ -80,7 +80,8 @@ Whenever behavior changes, update the owning reference in the same change.
   out `github.event.workflow_run.head_sha`, not the default branch.
 - A repair push triggers CI and then depvisor again. The second green pass should
   update the same marker comment and make no new commit unless more repair is
-  genuinely needed.
+  genuinely needed. Further green passes on that unchanged head skip with
+  `already-reviewed` via the comment's state line.
 - Flue is exact-pinned beta. Use the `flue` skill and bundled `flue docs` rather
   than guessing APIs.
 - Composite nested `uses:` cannot evaluate `github.action_path`, and

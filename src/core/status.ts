@@ -7,6 +7,7 @@ import { isRecord } from "./json.ts";
 export const RUN_STATUSES = [
   "in-progress",
   "reviewed",
+  "already-reviewed",
   "repair-published",
   "deferred",
   "unsupported-pr",
@@ -54,6 +55,7 @@ export interface RunRecord {
 
 const GREEN = new Set<RunStatus>([
   "reviewed",
+  "already-reviewed",
   "repair-published",
   "deferred",
   "unsupported-pr",

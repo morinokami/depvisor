@@ -39,3 +39,38 @@ export function object(value: unknown, label: string): Record<string, unknown> {
   }
   return value;
 }
+
+export interface MarkerComment {
+  id: number;
+  body: string;
+  htmlUrl: string;
+}
+
+/** Find the newest PR comment containing `marker`, scanning up to 1,000 comments. */
+export async function latestMarkerComment(
+  repository: string,
+  prNumber: number,
+  marker: string,
+): Promise<MarkerComment | null> {
+  const comments: unknown[] = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const batch = await github(
+      `/repos/${repository}/issues/${prNumber}/comments?per_page=100&page=${page}`,
+    );
+    if (!Array.isArray(batch)) throw new Error("GitHub returned an invalid PR comment list");
+    comments.push(...batch);
+    if (batch.length < 100) break;
+  }
+  for (const value of comments.toReversed()) {
+    if (!isRecord(value) || typeof value.body !== "string" || !value.body.includes(marker)) {
+      continue;
+    }
+    if (typeof value.id !== "number" || !Number.isSafeInteger(value.id)) continue;
+    return {
+      id: value.id,
+      body: value.body,
+      htmlUrl: typeof value.html_url === "string" ? value.html_url : "",
+    };
+  }
+  return null;
+}

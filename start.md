@@ -124,7 +124,8 @@ Then summarize the files changed and the one manual secret-setting step.
 
 ## Result vocabulary
 
-Green: `reviewed`, `repair-published`, `deferred`, `unsupported-pr`, `stale-pr`.
+Green: `reviewed`, `already-reviewed`, `repair-published`, `deferred`,
+`unsupported-pr`, `stale-pr`.
 
 Failing: `setup-failed`, `wrong-head`, `agent-failed`,
 `dependency-state-changed`, `publish-failed`, `in-progress`.

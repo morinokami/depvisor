@@ -16,7 +16,11 @@ creation, or open-PR budget. Those are updater responsibilities.
 2. `prepare.ts` uses a token read-only to resolve the PR, require an open
    same-repository recognized Dependabot/Renovate head, validate checkout HEAD,
    list the original changed paths, and collect globally bounded patches plus
-   paginated jobs and bounded failed-job logs.
+   paginated jobs and bounded failed-job logs. When the triggering CI is green
+   and the maintained comment's state line already records this exact head
+   reviewed on green CI by the same depvisor version, it stops with
+   `already-reviewed` instead of re-running the agent; the line lives in an
+   editable comment, so it is trusted only for that duplicate-work skip.
 3. It freezes every updater path plus recognized dependency manifests/lockfiles.
    The context and snapshot live under `runner.temp`, outside the target repo.
 4. `flue run repair` prompts the root agent once. The agent uses `local()` with
@@ -36,7 +40,8 @@ creation, or open-PR budget. Those are updater responsibilities.
    handoff is capped at 200 files and 5 MiB of patch/new-file content.
 7. The publisher creates or updates one marker comment containing upstream
    relevance, repair details, command evidence, and residual risks. A later CI
-   run updates the same comment.
+   run updates the same comment. For a no-repair review the comment also embeds
+   the reviewed-head state line that enables the `already-reviewed` skip.
 8. `report-status.ts` exposes fixed machine outputs and fails the Action for any
    incomplete/unsafe/infrastructure outcome.
 
@@ -60,7 +65,8 @@ provider key must sit in the provider env var (`OPENAI_API_KEY` etc.).
 
 ## Statuses
 
-Green: `reviewed`, `repair-published`, `deferred`, `unsupported-pr`, `stale-pr`.
+Green: `reviewed`, `already-reviewed`, `repair-published`, `deferred`,
+`unsupported-pr`, `stale-pr`.
 
 Failing: `setup-failed`, `wrong-head`, `agent-failed`,
 `dependency-state-changed`, `publish-failed`, `in-progress`.
