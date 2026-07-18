@@ -24,6 +24,11 @@ test("recognizes dependency state across common updater ecosystems", () => {
     ".terraform.lock.hcl",
     "Directory.Packages.props",
     ".github/dependabot.yml",
+    ".npmrc",
+    "apps/web/.npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    ".pnpmfile.cjs",
   ]) {
     assert.equal(isDependencyStatePath(path), true, path);
   }
