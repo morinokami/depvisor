@@ -17,7 +17,8 @@ Pipeline:
   context before it reaches the model.
 - `apply-repair.ts` materializes new files without following symlink parents.
 - `paths.ts` is the one lexical validator for untrusted repository-relative
-  paths; `json.ts` is the shared record guard for validated handoffs.
+  paths; `json.ts` is the shared record guard plus the loose `str`/`int` field
+  readers for untrusted JSON.
 - `upstream.ts` fetches bounded upstream evidence (GitHub releases/CHANGELOG,
   npm tarball diffs) for the agent's read-only tools. It holds no credential,
   pins its hosts, validates every coordinate lexically, and extracts npm
@@ -25,6 +26,8 @@ Pipeline:
 - `text.ts` owns PR-comment and step-summary rendering boundaries, including
   the publisher-built file links: only backticked mentions that pass `paths.ts`
   and exist at the pinned commit become URLs; agent text never supplies one.
+  It is also the single home of the validated URL builders (`repoFileUrl`,
+  `actionsRunUrl`) shared by the publisher and the self-check reporter.
 - `agent-result.ts` is evidence/report structure, never an attestation.
 - `report-state.ts` renders/parses the comment's reviewed-head state line and
   names the generator version. The line is duplicate-work suppression read from
@@ -39,8 +42,9 @@ Keep these properties:
 - Frozen paths are compared by content or symlink target, including
   added/removed paths. A new recognized manifest/lockfile must also be detected.
 - Every path crossing into the publisher is repository-relative and passes the
-  single `paths.ts` rule set: no traversal, absolute paths, backslashes, or
-  control bytes. Do not fork per-module path validators again.
+  single `paths.ts` rule set: no traversal, absolute paths, backslashes,
+  control bytes, or `.git` segments. Do not fork per-module path validators
+  again.
 - The publisher must compare every live captured repair field byte-for-byte with
   its parsed payload, without depending on JavaScript object key order, before
   applying it to a clean clone.

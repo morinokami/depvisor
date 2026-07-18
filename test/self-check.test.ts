@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import * as v from "valibot";
 import {
   SelfCheckFindingsSchema,
-  actionsRunUrl,
   parseFindingsFile,
   parseOutputsLine,
   planFindings,
@@ -88,16 +87,6 @@ test("parses only a versioned findings handoff", () => {
   assert.equal(parseFindingsFile(text).length, 1);
   assert.throws(() => parseFindingsFile(JSON.stringify({ findings: [finding] })));
   assert.throws(() => parseFindingsFile("not json"));
-});
-
-test("builds actions run URLs from validated components only", () => {
-  assert.equal(
-    actionsRunUrl("https://github.com", "o/r", 7),
-    "https://github.com/o/r/actions/runs/7",
-  );
-  assert.equal(actionsRunUrl("http://github.com", "o/r", 7), null);
-  assert.equal(actionsRunUrl("https://github.com", "o/r/evil", 7), null);
-  assert.equal(actionsRunUrl("https://github.com", "o/r", 0), null);
 });
 
 test("rejects a finding when any cited run is uncollected", () => {

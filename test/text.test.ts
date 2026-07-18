@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  actionsRunUrl,
   cleanReportText,
   escapeStepSummaryText,
   linkifyRepoPaths,
@@ -30,6 +31,23 @@ test("repo file URLs refuse malformed components", () => {
   assert.equal(repoFileUrl("https://github.com", "owner/repo", "main", "a.ts"), null);
   assert.equal(repoFileUrl("https://github.com", "owner/repo", SHA, "../a.ts"), null);
   assert.equal(repoFileUrl("https://github.com", "owner/repo", SHA, "/etc/passwd"), null);
+  assert.equal(repoFileUrl("http://github.com", "owner/repo", SHA, "a.ts"), null);
+  assert.equal(repoFileUrl("https://github.com/base", "owner/repo", SHA, "a.ts"), null);
+});
+
+test("builds actions run URLs from validated components only", () => {
+  assert.equal(
+    actionsRunUrl("https://github.com", "o/r", 7),
+    "https://github.com/o/r/actions/runs/7",
+  );
+  assert.equal(
+    actionsRunUrl("https://ghe.example.com:8443", "o/r", 7),
+    "https://ghe.example.com:8443/o/r/actions/runs/7",
+  );
+  assert.equal(actionsRunUrl("http://github.com", "o/r", 7), null);
+  assert.equal(actionsRunUrl("https://github.com", "o/r/evil", 7), null);
+  assert.equal(actionsRunUrl("https://github.com", "o/r", 0), null);
+  assert.equal(actionsRunUrl("https://github.com", "o/r", 1.5), null);
 });
 
 test("repo file URLs fail closed on unencodable paths instead of throwing", () => {

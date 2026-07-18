@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { takeText } from "./context-budget.ts";
-import { isRecord } from "./json.ts";
+import { isRecord, str } from "./json.ts";
 import { isSafeRepoPath } from "./paths.ts";
 
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -76,10 +76,6 @@ export type ReleaseNotesResult = {
   changelog: string;
   note: string;
 };
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
 
 /**
  * Fetch published GitHub releases unauthenticated, falling back to the

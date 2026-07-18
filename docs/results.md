@@ -27,8 +27,8 @@ a full run.
 | `pr_url`       | Target updater PR URL.                                                           |
 | `commit_sha`   | Repair commit SHA, empty when no commit was needed.                              |
 | `comment_url`  | Maintained reviewer-report comment URL.                                          |
-| `total_tokens` | Model tokens used by the agent.                                                  |
-| `est_cost_usd` | Provider-priced estimate, not an invoice.                                        |
+| `total_tokens` | Model tokens used by the agent, empty when no agent result exists.               |
+| `est_cost_usd` | Provider-priced estimate, not an invoice. Empty when no agent result exists.     |
 
 ## Green statuses
 

@@ -16,6 +16,17 @@ export function cleanReportText(value: string, max = 4_000): string {
   return inline(value, max).replaceAll("<!--", "&lt;!--").replaceAll("-->", "--&gt;");
 }
 
+const SERVER_PATTERN = /^https:\/\/[A-Za-z0-9._-]+(?::\d+)?$/;
+const REPOSITORY_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+/** Build one https://…/actions/runs/<id> URL from validated components only. */
+export function actionsRunUrl(server: string, repository: string, runId: number): string | null {
+  if (!SERVER_PATTERN.test(server)) return null;
+  if (!REPOSITORY_PATTERN.test(repository)) return null;
+  if (!Number.isSafeInteger(runId) || runId <= 0) return null;
+  return `${server}/${repository}/actions/runs/${runId}`;
+}
+
 /**
  * Build a blob URL pinned to one commit for a lexically safe repository path.
  * Every component except the path is publisher-derived; a component that fails
@@ -27,7 +38,8 @@ export function repoFileUrl(
   sha: string,
   path: string,
 ): string | null {
-  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository)) return null;
+  if (!SERVER_PATTERN.test(server)) return null;
+  if (!REPOSITORY_PATTERN.test(repository)) return null;
   if (!/^[0-9a-f]{40}$/.test(sha)) return null;
   if (!isSafeRepoPath(path)) return null;
   let encoded: string;

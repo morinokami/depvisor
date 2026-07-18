@@ -20,6 +20,7 @@ test("recognizes dependency state across common updater ecosystems", () => {
     "src/App.csproj",
     "gradle/libs.versions.toml",
     "Dockerfile.node",
+    "Package.swift",
     "Package.resolved",
     ".terraform.lock.hcl",
     "Directory.Packages.props",
