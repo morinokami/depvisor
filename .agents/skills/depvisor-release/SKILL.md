@@ -41,6 +41,21 @@ allowlist.
 actionlint/zizmor job. There is no fixture matrix: v2 has no package-manager
 implementation or credential-free dry-run.
 
+`.github/workflows/self-check.yml` is the weekly cron (plus manual dispatch)
+that reads the last week of depvisor runs and files at most two
+`self-check`-labeled issues. It repeats the action's token split in miniature:
+`self-check-collect.ts` (GH_TOKEN, `actions: read`) builds a bounded envelope,
+`flue run workflow:self-check` (qualified: the agent and workflow share the
+name) analyzes it with the model key, no GitHub token, and no sandbox, and
+`self-check-report.ts` (GH_TOKEN, `issues: write`) re-validates the handoff —
+all cited run ids must resolve, agent-authored links and raw HTML render
+inert — before creating issues. An empty findings list is the designed
+healthy outcome, so a quiet week must not fail the job. Its harden-runner
+allowlist is block-mode and includes `*.blob.core.windows.net` (job-log
+archive redirects) and `api.openai.com` (analyst model). knip's
+`github-actions` plugin is disabled in knip.json so these workflow-invoked
+entrypoints stay explicitly listed and strict mode agrees with normal mode.
+
 `.github/dependabot.yml` updates GitHub Actions and npm weekly with a 7-day
 cooldown, pairing with pnpm-workspace.yaml's strict `minimumReleaseAge`.
 `@flue/*` is ignored there: Flue stays exact-pinned beta and is upgraded

@@ -40,6 +40,27 @@ export function object(value: unknown, label: string): Record<string, unknown> {
   return value;
 }
 
+/** Download one workflow-job log and keep only its bounded tail. */
+export async function downloadJobLog(
+  repository: string,
+  jobId: number,
+  maxChars: number,
+): Promise<string> {
+  const first = await fetch(`${apiBase()}/repos/${repository}/actions/jobs/${jobId}/logs`, {
+    redirect: "manual",
+    headers: githubHeaders(),
+  });
+  if (first.status >= 300 && first.status < 400) {
+    const location = first.headers.get("location");
+    if (!location) return "(job log redirect had no location)";
+    const response = await fetch(location);
+    if (!response.ok) return `(job log download returned ${response.status})`;
+    return (await response.text()).slice(-maxChars);
+  }
+  if (!first.ok) return `(job log unavailable: ${first.status})`;
+  return (await first.text()).slice(-maxChars);
+}
+
 export interface MarkerComment {
   id: number;
   body: string;

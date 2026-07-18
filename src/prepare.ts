@@ -22,13 +22,7 @@ import {
 import { initialRecord, writeRunRecord } from "./core/status.ts";
 import { writeOutput as output } from "./shared/actions.ts";
 import { required } from "./shared/env.ts";
-import {
-  apiBase,
-  github,
-  githubHeaders,
-  latestMarkerComment,
-  object,
-} from "./shared/github-api.ts";
+import { downloadJobLog, github, latestMarkerComment, object } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
 
 const MAX_JOB_LOG_CHARS = 60_000;
@@ -107,22 +101,6 @@ async function pullRequestFiles(repository: string, number: number): Promise<Pul
   throw new Error("PR file list exceeded depvisor's 3,000-file snapshot limit");
 }
 
-async function jobLog(repository: string, jobId: number): Promise<string> {
-  const first = await fetch(`${apiBase()}/repos/${repository}/actions/jobs/${jobId}/logs`, {
-    redirect: "manual",
-    headers: githubHeaders(),
-  });
-  if (first.status >= 300 && first.status < 400) {
-    const location = first.headers.get("location");
-    if (!location) return "(job log redirect had no location)";
-    const response = await fetch(location);
-    if (!response.ok) return `(job log download returned ${response.status})`;
-    return (await response.text()).slice(-MAX_JOB_LOG_CHARS);
-  }
-  if (!first.ok) return `(job log unavailable: ${first.status})`;
-  return (await first.text()).slice(-MAX_JOB_LOG_CHARS);
-}
-
 async function failedJobs(repository: string, runId: number | null): Promise<FailedJob[]> {
   if (runId === null) return [];
   const jobs = await collectPages(
@@ -149,7 +127,7 @@ async function failedJobs(repository: string, runId: number | null): Promise<Fai
     let downloaded = "";
     if (id > 0 && remaining > 0) {
       try {
-        downloaded = await jobLog(repository, id);
+        downloaded = await downloadJobLog(repository, id, MAX_JOB_LOG_CHARS);
       } catch (error: unknown) {
         downloaded = `(job log unavailable: ${String(error)})`;
       }

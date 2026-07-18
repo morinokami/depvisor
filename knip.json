@@ -5,6 +5,8 @@
     "src/publish.ts!",
     "src/report-status.ts!",
     "src/check-credentials.ts!",
+    "src/self-check-collect.ts!",
+    "src/self-check-report.ts!",
     "src/agents/*.ts!",
     "src/workflows/*.ts!",
     "flue.config.ts",
@@ -12,6 +14,7 @@
   ],
   "project": ["src/**/*.ts!", "test/**/*.ts"],
   "ignoreBinaries": ["diff"],
+  "github-actions": false,
   "ignoreExportsUsedInFile": true,
   "treatConfigHintsAsErrors": true
 }
