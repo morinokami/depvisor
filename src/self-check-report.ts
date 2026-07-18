@@ -17,11 +17,7 @@ import { isRecord } from "./core/json.ts";
 import { actionsRunUrl, escapeStepSummaryText } from "./core/text.ts";
 import { writeOutput } from "./shared/actions.ts";
 import { required } from "./shared/env.ts";
-import { apiBase, github, githubHeaders, object } from "./shared/github-api.ts";
-
-function serverUrl(): string {
-  return (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
-}
+import { apiBase, github, githubHeaders, object, serverUrl } from "./shared/github-api.ts";
 
 function summarize(text: string): void {
   const file = process.env.GITHUB_STEP_SUMMARY;
