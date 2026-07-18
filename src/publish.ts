@@ -15,22 +15,14 @@ import { materializeNewRepairFiles } from "./core/apply-repair.ts";
 import { changedDependencyState, readDependencySnapshot } from "./core/dependency-state.ts";
 import { captureRepairChanges, sameRepairChanges, treeBlobPaths } from "./core/git.ts";
 import { readRepairPayload } from "./core/repair-payload.ts";
-import { REPORT_MARKER, generatorName, renderReportState } from "./core/report-state.ts";
+import { renderReportBody } from "./core/report-body.ts";
+import { REPORT_MARKER } from "./core/report-state.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
-import {
-  actionsRunUrl,
-  cleanReportText,
-  evidenceLink,
-  linkifyRepoPaths,
-  repoFileUrl,
-} from "./core/text.ts";
+import { actionsRunUrl } from "./core/text.ts";
 import { required } from "./shared/env.ts";
 import { github, latestMarkerComment, object, serverUrl } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
-
-const MAX_COMMENT_CHARS = 60_000;
-const MAX_REPORT_LINKS = 500;
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -162,102 +154,6 @@ function reportRunUrl(): string | null {
   return actionsRunUrl(serverUrl(), repository, runId);
 }
 
-function bullets(
-  items: readonly string[],
-  empty: string,
-  render: (value: string) => string,
-): string {
-  return items.length > 0 ? items.map((item) => `- ${render(item)}`).join("\n") : `- ${empty}`;
-}
-
-function reportBody(
-  payload: ReturnType<typeof readRepairPayload>,
-  context: ReturnType<typeof readRunContext>,
-  published: PublishedCommit | null,
-): string {
-  const agent = payload.agent;
-  const commitSha = published?.sha ?? null;
-  const server = serverUrl();
-  const linkSha = commitSha ?? context.pullRequest.headSha;
-  // Without a repair the link pins the snapshotted head, whose tree may differ
-  // from an unpublished (deferred) working tree — so enumerate the commit, not the files.
-  const blobPaths = published?.blobPaths ?? treeBlobPaths(REPO, context.pullRequest.headSha);
-  let links = 0;
-  const fileUrl = (path: string): string | null => {
-    if (links >= MAX_REPORT_LINKS || !blobPaths.has(path)) return null;
-    const url = repoFileUrl(server, payload.repository, linkSha, path);
-    if (url !== null) links += 1;
-    return url;
-  };
-  const prose = (value: string, max?: number): string =>
-    linkifyRepoPaths(cleanReportText(value, max), fileUrl);
-  const upstream =
-    agent.upstream_changes.length > 0
-      ? agent.upstream_changes
-          .map(
-            (item) =>
-              `- **${cleanReportText(item.dependency, 200)}:** ${prose(item.change)} ` +
-              `_${prose(item.relevance)}_${evidenceLink(item.evidence_url)}`,
-          )
-          .join("\n")
-      : "- No repository-relevant upstream change stood out from the available evidence.";
-  const verification =
-    agent.verification.length > 0
-      ? agent.verification
-          .map(
-            (item) =>
-              `- \`${cleanReportText(item.command, 500).replaceAll("`", "\\`")}\` — **${item.outcome}**: ` +
-              prose(item.evidence),
-          )
-          .join("\n")
-      : "- No local verification result was available.";
-  const heading =
-    agent.verdict === "defer"
-      ? "Depvisor deferred this update"
-      : commitSha
-        ? "Depvisor published a repair"
-        : "Depvisor reviewed this update";
-  const runUrl = reportRunUrl();
-  const runLink = runUrl === null ? "" : ` ([action run](${runUrl}))`;
-  // Record the reviewed head only for a no-repair review: a published repair
-  // moves the branch head, and the next CI pass must review that new head.
-  const stateLine =
-    published === null && agent.verdict !== "defer"
-      ? renderReportState({
-          headSha: context.pullRequest.headSha,
-          conclusion: context.trigger.conclusion,
-          generator: generatorName(),
-        })
-      : null;
-  const body = `${REPORT_MARKER}${stateLine === null ? "" : `\n${stateLine}`}
-## ${heading}
-
-${prose(agent.summary)}
-
-### Relevant upstream changes
-
-${upstream}
-
-### Repair
-
-${bullets(agent.changes_made, commitSha ? "The repair commit contains the working-tree changes listed above." : "No code repair was needed.", prose)}
-${commitSha ? `\nRepair commit: \`${commitSha}\`` : ""}
-
-### Verification evidence
-
-${verification}
-
-### Residual risks
-
-${bullets(agent.risks, "No additional repository-specific risk was identified.", prose)}
-${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${prose(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
-
-Initial CI: **${cleanReportText(context.trigger.conclusion, 100)}**${context.trigger.url ? ` — ${cleanReportText(context.trigger.workflowName || "workflow run", 200)}${evidenceLink(context.trigger.url)}` : ""}.
-
-_Generated by ${generatorName()}${runLink}. Review before merging._`;
-  return body.slice(0, MAX_COMMENT_CHARS);
-}
-
 async function upsertComment(repository: string, prNumber: number, body: string): Promise<string> {
   const existing = await latestMarkerComment(repository, prNumber, REPORT_MARKER);
   const response = existing
@@ -332,10 +228,18 @@ async function main(): Promise<void> {
       );
       commitSha = published.sha;
     }
+    // Without a repair the links pin the snapshotted head, whose tree may differ
+    // from an unpublished (deferred) working tree — so enumerate the commit, not the files.
+    const blobPaths = published?.blobPaths ?? treeBlobPaths(REPO, context.pullRequest.headSha);
     const commentUrl = await upsertComment(
       payload.repository,
       payload.prNumber,
-      reportBody(payload, context, published),
+      renderReportBody(payload, context, {
+        commitSha,
+        blobPaths,
+        server: serverUrl(),
+        runUrl: reportRunUrl(),
+      }),
     );
     const status =
       payload.agent.verdict === "defer" ? "deferred" : commitSha ? "repair-published" : "reviewed";

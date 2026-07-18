@@ -31,6 +31,12 @@ Pipeline:
   `actionsRunUrl`) used by the publisher and the self-check reporter, and
   `evidenceLink`, the one place an agent-supplied URL renders — https-only and
   fail-closed to empty.
+- `report-body.ts` renders the reviewer-report comment from the validated
+  payload/context plus publisher-supplied link inputs (published commit, blob
+  enumeration, validated server/run URLs). It owns the comment layout, the
+  size and link-count caps, and the rule that only a no-repair, non-deferred
+  review embeds the reviewed-head state line; the publisher transports its
+  output verbatim.
 - `agent-result.ts` is evidence/report structure, never an attestation.
 - `report-state.ts` renders/parses the comment's reviewed-head state line and
   names the generator version. The line is duplicate-work suppression read from
