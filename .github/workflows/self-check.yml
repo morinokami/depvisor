@@ -1,0 +1,91 @@
+name: Self-check
+
+on:
+  schedule:
+    # Monday 07:00 JST: read the previous week's depvisor runs.
+    - cron: "0 22 * * 0"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: self-check
+
+jobs:
+  self-check:
+    name: Review recent depvisor runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read # list depvisor runs and download their job logs
+      contents: read
+      issues: write # file/skip labeled self-check findings
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          # *.blob.core.windows.net serves the job-log archive redirects behind
+          # the GitHub Actions logs API; api.openai.com is the analyst model.
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
+            *.blob.core.windows.net:443
+            registry.npmjs.org:443
+            npm.flatt.tech:443
+            nodejs.org:443
+            api.openai.com:443
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: flatt-security/setup-takumi-guard-npm@9a5d797c2085b6326d3a2985c08e3a114b9b88c1 # v1.1.1
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: ./.node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Token-holding and read-only: one bounded, credential-free envelope.
+      - name: Collect recent depvisor runs
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPVISOR_REPOSITORY: ${{ github.repository }}
+          DEPVISOR_API_URL: ${{ github.api_url }}
+          DEPVISOR_SELFCHECK_CONTEXT_FILE: ${{ runner.temp }}/depvisor-self-check/context.json
+        run: node src/self-check-collect.ts
+
+      # The analyst has the model key but no GitHub token, no sandbox shell,
+      # and no checkout authority; it only reads the envelope and returns
+      # schema-validated findings.
+      - name: Analyze the collected runs
+        if: steps.collect.outputs.analyzable == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] analyst step has no GitHub token
+          DEPVISOR_LLM_MODEL: openai/gpt-5.5
+          DEPVISOR_SELFCHECK_CONTEXT_FILE: ${{ runner.temp }}/depvisor-self-check/context.json
+          DEPVISOR_SELFCHECK_FINDINGS_FILE: ${{ runner.temp }}/depvisor-self-check/findings.json
+        run: pnpm --silent exec flue run self-check --target node
+
+      # Token-holding again: re-validate the handoff and file labeled issues
+      # with reporter-built evidence links.
+      - name: Report findings as issues
+        if: steps.collect.outputs.analyzable == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPVISOR_REPOSITORY: ${{ github.repository }}
+          DEPVISOR_API_URL: ${{ github.api_url }}
+          DEPVISOR_SERVER_URL: ${{ github.server_url }}
+          DEPVISOR_RUN_ID: ${{ github.run_id }}
+          DEPVISOR_SELFCHECK_CONTEXT_FILE: ${{ runner.temp }}/depvisor-self-check/context.json
+          DEPVISOR_SELFCHECK_FINDINGS_FILE: ${{ runner.temp }}/depvisor-self-check/findings.json
+        run: node src/self-check-report.ts
