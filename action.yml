@@ -30,7 +30,9 @@ inputs:
 
 outputs:
   status:
-    description: reviewed, repair-published, deferred, unsupported-pr, or a failing status.
+    description: >-
+      reviewed, already-reviewed, repair-published, deferred, unsupported-pr,
+      or a failing status.
     value: ${{ steps.report.outputs.status }}
   failed:
     description: '"true" when depvisor could not safely complete the review or publication.'

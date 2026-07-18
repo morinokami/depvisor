@@ -8,6 +8,7 @@ import { initialRecord, readRunRecord, statusFails } from "../src/core/status.ts
 test("classifies published, reviewed, deferred and irrelevant PRs as green", () => {
   for (const status of [
     "reviewed",
+    "already-reviewed",
     "repair-published",
     "deferred",
     "unsupported-pr",

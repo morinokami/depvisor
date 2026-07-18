@@ -12,6 +12,7 @@ import { snapshotDependencyState } from "./core/dependency-state.ts";
 import { isRecord } from "./core/json.ts";
 import { collectPages } from "./core/pagination.ts";
 import { isSafeRepoPath } from "./core/paths.ts";
+import { REPORT_MARKER, generatorName, parseReportState } from "./core/report-state.ts";
 import {
   isSupportedUpdater,
   type FailedJob,
@@ -21,7 +22,13 @@ import {
 import { initialRecord, writeRunRecord } from "./core/status.ts";
 import { writeOutput as output } from "./shared/actions.ts";
 import { required } from "./shared/env.ts";
-import { apiBase, github, githubHeaders, object } from "./shared/github-api.ts";
+import {
+  apiBase,
+  github,
+  githubHeaders,
+  latestMarkerComment,
+  object,
+} from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
 
 const MAX_JOB_LOG_CHARS = 60_000;
@@ -223,6 +230,35 @@ async function main(): Promise<void> {
     output("processable", "false");
     output("pr_url", prUrl);
     return;
+  }
+
+  // The maintained comment records which head a no-repair review covered. The
+  // comment is editable, so the recorded state is trusted only to skip a
+  // duplicate review of a green head under the same depvisor version — a
+  // missing, forged, or stale line simply falls through to a full run, and a
+  // non-success CI conclusion never skips.
+  if ((process.env.DEPVISOR_WORKFLOW_CONCLUSION || "") === "success") {
+    const existing = await latestMarkerComment(repository, number, REPORT_MARKER);
+    const state = existing === null ? null : parseReportState(existing.body);
+    if (
+      existing !== null &&
+      state !== null &&
+      state.headSha === headSha &&
+      state.conclusion === "success" &&
+      state.generator === generatorName()
+    ) {
+      writeRunRecord(statusFile, {
+        ...initialRecord(
+          "already-reviewed",
+          `The report comment already covers PR #${number} head ${headSha} on a green CI run; skipped a duplicate review.`,
+          prUrl,
+        ),
+        commentUrl: existing.htmlUrl || null,
+      });
+      output("processable", "false");
+      output("pr_url", prUrl);
+      return;
+    }
   }
 
   const changedFiles = await pullRequestFiles(repository, number);

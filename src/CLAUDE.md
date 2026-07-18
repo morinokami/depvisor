@@ -7,13 +7,13 @@ plumbing (`env`, `github-api`, `actions`, `target`); `tools/` holds one file
 per agent tool. Entrypoints must not grow private copies of these helpers —
 the token boundary lives in which step runs them, not in duplicated code.
 
-| Entrypoint             | Role                                                      | Credentials                                    |
-| ---------------------- | --------------------------------------------------------- | ---------------------------------------------- |
-| `check-credentials.ts` | Reject repo-local persisted git credentials               | none                                           |
-| `prepare.ts`           | Resolve PR, changed files, failed jobs/logs, frozen state | `GH_TOKEN`                                     |
-| `workflows/repair.ts`  | Autonomous repository repair/review                       | model provider key in runtime; no GitHub token |
-| `publish.ts`           | Fresh-clone commit/push and maintained PR comment         | `GH_TOKEN`                                     |
-| `report-status.ts`     | Action outputs and step summary                           | none                                           |
+| Entrypoint             | Role                                                                                   | Credentials                                    |
+| ---------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `check-credentials.ts` | Reject repo-local persisted git credentials                                            | none                                           |
+| `prepare.ts`           | Resolve PR, skip already-reviewed heads, changed files, failed jobs/logs, frozen state | `GH_TOKEN`                                     |
+| `workflows/repair.ts`  | Autonomous repository repair/review                                                    | model provider key in runtime; no GitHub token |
+| `publish.ts`           | Fresh-clone commit/push and maintained PR comment                                      | `GH_TOKEN`                                     |
+| `report-status.ts`     | Action outputs and step summary                                                        | none                                           |
 
 The root agent is prompted directly once through `session.prompt` with a Valibot
 result schema. It has the target checkout as `cwd` and Flue's local sandbox, so
