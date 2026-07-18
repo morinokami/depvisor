@@ -9,13 +9,12 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import {
   SELF_CHECK_LABEL,
-  actionsRunUrl,
   parseFindingsFile,
   planFindings,
   renderIssueBody,
 } from "./core/self-check.ts";
 import { isRecord } from "./core/json.ts";
-import { escapeStepSummaryText } from "./core/text.ts";
+import { actionsRunUrl, escapeStepSummaryText } from "./core/text.ts";
 import { writeOutput } from "./shared/actions.ts";
 import { required } from "./shared/env.ts";
 import { apiBase, github, githubHeaders, object } from "./shared/github-api.ts";

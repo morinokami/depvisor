@@ -20,12 +20,13 @@ export async function github(
   path: string,
   options: { method?: string; body?: unknown } = {},
 ): Promise<unknown> {
+  const headers = githubHeaders();
   const init: RequestInit = {
     method: options.method || "GET",
-    headers: githubHeaders(),
+    headers,
   };
   if (options.body !== undefined) {
-    init.headers = { ...githubHeaders(), "Content-Type": "application/json" };
+    headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(options.body);
   }
   const response = await fetch(`${apiBase()}${path}`, init);
@@ -67,20 +68,27 @@ export interface MarkerComment {
   htmlUrl: string;
 }
 
-/** Find the newest PR comment containing `marker`, scanning up to 1,000 comments. */
+const COMMENT_PAGE_SIZE = 100;
+const MAX_COMMENT_PAGES = 10;
+
+/**
+ * Find the newest PR comment containing `marker`. Unlike `collectPages`, the
+ * scan deliberately caps and proceeds: past the bound the marker comment is
+ * treated as absent, which at worst re-reviews once or posts a fresh comment.
+ */
 export async function latestMarkerComment(
   repository: string,
   prNumber: number,
   marker: string,
 ): Promise<MarkerComment | null> {
   const comments: unknown[] = [];
-  for (let page = 1; page <= 10; page += 1) {
+  for (let page = 1; page <= MAX_COMMENT_PAGES; page += 1) {
     const batch = await github(
-      `/repos/${repository}/issues/${prNumber}/comments?per_page=100&page=${page}`,
+      `/repos/${repository}/issues/${prNumber}/comments?per_page=${COMMENT_PAGE_SIZE}&page=${page}`,
     );
     if (!Array.isArray(batch)) throw new Error("GitHub returned an invalid PR comment list");
     comments.push(...batch);
-    if (batch.length < 100) break;
+    if (batch.length < COMMENT_PAGE_SIZE) break;
   }
   for (const value of comments.toReversed()) {
     if (!isRecord(value) || typeof value.body !== "string" || !value.body.includes(marker)) {

@@ -7,7 +7,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { isRecord } from "./core/json.ts";
+import { int, isRecord, str } from "./core/json.ts";
 import { collectPages } from "./core/pagination.ts";
 import { SELF_CHECK_LABEL, parseOutputsLine, type ParsedRunOutputs } from "./core/self-check.ts";
 import { writeOutput } from "./shared/actions.ts";
@@ -34,14 +34,6 @@ interface RunSummary {
   durationSeconds: number | null;
   outputs: ParsedRunOutputs | null;
   failureExcerpt?: string;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function int(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : 0;
 }
 
 function durationSeconds(startedAt: string, updatedAt: string): number | null {

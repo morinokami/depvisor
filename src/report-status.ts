@@ -27,7 +27,7 @@ writeOutput("repaired", record?.repaired ? "true" : "false");
 writeOutput("pr_url", safeUrl(record?.prUrl ?? null));
 writeOutput("commit_sha", /^[0-9a-f]{40}$/.test(record?.commitSha ?? "") ? record!.commitSha! : "");
 writeOutput("comment_url", safeUrl(record?.commentUrl ?? null));
-writeOutput("total_tokens", String(record?.usage?.totalTokens ?? 0));
+writeOutput("total_tokens", record?.usage ? String(record.usage.totalTokens) : "");
 writeOutput(
   "est_cost_usd",
   record?.usage && Number.isFinite(record.usage.costUsd) ? record.usage.costUsd.toFixed(6) : "",

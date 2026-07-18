@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { MAX_PATCH_CHARS, MAX_TOTAL_PATCH_CHARS, takeText } from "./core/context-budget.ts";
 import { snapshotDependencyState } from "./core/dependency-state.ts";
-import { isRecord } from "./core/json.ts";
+import { int, isRecord, str } from "./core/json.ts";
 import { collectPages } from "./core/pagination.ts";
 import { isSafeRepoPath } from "./core/paths.ts";
 import { REPORT_MARKER, generatorName, parseReportState } from "./core/report-state.ts";
@@ -28,14 +28,7 @@ import { REPO } from "./shared/target.ts";
 const MAX_JOB_LOG_CHARS = 60_000;
 const MAX_TOTAL_LOG_CHARS = 180_000;
 const MAX_JOB_PAGES = 30;
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function int(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : 0;
-}
+const MAX_FILE_PAGES = 30;
 
 async function resolvePullRequestNumber(repository: string, runId: number | null): Promise<number> {
   const configured = Number(process.env.DEPVISOR_PR_NUMBER || "");
@@ -66,39 +59,42 @@ async function resolvePullRequestNumber(repository: string, runId: number | null
 }
 
 async function pullRequestFiles(repository: string, number: number): Promise<PullRequestFile[]> {
+  const raw = await collectPages(
+    async (page) => {
+      const batch = await github(
+        `/repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
+      );
+      if (!Array.isArray(batch)) throw new Error("GitHub returned an invalid PR file list");
+      return batch;
+    },
+    { pageSize: 100, maxPages: MAX_FILE_PAGES, label: "PR file list" },
+  );
   const files: PullRequestFile[] = [];
   const patchBudget = { remaining: MAX_TOTAL_PATCH_CHARS };
-  for (let page = 1; page <= 30; page += 1) {
-    const raw = await github(
-      `/repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
-    );
-    if (!Array.isArray(raw)) throw new Error("GitHub returned an invalid PR file list");
-    for (const value of raw) {
-      const file = object(value, "PR file");
-      const filename = str(file.filename);
-      if (!isSafeRepoPath(filename)) throw new Error("GitHub returned an unsafe PR path");
-      const entry: PullRequestFile = {
-        filename,
-        status: str(file.status),
-        additions: int(file.additions),
-        deletions: int(file.deletions),
-      };
-      const previous = str(file.previous_filename);
-      if (previous) {
-        if (!isSafeRepoPath(previous)) {
-          throw new Error("GitHub returned an unsafe previous PR path");
-        }
-        entry.previousFilename = previous;
+  for (const value of raw) {
+    const file = object(value, "PR file");
+    const filename = str(file.filename);
+    if (!isSafeRepoPath(filename)) throw new Error("GitHub returned an unsafe PR path");
+    const entry: PullRequestFile = {
+      filename,
+      status: str(file.status),
+      additions: int(file.additions),
+      deletions: int(file.deletions),
+    };
+    const previous = str(file.previous_filename);
+    if (previous) {
+      if (!isSafeRepoPath(previous)) {
+        throw new Error("GitHub returned an unsafe previous PR path");
       }
-      const patch = str(file.patch);
-      if (patch && patchBudget.remaining > 0) {
-        entry.patch = takeText(patch, MAX_PATCH_CHARS, patchBudget);
-      }
-      files.push(entry);
+      entry.previousFilename = previous;
     }
-    if (raw.length < 100) return files;
+    const patch = str(file.patch);
+    if (patch && patchBudget.remaining > 0) {
+      entry.patch = takeText(patch, MAX_PATCH_CHARS, patchBudget);
+    }
+    files.push(entry);
   }
-  throw new Error("PR file list exceeded depvisor's 3,000-file snapshot limit");
+  return files;
 }
 
 async function failedJobs(repository: string, runId: number | null): Promise<FailedJob[]> {

@@ -18,7 +18,14 @@ import { readRepairPayload } from "./core/repair-payload.ts";
 import { REPORT_MARKER, generatorName, renderReportState } from "./core/report-state.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
-import { cleanReportText, linkifyRepoPaths, repoFileUrl } from "./core/text.ts";
+import {
+  actionsRunUrl,
+  cleanReportText,
+  evidenceLink,
+  isValidServerUrl,
+  linkifyRepoPaths,
+  repoFileUrl,
+} from "./core/text.ts";
 import { required } from "./shared/env.ts";
 import { github, latestMarkerComment, object } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
@@ -87,7 +94,7 @@ function applyRepair(
 
 function serverUrl(): string {
   const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
-  if (!/^https:\/\/[A-Za-z0-9._-]+(?::\d+)?$/.test(server)) {
+  if (!isValidServerUrl(server)) {
     throw new Error("Refusing an invalid GitHub server URL");
   }
   return server;
@@ -155,26 +162,13 @@ function publishCommit(
 
 /**
  * Link the report footer to the Actions run that wrote it. Every component is
- * workflow-derived and shape-checked; a missing or malformed value renders an
- * unlinked footer rather than a loosely built URL.
+ * workflow-derived and shape-checked by the shared builder; a missing or
+ * malformed value renders an unlinked footer rather than a loosely built URL.
  */
-function actionsRunUrl(): string | null {
+function reportRunUrl(): string | null {
   const repository = process.env.DEPVISOR_REPOSITORY?.trim() ?? "";
-  const runId = process.env.DEPVISOR_RUN_ID?.trim() ?? "";
-  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository)) return null;
-  if (!/^\d{1,20}$/.test(runId)) return null;
-  return `${serverUrl()}/${repository}/actions/runs/${runId}`;
-}
-
-function evidenceLink(value: string | undefined): string {
-  if (!value) return "";
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return "";
-    return ` ([source](${url.href.replaceAll(")", "%29")}))`;
-  } catch {
-    return "";
-  }
+  const runId = Number(process.env.DEPVISOR_RUN_ID?.trim() || "");
+  return actionsRunUrl(serverUrl(), repository, runId);
 }
 
 function bullets(
@@ -253,7 +247,7 @@ function reportBody(
       : commitSha
         ? "Depvisor published a repair"
         : "Depvisor reviewed this update";
-  const runUrl = actionsRunUrl();
+  const runUrl = reportRunUrl();
   const runLink = runUrl === null ? "" : ` ([action run](${runUrl}))`;
   // Record the reviewed head only for a no-repair review: a published repair
   // moves the branch head, and the next CI pass must review that new head.

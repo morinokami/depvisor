@@ -6,7 +6,7 @@
  */
 
 import * as v from "valibot";
-import { cleanReportText } from "./text.ts";
+import { actionsRunUrl, cleanReportText } from "./text.ts";
 
 export const SELF_CHECK_LABEL = "self-check";
 export const MAX_FINDINGS = 2;
@@ -80,14 +80,6 @@ export function parseOutputsLine(log: string): ParsedRunOutputs | null {
     };
   }
   return parsed;
-}
-
-/** Build one https://…/actions/runs/<id> URL from validated components only. */
-export function actionsRunUrl(server: string, repository: string, runId: number): string | null {
-  if (!/^https:\/\/[A-Za-z0-9.-]+$/.test(server)) return null;
-  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository)) return null;
-  if (!Number.isSafeInteger(runId) || runId <= 0) return null;
-  return `${server}/${repository}/actions/runs/${runId}`;
 }
 
 /**
