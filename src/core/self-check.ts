@@ -91,6 +91,43 @@ export function actionsRunUrl(server: string, repository: string, runId: number)
 }
 
 /**
+ * Resolve every cited run id against the collected envelope, deduplicated in
+ * citation order. One unresolvable or unlinkable id rejects the whole finding:
+ * a partially hallucinated evidence list must not publish the surviving half.
+ */
+export function resolveEvidence(
+  finding: SelfCheckFinding,
+  collectedRunIds: ReadonlySet<number>,
+  server: string,
+  repository: string,
+): { runId: number; url: string }[] | null {
+  const evidence: { runId: number; url: string }[] = [];
+  const seen = new Set<number>();
+  for (const runId of finding.evidence_run_ids) {
+    if (seen.has(runId)) continue;
+    seen.add(runId);
+    const url = collectedRunIds.has(runId) ? actionsRunUrl(server, repository, runId) : null;
+    if (url === null) return null;
+    evidence.push({ runId, url });
+  }
+  return evidence;
+}
+
+/**
+ * Neutralize link and mention rendering in analyst prose on top of
+ * cleanReportText: break Markdown link syntax, URL-scheme and www. autolinks,
+ * and @-mention pings, keeping the visible text intact. Every live link in a
+ * self-check issue is reporter-built; agent-authored ones must render inert.
+ */
+function defusedProse(value: string, max?: number): string {
+  return cleanReportText(value, max)
+    .replaceAll("](", "]\\(")
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*):\/\//g, "$1&#58;//")
+    .replace(/\bwww\./gi, "www&#46;")
+    .replaceAll("@", "&#64;");
+}
+
+/**
  * Render one finding as an issue body. The title/detail/action prose is
  * agent-authored and untrusted; every link is builder-supplied and already
  * validated by the reporter, never taken from agent text.
@@ -106,7 +143,7 @@ export function renderIssueBody(
     "",
     "## Observation",
     "",
-    cleanReportText(finding.detail),
+    defusedProse(finding.detail),
     "",
     "## Evidence",
     "",
@@ -114,7 +151,7 @@ export function renderIssueBody(
     "",
     "## Suggested action",
     "",
-    cleanReportText(finding.suggested_action, 1_000),
+    defusedProse(finding.suggested_action, 1_000),
   ];
   if (selfCheckRunUrl) {
     lines.push("", `---`, "", `Reported by [this self-check run](${selfCheckRunUrl}).`);

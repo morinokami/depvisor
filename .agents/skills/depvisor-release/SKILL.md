@@ -45,9 +45,11 @@ implementation or credential-free dry-run.
 that reads the last week of depvisor runs and files at most two
 `self-check`-labeled issues. It repeats the action's token split in miniature:
 `self-check-collect.ts` (GH_TOKEN, `actions: read`) builds a bounded envelope,
-`flue run self-check` analyzes it with the model key, no GitHub token, and no
-sandbox, and `self-check-report.ts` (GH_TOKEN, `issues: write`) re-validates
-the handoff before creating issues. An empty findings list is the designed
+`flue run workflow:self-check` (qualified: the agent and workflow share the
+name) analyzes it with the model key, no GitHub token, and no sandbox, and
+`self-check-report.ts` (GH_TOKEN, `issues: write`) re-validates the handoff —
+all cited run ids must resolve, agent-authored links render inert — before
+creating issues. An empty findings list is the designed
 healthy outcome, so a quiet week must not fail the job. Its harden-runner
 allowlist is block-mode and includes `*.blob.core.windows.net` (job-log
 archive redirects) and `api.openai.com` (analyst model). knip's

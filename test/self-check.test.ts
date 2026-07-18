@@ -8,6 +8,7 @@ import {
   parseOutputsLine,
   renderIssueBody,
   renderIssueTitle,
+  resolveEvidence,
 } from "../src/core/self-check.ts";
 
 const finding = {
@@ -94,6 +95,54 @@ test("builds actions run URLs from validated components only", () => {
   assert.equal(actionsRunUrl("http://github.com", "o/r", 7), null);
   assert.equal(actionsRunUrl("https://github.com", "o/r/evil", 7), null);
   assert.equal(actionsRunUrl("https://github.com", "o/r", 0), null);
+});
+
+test("rejects a finding when any cited run is uncollected", () => {
+  const collected = new Set([101, 102]);
+  const server = "https://github.com";
+  assert.deepEqual(resolveEvidence(finding, collected, server, "o/r"), [
+    { runId: 101, url: "https://github.com/o/r/actions/runs/101" },
+    { runId: 102, url: "https://github.com/o/r/actions/runs/102" },
+  ]);
+  assert.equal(
+    resolveEvidence({ ...finding, evidence_run_ids: [101, 999] }, collected, server, "o/r"),
+    null,
+  );
+  assert.equal(resolveEvidence(finding, collected, server, "o/r/evil"), null);
+});
+
+test("deduplicates repeated evidence citations in order", () => {
+  const evidence = resolveEvidence(
+    { ...finding, evidence_run_ids: [102, 101, 102] },
+    new Set([101, 102]),
+    "https://github.com",
+    "o/r",
+  );
+  assert.deepEqual(
+    evidence?.map((entry) => entry.runId),
+    [102, 101],
+  );
+});
+
+test("defuses agent-authored links, autolinks, and mentions in prose", () => {
+  const body = renderIssueBody(
+    {
+      ...finding,
+      detail:
+        "see [trusted-looking link](https://attacker.example/phish) or www.evil.example, ping @someone",
+      suggested_action: "read <https://attacker.example/more> first",
+    },
+    [{ runId: 101, url: "https://github.com/o/r/actions/runs/101" }],
+    null,
+  );
+  assert.ok(!body.includes("](https://attacker.example/phish)"));
+  assert.ok(body.includes("]\\("));
+  assert.ok(!body.includes("https://attacker.example"));
+  assert.ok(body.includes("https&#58;//attacker.example"));
+  assert.ok(!/\bwww\./.test(body));
+  assert.ok(!body.includes("@someone"));
+  assert.ok(body.includes("&#64;someone"));
+  assert.ok(body.includes("- [run 101](https://github.com/o/r/actions/runs/101)"));
 });
 
 test("renders reporter-built evidence links and neutralized markers", () => {

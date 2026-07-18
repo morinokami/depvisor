@@ -74,7 +74,8 @@ jobs:
           DEPVISOR_LLM_MODEL: openai/gpt-5.5
           DEPVISOR_SELFCHECK_CONTEXT_FILE: ${{ runner.temp }}/depvisor-self-check/context.json
           DEPVISOR_SELFCHECK_FINDINGS_FILE: ${{ runner.temp }}/depvisor-self-check/findings.json
-        run: pnpm --silent exec flue run self-check --target node
+        # workflow: qualifier: the agent and workflow share the self-check name.
+        run: pnpm --silent exec flue run workflow:self-check --target node
 
       # Token-holding again: re-validate the handoff and file labeled issues
       # with reporter-built evidence links.

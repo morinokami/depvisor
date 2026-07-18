@@ -14,6 +14,7 @@ import {
   parseFindingsFile,
   renderIssueBody,
   renderIssueTitle,
+  resolveEvidence,
 } from "./core/self-check.ts";
 import { isRecord } from "./core/json.ts";
 import { escapeStepSummaryText } from "./core/text.ts";
@@ -98,17 +99,12 @@ async function main(): Promise<void> {
   let created = 0;
   for (const finding of findings.slice(0, MAX_FINDINGS)) {
     const title = renderIssueTitle(finding);
-    // Only runs the collector actually saw become evidence links, and the
-    // links themselves are built here from validated components.
-    const evidence = finding.evidence_run_ids
-      .filter((id) => runIds.has(id))
-      .flatMap((id) => {
-        const url = actionsRunUrl(server, repository, id);
-        return url === null ? [] : [{ runId: id, url }];
-      });
-    if (evidence.length === 0) {
+    // All-or-nothing: every cited run must resolve to a collected run and a
+    // reporter-built link, or the whole finding is dropped.
+    const evidence = resolveEvidence(finding, runIds, server, repository);
+    if (evidence === null) {
       summaryLines.push(
-        `- Dropped a finding with no resolvable evidence run: ${escapeStepSummaryText(finding.title, 200)}`,
+        `- Dropped a finding citing an uncollected run: ${escapeStepSummaryText(finding.title, 200)}`,
       );
       continue;
     }
