@@ -86,8 +86,10 @@ its authority and is not a depvisor input.
 Before model work, depvisor snapshots:
 
 - every current and previous path in the updater PR diff; and
-- recognized dependency manifests, lockfiles, catalogs, and project files found
-  in the checkout.
+- recognized dependency manifests, lockfiles, catalogs, project files, and
+  package-manager configuration (for example `.npmrc`, `.yarnrc.yml`, and
+  `.pnpmfile.cjs`, which can redirect registries or hook installs) found in
+  the checkout.
 
 The same snapshot is checked after the agent and immediately before publication.
 A changed, added, removed, or retargeted frozen path yields

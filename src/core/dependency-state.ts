@@ -2,7 +2,8 @@
  * The one publication boundary v2 keeps around the autonomous agent.
  *
  * The updater owns dependency selection. depvisor therefore freezes every
- * path the updater changed, plus recognized dependency manifests and lockfiles,
+ * path the updater changed, plus recognized dependency manifests, lockfiles,
+ * and package-manager configuration (registry routing and install hooks),
  * before the agent starts. A repair may edit anything else, but it is not
  * published if one of these paths changes, appears, disappears, or changes
  * symlink target.
@@ -40,6 +41,11 @@ export function readDependencySnapshot(path: string): DependencySnapshot {
 
 const EXACT_NAMES = new Set([
   ".gitmodules",
+  ".npmrc",
+  ".pnpmfile.cjs",
+  ".pnpmfile.mjs",
+  ".yarnrc",
+  ".yarnrc.yml",
   "bun.lock",
   "bun.lockb",
   "bunfig.toml",
