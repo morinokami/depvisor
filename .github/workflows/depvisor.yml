@@ -48,4 +48,6 @@ jobs:
           FAILED: ${{ steps.depvisor.outputs.failed }}
           REPAIRED: ${{ steps.depvisor.outputs.repaired }}
           PR_URL: ${{ steps.depvisor.outputs.pr_url }}
-        run: echo "status=$STATUS failed=$FAILED repaired=$REPAIRED pr=$PR_URL"
+          TOTAL_TOKENS: ${{ steps.depvisor.outputs.total_tokens }}
+          EST_COST_USD: ${{ steps.depvisor.outputs.est_cost_usd }}
+        run: echo "status=$STATUS failed=$FAILED repaired=$REPAIRED pr=$PR_URL total_tokens=$TOTAL_TOKENS est_cost_usd=$EST_COST_USD"
