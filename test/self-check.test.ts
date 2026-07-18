@@ -18,6 +18,8 @@ const finding = {
   suggested_action: "Check whether the repair push races the updater's rebase.",
 };
 
+const ZWSP = "\u{200B}";
+
 test("parses the current outputs echo with token and cost fields", () => {
   const log = [
     '2026-07-17T01:02:03.0000000Z ##[group]Run echo "status=$STATUS failed=$FAILED repaired=$REPAIRED pr=$PR_URL total_tokens=$TOTAL_TOKENS est_cost_usd=$EST_COST_USD"',
@@ -124,12 +126,12 @@ test("deduplicates repeated evidence citations in order", () => {
   );
 });
 
-test("defuses agent-authored links, autolinks, and mentions in prose", () => {
+test("defuses agent-authored links, autolinks, mentions, and refs in prose", () => {
   const body = renderIssueBody(
     {
       ...finding,
       detail:
-        "see [trusted-looking link](https://attacker.example/phish) or www.evil.example, ping @someone",
+        "see [trusted-looking link](https://attacker.example/phish) or www.evil.example, ping @someone about #42",
       suggested_action: "read <https://attacker.example/more> first",
     },
     [{ runId: 101, url: "https://github.com/o/r/actions/runs/101" }],
@@ -138,10 +140,13 @@ test("defuses agent-authored links, autolinks, and mentions in prose", () => {
   assert.ok(!body.includes("](https://attacker.example/phish)"));
   assert.ok(body.includes("]\\("));
   assert.ok(!body.includes("https://attacker.example"));
-  assert.ok(body.includes("https&#58;//attacker.example"));
-  assert.ok(!/\bwww\./.test(body));
+  assert.ok(body.includes(`https:${ZWSP}//attacker.example`));
+  assert.ok(!body.includes("www.evil"));
+  assert.ok(body.includes(`www${ZWSP}.evil.example`));
   assert.ok(!body.includes("@someone"));
-  assert.ok(body.includes("&#64;someone"));
+  assert.ok(body.includes(`@${ZWSP}someone`));
+  assert.ok(!body.includes("#42"));
+  assert.ok(body.includes(`#${ZWSP}42`));
   assert.ok(body.includes("- [run 101](https://github.com/o/r/actions/runs/101)"));
 });
 
@@ -152,9 +157,29 @@ test("renders reporter-built evidence links and neutralized markers", () => {
     "https://github.com/o/r/actions/runs/999",
   );
   assert.ok(body.includes("- [run 101](https://github.com/o/r/actions/runs/101)"));
-  assert.ok(body.includes("&lt;!--"));
   assert.ok(!body.includes("<!--"));
   assert.ok(body.includes("https://github.com/o/r/actions/runs/999"));
+});
+
+test("renders agent-authored raw HTML as inert text", () => {
+  const body = renderIssueBody(
+    {
+      ...finding,
+      detail: 'click <a href="//attacker.example/phish">trusted-looking link</a> now',
+      suggested_action: 'or <a href="https&#58;//attacker.example/x">this</a>',
+    },
+    [{ runId: 101, url: "https://github.com/o/r/actions/runs/101" }],
+    null,
+  );
+  assert.ok(!body.includes("<a "));
+  assert.ok(!body.includes("</a>"));
+  assert.ok(body.includes("&lt;a href="));
+  // An agent-supplied entity must not survive to decode inside an attribute,
+  // and its leftover #58 must not become an issue reference.
+  assert.ok(!body.includes("https&#58;//attacker.example"));
+  assert.ok(!body.includes("#58;//attacker.example"));
+  assert.ok(body.includes(`https&amp;#${ZWSP}58;//attacker.example`));
+  assert.ok(body.includes("- [run 101](https://github.com/o/r/actions/runs/101)"));
 });
 
 test("prefixes and bounds the issue title", () => {

@@ -113,18 +113,31 @@ export function resolveEvidence(
   return evidence;
 }
 
+// Zero-width space: invisible in rendered text, but breaks GitHub's token
+// matching for autolinks, mentions, and issue references. Entity escapes
+// cannot defuse those — GitHub decodes character references before matching.
+const ZWSP = "\u{200B}";
+
 /**
- * Neutralize link and mention rendering in analyst prose on top of
- * cleanReportText: break Markdown link syntax, URL-scheme and www. autolinks,
- * and @-mention pings, keeping the visible text intact. Every live link in a
- * self-check issue is reporter-built; agent-authored ones must render inert.
+ * Neutralize active rendering in analyst prose on top of cleanReportText.
+ * Escaping &, <, > first makes raw HTML and entity-smuggled tokens inert
+ * (a literal &#64;user would otherwise still ping). The ZWSP rules then break
+ * Markdown links, URL-scheme/www. autolinks, @-mention pings, and
+ * #123/GH-123 cross-reference notifications while keeping the visible text
+ * identical. Every live link in a self-check issue is reporter-built; nothing
+ * agent-authored may render as HTML, a link, or a reference.
  */
 function defusedProse(value: string, max?: number): string {
   return cleanReportText(value, max)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
     .replaceAll("](", "]\\(")
-    .replace(/([A-Za-z][A-Za-z0-9+.-]*):\/\//g, "$1&#58;//")
-    .replace(/\bwww\./gi, "www&#46;")
-    .replaceAll("@", "&#64;");
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*):\/\//g, `$1:${ZWSP}//`)
+    .replace(/\bwww\./gi, `www${ZWSP}.`)
+    .replaceAll("@", `@${ZWSP}`)
+    .replace(/#(\d)/g, `#${ZWSP}$1`)
+    .replace(/\bGH-(\d)/gi, `GH-${ZWSP}$1`);
 }
 
 /**
