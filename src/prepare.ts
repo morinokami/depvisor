@@ -6,9 +6,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
 import { MAX_PATCH_CHARS, MAX_TOTAL_PATCH_CHARS, takeText } from "./core/context-budget.ts";
 import { snapshotDependencyState } from "./core/dependency-state.ts";
+import { headSha as currentHeadSha } from "./core/git.ts";
 import { int, isRecord, str } from "./core/json.ts";
 import { collectPages } from "./core/pagination.ts";
 import { isSafeRepoPath } from "./core/paths.ts";
@@ -152,10 +152,6 @@ async function failedJobs(repository: string, runId: number | null): Promise<Fai
   return result;
 }
 
-function currentHead(): string {
-  return execFileSync("git", ["rev-parse", "HEAD"], { cwd: REPO, encoding: "utf8" }).trim();
-}
-
 async function main(): Promise<void> {
   const repository = required("DEPVISOR_REPOSITORY");
   const runDir = required("DEPVISOR_RUN_DIR");
@@ -192,7 +188,7 @@ async function main(): Promise<void> {
   }
 
   const headSha = str(head.sha);
-  if (!/^[0-9a-f]{40}$/.test(headSha) || currentHead() !== headSha) {
+  if (!/^[0-9a-f]{40}$/.test(headSha) || currentHeadSha(REPO) !== headSha) {
     writeRunRecord(
       statusFile,
       initialRecord(

@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { materializeNewRepairFiles } from "./core/apply-repair.ts";
 import { changedDependencyState, readDependencySnapshot } from "./core/dependency-state.ts";
-import { captureRepairChanges, sameRepairChanges } from "./core/git.ts";
+import { captureRepairChanges, sameRepairChanges, treeBlobPaths } from "./core/git.ts";
 import { readRepairPayload } from "./core/repair-payload.ts";
 import { REPORT_MARKER, generatorName, renderReportState } from "./core/report-state.ts";
 import { readRunContext } from "./core/run-context.ts";
@@ -177,27 +177,6 @@ function bullets(
   render: (value: string) => string,
 ): string {
   return items.length > 0 ? items.map((item) => `- ${render(item)}`).join("\n") : `- ${empty}`;
-}
-
-/**
- * Enumerate the blob paths of one commit with a single read-only git call so
- * per-mention existence checks never spawn a process. A failed enumeration
- * renders a report without links instead of failing the run.
- */
-function treeBlobPaths(cwd: string, ref: string): Set<string> {
-  const paths = new Set<string>();
-  const result = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "ls-tree", "-r", "-z", ref], {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (result.status !== 0) return paths;
-  for (const entry of (result.stdout ?? "").split("\0")) {
-    const tab = entry.indexOf("\t");
-    if (tab === -1) continue;
-    if (entry.slice(0, tab).split(" ")[1] === "blob") paths.add(entry.slice(tab + 1));
-  }
-  return paths;
 }
 
 function reportBody(
