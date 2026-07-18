@@ -8,13 +8,11 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import {
-  MAX_FINDINGS,
   SELF_CHECK_LABEL,
   actionsRunUrl,
   parseFindingsFile,
+  planFindings,
   renderIssueBody,
-  renderIssueTitle,
-  resolveEvidence,
 } from "./core/self-check.ts";
 import { isRecord } from "./core/json.ts";
 import { escapeStepSummaryText } from "./core/text.ts";
@@ -97,29 +95,22 @@ async function main(): Promise<void> {
 
   const summaryLines: string[] = ["## depvisor self-check", ""];
   let created = 0;
-  for (const finding of findings.slice(0, MAX_FINDINGS)) {
-    const title = renderIssueTitle(finding);
-    // All-or-nothing: every cited run must resolve to a collected run and a
-    // reporter-built link, or the whole finding is dropped.
-    const evidence = resolveEvidence(finding, runIds, server, repository);
-    if (evidence === null) {
-      summaryLines.push(
-        `- Dropped a finding citing an uncollected run: ${escapeStepSummaryText(finding.title, 200)}`,
-      );
+  for (const planned of planFindings(findings, existing, runIds, server, repository)) {
+    const label = escapeStepSummaryText(planned.finding.title, 200);
+    if (planned.action === "drop-unresolved") {
+      summaryLines.push(`- Dropped a finding citing an uncollected run: ${label}`);
       continue;
     }
-    if (existing.has(title)) {
-      summaryLines.push(
-        `- Skipped an already-open topic: ${escapeStepSummaryText(finding.title, 200)}`,
-      );
+    if (planned.action === "skip-duplicate") {
+      summaryLines.push(`- Skipped an already-filed title: ${label}`);
       continue;
     }
     const issue = object(
       await github(`/repos/${repository}/issues`, {
         method: "POST",
         body: {
-          title,
-          body: renderIssueBody(finding, evidence, selfCheckRunUrl),
+          title: planned.title,
+          body: renderIssueBody(planned.finding, planned.evidence, selfCheckRunUrl),
           labels: [SELF_CHECK_LABEL],
         },
       }),
@@ -127,9 +118,7 @@ async function main(): Promise<void> {
     );
     created += 1;
     const url = typeof issue.html_url === "string" ? issue.html_url : "";
-    summaryLines.push(
-      `- Created ${url || "an issue"}: ${escapeStepSummaryText(finding.title, 200)}`,
-    );
+    summaryLines.push(`- Created ${url || "an issue"}: ${label}`);
     console.log(`self-check created ${url || "an issue"}`);
   }
   summarize(`${summaryLines.join("\n")}\n`);

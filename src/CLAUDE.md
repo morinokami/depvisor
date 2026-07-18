@@ -34,7 +34,8 @@ collector envelope embedded in its prompt (untrusted log excerpts, bounded by
 `self-check-collect.ts`) and returns findings validated against
 `core/self-check.ts`. The reporter re-validates that handoff, resolves every
 cited run id against the envelope, builds all evidence links itself, and files
-at most two `self-check`-labeled issues, skipping titles already open.
+at most two `self-check`-labeled issues, never filing a title that is already
+open or was already filed earlier in the same run.
 
 The provider key is needed by Flue itself but is not passed through `local()`'s
 default shell env allowlist. The GitHub token is absent from the entire agent

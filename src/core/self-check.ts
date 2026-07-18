@@ -113,6 +113,41 @@ export function resolveEvidence(
   return evidence;
 }
 
+export type PlannedFinding =
+  | {
+      action: "create";
+      finding: SelfCheckFinding;
+      title: string;
+      evidence: { runId: number; url: string }[];
+    }
+  | { action: "skip-duplicate"; finding: SelfCheckFinding; title: string }
+  | { action: "drop-unresolved"; finding: SelfCheckFinding; title: string };
+
+/**
+ * Decide per finding whether the reporter files it. Evidence must fully
+ * resolve, and the rendered title must be new against both the already-open
+ * issues and the titles planned earlier in the same batch: one run must never
+ * file the same title twice (identical findings, truncation collisions). An
+ * unresolved finding reserves no title.
+ */
+export function planFindings(
+  findings: readonly SelfCheckFinding[],
+  openTitles: ReadonlySet<string>,
+  collectedRunIds: ReadonlySet<number>,
+  server: string,
+  repository: string,
+): PlannedFinding[] {
+  const taken = new Set(openTitles);
+  return findings.slice(0, MAX_FINDINGS).map((finding) => {
+    const title = renderIssueTitle(finding);
+    const evidence = resolveEvidence(finding, collectedRunIds, server, repository);
+    if (evidence === null) return { action: "drop-unresolved", finding, title };
+    if (taken.has(title)) return { action: "skip-duplicate", finding, title };
+    taken.add(title);
+    return { action: "create", finding, title, evidence };
+  });
+}
+
 // Zero-width space: invisible in rendered text, but breaks GitHub's token
 // matching for autolinks, mentions, and issue references. Entity escapes
 // cannot defuse those — GitHub decodes character references before matching.

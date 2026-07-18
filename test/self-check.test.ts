@@ -6,6 +6,7 @@ import {
   actionsRunUrl,
   parseFindingsFile,
   parseOutputsLine,
+  planFindings,
   renderIssueBody,
   renderIssueTitle,
   resolveEvidence,
@@ -123,6 +124,66 @@ test("deduplicates repeated evidence citations in order", () => {
   assert.deepEqual(
     evidence?.map((entry) => entry.runId),
     [102, 101],
+  );
+});
+
+test("never plans the same title twice in one batch", () => {
+  const twice = planFindings(
+    [finding, { ...finding, detail: "same title, different text" }],
+    new Set(),
+    new Set([101, 102]),
+    "https://github.com",
+    "o/r",
+  );
+  assert.deepEqual(
+    twice.map((planned) => planned.action),
+    ["create", "skip-duplicate"],
+  );
+
+  const truncated = planFindings(
+    [
+      { ...finding, title: `${"a".repeat(120)}-first` },
+      { ...finding, title: `${"a".repeat(120)}-second` },
+    ],
+    new Set(),
+    new Set([101, 102]),
+    "https://github.com",
+    "o/r",
+  );
+  assert.deepEqual(
+    truncated.map((planned) => planned.action),
+    ["create", "skip-duplicate"],
+  );
+});
+
+test("skips a title that is already open and caps the batch", () => {
+  const planned = planFindings(
+    [finding, { ...finding, title: "Fresh topic" }, { ...finding, title: "Third topic" }],
+    new Set([renderIssueTitle(finding)]),
+    new Set([101, 102]),
+    "https://github.com",
+    "o/r",
+  );
+  assert.deepEqual(
+    planned.map((entry) => [entry.action, entry.title]),
+    [
+      ["skip-duplicate", renderIssueTitle(finding)],
+      ["create", "self-check: Fresh topic"],
+    ],
+  );
+});
+
+test("an unresolved finding reserves no title", () => {
+  const planned = planFindings(
+    [{ ...finding, evidence_run_ids: [999] }, finding],
+    new Set(),
+    new Set([101, 102]),
+    "https://github.com",
+    "o/r",
+  );
+  assert.deepEqual(
+    planned.map((entry) => entry.action),
+    ["drop-unresolved", "create"],
   );
 });
 
