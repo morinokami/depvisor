@@ -12,7 +12,7 @@ import { collectPages } from "./core/pagination.ts";
 import { SELF_CHECK_LABEL, parseOutputsLine, type ParsedRunOutputs } from "./core/self-check.ts";
 import { writeOutput } from "./shared/actions.ts";
 import { required } from "./shared/env.ts";
-import { downloadJobLog, github, object } from "./shared/github-api.ts";
+import { downloadJobLog, github, isGreenConclusion, object } from "./shared/github-api.ts";
 
 const WINDOW_DAYS = 7;
 const MAX_RUNS = 50;
@@ -105,7 +105,7 @@ async function summarizeRuns(repository: string): Promise<{
       durationSeconds: durationSeconds(str(run.run_started_at), str(run.updated_at)),
       outputs: parseOutputsLine(logTail),
     };
-    if (conclusion !== "success" && conclusion !== "skipped" && failureBudget > 0) {
+    if (!isGreenConclusion(conclusion) && failureBudget > 0) {
       const excerpt = logTail.slice(-Math.min(MAX_FAILURE_EXCERPT_CHARS, failureBudget));
       failureBudget -= excerpt.length;
       if (excerpt) summary.failureExcerpt = excerpt;
