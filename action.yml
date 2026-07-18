@@ -218,6 +218,7 @@ runs:
         DEPVISOR_REPOSITORY: ${{ github.repository }}
         DEPVISOR_API_URL: ${{ github.api_url }}
         DEPVISOR_SERVER_URL: ${{ github.server_url }}
+        DEPVISOR_RUN_ID: ${{ github.run_id }}
         DEPVISOR_CONTEXT_SHA: ${{ steps.prepare.outputs.context_sha }}
         DEPVISOR_SNAPSHOT_SHA: ${{ steps.prepare.outputs.snapshot_sha }}
         EXPECTED_SOURCE_SHA: ${{ steps.integrity.outputs.source_sha }}
@@ -257,6 +258,7 @@ runs:
           DEPVISOR_REPOSITORY="$DEPVISOR_REPOSITORY" \
           DEPVISOR_API_URL="$DEPVISOR_API_URL" \
           DEPVISOR_SERVER_URL="$DEPVISOR_SERVER_URL" \
+          DEPVISOR_RUN_ID="$DEPVISOR_RUN_ID" \
           DEPVISOR_RUN_DIR="$DEPVISOR_RUN_DIR" \
           DEPVISOR_STATUS_FILE="$DEPVISOR_STATUS_FILE" \
           DEPVISOR_CONTEXT_FILE="$DEPVISOR_CONTEXT_FILE" \
