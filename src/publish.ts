@@ -169,6 +169,13 @@ async function upsertComment(repository: string, prNumber: number, body: string)
   return typeof comment.html_url === "string" ? comment.html_url : "";
 }
 
+/**
+ * Refusal to publish over changed updater-owned state. The catch block maps
+ * this — and only this — failure to the dedicated dependency-state-changed
+ * status, so the classification must not hang on error-message wording.
+ */
+class DependencyStateChangedError extends Error {}
+
 async function main(): Promise<void> {
   const statusFile = required("DEPVISOR_STATUS_FILE");
   const previous =
@@ -211,7 +218,9 @@ async function main(): Promise<void> {
     const snapshot = readDependencySnapshot(context.dependencySnapshotFile);
     const dependencyChanges = changedDependencyState(REPO, snapshot);
     if (dependencyChanges.length > 0) {
-      throw new Error(`Dependency state changed: ${dependencyChanges.join(", ")}`);
+      throw new DependencyStateChangedError(
+        `Dependency state changed: ${dependencyChanges.join(", ")}`,
+      );
     }
     const liveChanges = captureRepairChanges(REPO);
     if (!sameRepairChanges(liveChanges, payload.changes)) {
@@ -260,9 +269,10 @@ async function main(): Promise<void> {
   } catch (error: unknown) {
     writeRunRecord(statusFile, {
       ...previous,
-      status: String(error).includes("Dependency state")
-        ? "dependency-state-changed"
-        : "publish-failed",
+      status:
+        error instanceof DependencyStateChangedError
+          ? "dependency-state-changed"
+          : "publish-failed",
       summary: `Nothing further was published: ${String(error)}`,
       commitSha,
     });

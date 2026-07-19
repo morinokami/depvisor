@@ -156,6 +156,7 @@ async function main(): Promise<void> {
   const repository = required("DEPVISOR_REPOSITORY");
   const runDir = required("DEPVISOR_RUN_DIR");
   const statusFile = required("DEPVISOR_STATUS_FILE");
+  const contextFile = required("DEPVISOR_CONTEXT_FILE");
   mkdirSync(runDir, { recursive: true });
   const workflowRunIdRaw = Number(process.env.DEPVISOR_WORKFLOW_RUN_ID || "");
   const workflowRunId =
@@ -269,7 +270,6 @@ async function main(): Promise<void> {
     failedJobs: await failedJobs(repository, workflowRunId),
     dependencySnapshotFile,
   };
-  const contextFile = join(runDir, "context.json");
   writeFileSync(contextFile, JSON.stringify(context, null, 2));
   const contextSha = createHash("sha256").update(JSON.stringify(context)).digest("hex");
   writeRunRecord(
@@ -277,7 +277,6 @@ async function main(): Promise<void> {
     initialRecord("in-progress", `depvisor is reviewing updater PR #${number}.`, prUrl),
   );
   output("processable", "true");
-  output("context_file", contextFile);
   output("context_sha", contextSha);
   output("snapshot_sha", createHash("sha256").update(dependencySnapshotText).digest("hex"));
   output("pr_url", prUrl);
