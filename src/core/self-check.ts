@@ -45,13 +45,13 @@ export function parseFindingsFile(text: string): SelfCheckFinding[] {
 export interface ParsedRunOutputs {
   status: string;
   failed: boolean | null;
-  repaired: boolean | null;
+  fixed: boolean | null;
   totalTokens: number | null;
   estCostUsd: number | null;
 }
 
 const OUTPUTS_LINE =
-  /\bstatus=(?<status>\S*) failed=(?<failed>\S*) repaired=(?<repaired>\S*) pr=\S*(?: total_tokens=(?<tokens>\S*) est_cost_usd=(?<cost>\S*))?[ \t\r]*$/gm;
+  /\bstatus=(?<status>\S*) failed=(?<failed>\S*) (?:fixed|repaired)=(?<fixed>\S*) pr=\S*(?: total_tokens=(?<tokens>\S*) est_cost_usd=(?<cost>\S*))?[ \t\r]*$/gm;
 
 function parseBool(value: string): boolean | null {
   return value === "true" ? true : value === "false" ? false : null;
@@ -61,12 +61,13 @@ function parseBool(value: string): boolean | null {
  * Extract the development workflow's `status=… failed=…` echo from a job-log
  * tail. The last lexically valid match wins: earlier matches can be the
  * unexpanded `echo "status=$STATUS …"` command header the runner prints. Runs
- * older than the cost echo carry no total_tokens/est_cost_usd fields.
+ * older than the cost echo carry no total_tokens/est_cost_usd fields, and runs from before the
+ * vocabulary rename echo `repaired=` instead of `fixed=`.
  */
 export function parseOutputsLine(log: string): ParsedRunOutputs | null {
   let parsed: ParsedRunOutputs | null = null;
   for (const match of log.matchAll(OUTPUTS_LINE)) {
-    const { status = "", failed = "", repaired = "", tokens, cost } = match.groups ?? {};
+    const { status = "", failed = "", fixed = "", tokens, cost } = match.groups ?? {};
     if (!/^[a-z][a-z-]{0,39}$/.test(status)) continue;
     const totalTokens = tokens !== undefined && /^\d{1,12}$/.test(tokens) ? Number(tokens) : null;
     const estCostUsd =
@@ -74,7 +75,7 @@ export function parseOutputsLine(log: string): ParsedRunOutputs | null {
     parsed = {
       status,
       failed: parseBool(failed),
-      repaired: parseBool(repaired),
+      fixed: parseBool(fixed),
       totalTokens,
       estCostUsd,
     };

@@ -34,7 +34,7 @@ test("the development workflow's outputs echo stays parseable by the self-check"
   const values: Record<string, string> = {
     STATUS: "reviewed",
     FAILED: "false",
-    REPAIRED: "true",
+    FIXED: "true",
     PR_URL: "https://github.com/octo/repo/pull/7",
     TOTAL_TOKENS: "1234",
     EST_COST_USD: "0.123456",
@@ -47,7 +47,7 @@ test("the development workflow's outputs echo stays parseable by the self-check"
   assert.deepEqual(parseOutputsLine(`unrelated log line\n${line}\n`), {
     status: "reviewed",
     failed: false,
-    repaired: true,
+    fixed: true,
     totalTokens: 1234,
     estCostUsd: 0.123456,
   });

@@ -4,7 +4,7 @@
  * The updater owns dependency selection. depvisor therefore freezes every
  * path the updater changed, plus recognized dependency manifests, lockfiles,
  * and package-manager configuration (registry routing and install hooks),
- * before the agent starts. A repair may edit anything else, but it is not
+ * before the agent starts. A fix may edit anything else, but it is not
  * published if one of these paths changes, appears, disappears, or changes
  * symlink target.
  */
@@ -99,7 +99,7 @@ const EXACT_NAMES = new Set([
 const EXTENSIONS = [".csproj", ".fsproj", ".vbproj", ".slnx", ".gradle", ".gradle.kts"] as const;
 
 /** Pure path classifier, intentionally broad across Dependabot ecosystems. */
-export function isDependencyStatePath(path: string): boolean {
+export function isDependencyFilePath(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
   const lower = normalized.toLowerCase();
   const name = basename(lower);
@@ -129,8 +129,8 @@ function ignoredDirectory(name: string): boolean {
   );
 }
 
-/** Discover dependency-state paths without executing repository code or git. */
-export function discoverDependencyStatePaths(repo: string): string[] {
+/** Discover dependency-file paths without executing repository code or git. */
+export function discoverDependencyFilePaths(repo: string): string[] {
   const found: string[] = [];
   const visit = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -138,7 +138,7 @@ export function discoverDependencyStatePaths(repo: string): string[] {
       const absolute = join(dir, entry.name);
       const path = relative(repo, absolute).split(sep).join("/");
       if (entry.isDirectory()) visit(absolute);
-      else if (isDependencyStatePath(path)) found.push(path);
+      else if (isDependencyFilePath(path)) found.push(path);
     }
   };
   visit(repo);
@@ -162,19 +162,19 @@ function hashPath(repo: string, path: string): string | null {
   return hash.digest("hex");
 }
 
-export function snapshotDependencyState(
+export function snapshotDependencyFiles(
   repo: string,
   updaterPaths: readonly string[] = [],
 ): DependencySnapshot {
-  const paths = new Set(discoverDependencyStatePaths(repo)).union(new Set(updaterPaths));
+  const paths = new Set(discoverDependencyFilePaths(repo)).union(new Set(updaterPaths));
   const files: Record<string, string | null> = {};
   for (const path of [...paths].toSorted()) files[path] = hashPath(repo, path);
   return { version: 1, files };
 }
 
 /** Return frozen paths whose current value differs from the pre-agent value. */
-export function changedDependencyState(repo: string, snapshot: DependencySnapshot): string[] {
-  const currentPaths = new Set(discoverDependencyStatePaths(repo));
+export function changedDependencyFiles(repo: string, snapshot: DependencySnapshot): string[] {
+  const currentPaths = new Set(discoverDependencyFilePaths(repo));
   const paths = currentPaths.union(new Set(Object.keys(snapshot.files)));
   return [...paths]
     .filter((path) => hashPath(repo, path) !== (snapshot.files[path] ?? null))

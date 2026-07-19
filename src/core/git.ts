@@ -1,10 +1,10 @@
 /**
- * Minimal git leaves used by v2's snapshot and repair handoff.
+ * Minimal git leaves used by v2's snapshot and fix handoff.
  *
  * check-credentials.ts loads this module (through credentials.ts) BEFORE
  * `pnpm install`, so it must import only node: builtins and relative modules
- * — never an installable package. The repair-shape types are therefore
- * imported type-only from repair-payload.ts (erased at runtime), which owns
+ * — never an installable package. The fix-payload types are therefore
+ * imported type-only from fix-payload.ts (erased at runtime), which owns
  * the valibot schemas; test/workflow-contract.test.ts pins this closure.
  */
 
@@ -12,13 +12,13 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { isSafeRepoPath } from "./paths.ts";
-import type { NewRepairFile, RepairChanges } from "./repair-payload.ts";
+import type { NewFixFile, FixChanges } from "./fix-payload.ts";
 
-export type { NewRepairFile, RepairChanges };
+export type { NewFixFile, FixChanges };
 
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"] as const;
-export const MAX_REPAIR_FILES = 200;
-const MAX_REPAIR_BYTES = 5 * 1024 * 1024;
+export const MAX_FIX_FILES = 200;
+const MAX_FIX_BYTES = 5 * 1024 * 1024;
 
 interface GitResult {
   code: number;
@@ -88,8 +88,8 @@ export function treeBlobPaths(repo: string, ref: string): Set<string> {
   return paths;
 }
 
-/** Compare the repair handoff by value, never by JavaScript object insertion order. */
-export function sameRepairChanges(left: RepairChanges, right: RepairChanges): boolean {
+/** Compare the fix handoff by value, never by JavaScript object insertion order. */
+export function sameFixChanges(left: FixChanges, right: FixChanges): boolean {
   if (left.patch !== right.patch || left.paths.length !== right.paths.length) return false;
   if (left.paths.some((path, index) => path !== right.paths[index])) return false;
   if (left.newFiles.length !== right.newFiles.length) return false;
@@ -107,12 +107,12 @@ export function sameRepairChanges(left: RepairChanges, right: RepairChanges): bo
 
 /** Git already emits repository-relative paths; hold them to the one shared rule set. */
 function safeRelativePath(path: string): string {
-  if (!isSafeRepoPath(path)) throw new Error(`Unsafe repair path: ${path}`);
+  if (!isSafeRepoPath(path)) throw new Error(`Unsafe fix path: ${path}`);
   return path;
 }
 
 /** Capture exactly what the agent changed without trusting a commit it made. */
-export function captureRepairChanges(repo: string): RepairChanges {
+export function captureFixChanges(repo: string): FixChanges {
   const patch = git(repo, ["diff", "--binary", "--no-ext-diff", "HEAD", "--"]);
   const tracked = nulList(git(repo, ["diff", "--name-only", "-z", "HEAD", "--"]));
   const untracked = nulList(git(repo, ["ls-files", "--others", "--exclude-standard", "-z", "--"]));
@@ -121,7 +121,7 @@ export function captureRepairChanges(repo: string): RepairChanges {
     const absolute = resolve(repo, path);
     const stat = lstatSync(absolute);
     if (!stat.isFile() && !stat.isSymbolicLink()) {
-      throw new Error(`Repair added an unsupported filesystem entry: ${path}`);
+      throw new Error(`The fix added an unsupported filesystem entry: ${path}`);
     }
     const content = stat.isSymbolicLink()
       ? Buffer.from(readlinkSync(absolute))
@@ -137,9 +137,9 @@ export function captureRepairChanges(repo: string): RepairChanges {
   const totalBytes =
     Buffer.byteLength(patch) +
     newFiles.reduce((sum, file) => sum + Buffer.from(file.contentBase64, "base64").byteLength, 0);
-  if (paths.length > MAX_REPAIR_FILES || totalBytes > MAX_REPAIR_BYTES) {
+  if (paths.length > MAX_FIX_FILES || totalBytes > MAX_FIX_BYTES) {
     throw new Error(
-      `Repair exceeds the publication limit (${paths.length}/${MAX_REPAIR_FILES} files, ${totalBytes}/${MAX_REPAIR_BYTES} bytes)`,
+      `The fix exceeds the publication limit (${paths.length}/${MAX_FIX_FILES} files, ${totalBytes}/${MAX_FIX_BYTES} bytes)`,
     );
   }
   return {

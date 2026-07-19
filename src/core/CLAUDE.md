@@ -1,24 +1,24 @@
 # v2 deterministic boundary
 
 The core no longer updates dependencies or runs verification. It supports one
-agent-driven PR repair with a deliberately small mechanical boundary.
+agent-driven PR fix with a deliberately small mechanical boundary.
 
 Pipeline:
 
-`run-context` → `dependency-state snapshot` → agent → `HEAD/state recheck` →
-`repair-payload` → fresh-clone publication → status.
+`run-context` → `dependency-files snapshot` → agent → `HEAD/snapshot recheck` →
+`fix-payload` → fresh-clone publication → status.
 
-- `dependency-state.ts` freezes all updater-changed paths and recognized
+- `dependency-files.ts` freezes all updater-changed paths and recognized
   dependency files. Discovery is filesystem-only and executes no target code.
 - `git.ts` captures tracked binary diffs plus untracked files without accepting
   an agent-authored commit. Publication is capped at 200 files / 5 MiB. The
   module also supplies repo-local credential inspection, and because the
   pre-install credential gate loads it, it must never import an installable
-  package — the repair-shape schemas live in `repair-payload.ts` and flow back
+  package — the fix-payload schemas live in `fix-payload.ts` and flow back
   type-only.
 - `context-budget.ts` and `pagination.ts` bound PR patches and workflow-job
   context before it reaches the model.
-- `apply-repair.ts` writes new files without following symlink parents.
+- `apply-fix.ts` writes new files without following symlink parents.
 - `paths.ts` is the one lexical validator for untrusted repository-relative
   paths; `json.ts` is the shared record guard plus the loose `str`/`int` field
   readers for untrusted JSON.
@@ -41,7 +41,7 @@ Pipeline:
 - `report-body.ts` renders the reviewer-report comment from the validated
   payload/context plus publisher-supplied link inputs (published commit, blob
   enumeration, validated server/run URLs). It owns the comment layout, the
-  size and link-count caps, and the rule that only a no-repair, non-deferred
+  size and link-count caps, and the rule that only a no-fix, non-deferred
   review embeds the reviewed-head state line; the publisher posts its output
   verbatim.
 - `agent-result.ts` is evidence/report structure, never an attestation.
@@ -49,8 +49,8 @@ Pipeline:
   names the generator version. The line is read from an editable comment and is
   never an attestation: it only skips a re-review of the same green head, and
   anything malformed parses as absent.
-- `repair-payload.ts` validates the token-free handoff to publication against
-  the same agent-result/repair-changes schemas the workflow enforced: one
+- `fix-payload.ts` validates the token-free handoff to publication against
+  the same agent-result/fix-changes schemas the workflow enforced: one
   shape source, independently re-checked on the token side.
 - `run-context.ts` validates the prepared PR/CI snapshot and updater identity.
 - `status.ts` owns the fixed one-PR status record and fail/green classification.
@@ -63,7 +63,7 @@ Keep these properties:
   single `paths.ts` rule set: no traversal, absolute paths, backslashes,
   control bytes, or `.git` segments. Do not fork per-module path validators
   again.
-- The publisher must compare every live captured repair field byte-for-byte with
+- The publisher must compare every live captured fix field byte-for-byte with
   its parsed payload, without depending on JavaScript object key order, before
   applying it to a fresh clone.
 - Free text may go to the PR comment/step summary after control/marker handling,

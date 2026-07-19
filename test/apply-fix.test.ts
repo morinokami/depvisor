@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { materializeNewRepairFiles } from "../src/core/apply-repair.ts";
+import { writeNewFixFiles } from "../src/core/apply-fix.ts";
 
 test("writes a captured new file under real directories", () => {
   const root = mkdtempSync(join(tmpdir(), "depvisor-apply-"));
-  materializeNewRepairFiles(root, [
+  writeNewFixFiles(root, [
     {
       path: "nested/file.txt",
       contentBase64: Buffer.from("content\n").toString("base64"),
@@ -24,7 +24,7 @@ test("refuses to write through a symlink parent", () => {
   symlinkSync(outside, join(root, "escape"));
   assert.throws(
     () =>
-      materializeNewRepairFiles(root, [
+      writeNewFixFiles(root, [
         {
           path: "escape/file.txt",
           contentBase64: Buffer.from("content\n").toString("base64"),

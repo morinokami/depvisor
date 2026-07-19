@@ -49,11 +49,11 @@ If several CI workflows should feed depvisor, list them under `workflows:`. Each
 completion produces an independent review attempt, so prefer the single workflow
 that represents your complete required CI suite.
 
-After a repair push, GitHub's recursion prevention applies to the default
-`github_token`: the repaired head's CI run can require manual approval, and
+After a fix push, GitHub's recursion prevention applies to the default
+`github_token`: the new head's CI run can require manual approval, and
 GitHub delivers no `workflow_run` event for a CI run originally triggered by
 that token's push, even after approval or a rerun, so the follow-up
-`reviewed`/`already-reviewed` pass does not start on its own. The repair commit
+`reviewed`/`already-reviewed` pass does not start on its own. The fix commit
 and full report are already published by then; approve the gated CI run and
 merge on green. Any genuinely new PR event on that head — an updater rebase, a
 human push, or close/reopen — starts the next depvisor pass. A GitHub App or
@@ -92,7 +92,7 @@ Repositories needing private registries or additional credentials must arrange
 those outside depvisor. Adding such credentials to the agent environment expands
 the agent's access and is not a depvisor input.
 
-## Frozen dependency state
+## Frozen dependency files
 
 Before the agent runs, depvisor snapshots:
 
@@ -104,10 +104,10 @@ Before the agent runs, depvisor snapshots:
 
 The same snapshot is checked after the agent and immediately before publication.
 A changed, added, removed, or retargeted frozen path yields
-`dependency-state-changed`; no repair or report is published. This preserves the
+`dependency-files-changed`; no fix or report is published. This preserves the
 updater's ownership without reintroducing v1 package-manager logic.
 
-The publication handoff also rejects repairs exceeding 200 files or 5 MiB of
+The publication handoff also rejects fixes exceeding 200 files or 5 MiB of
 binary patch/new-file content.
 
 PR patch text supplied to the agent is independently capped at 16,000 characters

@@ -9,11 +9,11 @@ shell, installed runner tools, and network access. The agent:
 
 1. understands the dependency change in this repository;
 2. reads failed CI logs and relevant upstream documentation;
-3. repairs source, tests, or configuration when appropriate;
+3. fixes source, tests, or configuration when appropriate;
 4. runs the checks needed to support its conclusion; and
 5. posts one evidence-based reviewer report, updated on later runs.
 
-When a repair is needed, depvisor adds one commit to the existing updater branch.
+When a fix is needed, depvisor adds one commit to the existing updater branch.
 It never opens a replacement PR. The final merge decision stays with you.
 
 ## Setup
@@ -43,7 +43,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  repair:
+  review:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -86,13 +86,13 @@ For another provider, set the optional `llm_api_key_env` input.
   log tails.
 - A green CI run still gets a review of the upstream changes as they affect
   your repository, normally without a code change.
-- A repair is one commit force-pushed with `--force-with-lease`, expecting the
+- A fix is one commit force-pushed with `--force-with-lease`, expecting the
   snapshotted PR head. A concurrent updater/human change supersedes the run
   without making the depvisor job fail.
-- The same PR comment is updated on later runs. A repair push made with the
+- The same PR comment is updated on later runs. A fix push made with the
   default `github_token` does not trigger the next depvisor pass by itself:
-  GitHub can hold the repaired head's CI run for manual approval, and its
-  completion is not delivered back to `workflow_run`. The repair commit and
+  GitHub can hold the new head's CI run for manual approval, and its
+  completion is not delivered back to `workflow_run`. The fix commit and
   full report are already on the PR at that point; the next updater- or
   human-initiated green run refreshes the report without another commit when
   no further work is needed.
@@ -104,15 +104,15 @@ See [configuration](docs/configuration.md) for the five inputs and
 
 ## What gets published
 
-The updater-owned dependency state is frozen before the agent starts. This
+The updater-owned dependency files are frozen before the agent starts. This
 includes every path in the original updater diff plus recognized manifests and
-lockfiles across common ecosystems. If the agent changes any of it—or changes
-Git history—depvisor publishes neither the repair nor its report.
+lockfiles across common ecosystems. If the agent changes any of them—or changes
+Git history—depvisor publishes neither the fix nor its report.
 
 Everything else is agent-driven. The agent may inspect and edit the checkout,
 run commands, install tools, and research upstream sources. It does not receive
 the GitHub token. A later publish step rechecks the PR head and frozen state,
-then pushes the captured working-tree repair and updates a single PR comment
+then pushes the captured working-tree fix and updates a single PR comment
 identified by a hidden marker.
 
 Publication is bounded to at most 200 changed files and 5 MiB of captured

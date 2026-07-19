@@ -47,7 +47,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  repair:
+  review:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -96,14 +96,14 @@ fresh GitHub-hosted runner; do not recommend a shared or persistent self-hosted
 runner for this workflow.
 
 depvisor freezes the updater's original changed paths and recognized dependency
-state. If the agent changes any of it, or changes Git history, no repair or report
-is published. Otherwise a later token-holding step may push one repair commit to
+files. If the agent changes any of them, or changes Git history, no fix or report
+is published. Otherwise a later token-holding step may push one fix commit to
 the existing updater branch and update one reviewer-report comment.
 
-Also tell the user what happens after a repair lands. The commit is pushed with
-the default `GITHUB_TOKEN`, so GitHub can hold the repaired head's CI run for
+Also tell the user what happens after a fix lands. The commit is pushed with
+the default `GITHUB_TOKEN`, so GitHub can hold the new head's CI run for
 manual approval and does not start another depvisor pass from that completion.
-The repair commit and full report are already on the PR at that point: they
+The fix commit and full report are already on the PR at that point: they
 approve the gated CI run and merge on green. A GitHub App or PAT supplied as
 `github_token` makes the follow-up refresh pass automatic, at the cost of a
 more broadly scoped credential.
@@ -132,11 +132,11 @@ Then summarize the files changed and the one manual secret-setting step.
 
 ## Result statuses
 
-Green: `reviewed`, `already-reviewed`, `repair-published`, `deferred`,
+Green: `reviewed`, `already-reviewed`, `fix-pushed`, `deferred`,
 `unsupported-pr`, `stale-pr`.
 
-Failing: `setup-failed`, `wrong-head`, `agent-failed`,
-`dependency-state-changed`, `publish-failed`, `in-progress`.
+Failing: `setup-failed`, `head-mismatch`, `agent-failed`,
+`dependency-files-changed`, `publish-failed`, `incomplete`.
 
 See `docs/configuration.md` and `docs/results.md` in the depvisor repository for
 the complete reference.

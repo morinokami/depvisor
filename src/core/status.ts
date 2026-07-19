@@ -5,16 +5,16 @@ import { dirname } from "node:path";
 import { isRecord } from "./json.ts";
 
 export const RUN_STATUSES = [
-  "in-progress",
+  "incomplete",
   "reviewed",
   "already-reviewed",
-  "repair-published",
+  "fix-pushed",
   "deferred",
   "unsupported-pr",
   "setup-failed",
-  "wrong-head",
+  "head-mismatch",
   "agent-failed",
-  "dependency-state-changed",
+  "dependency-files-changed",
   "stale-pr",
   "publish-failed",
 ] as const;
@@ -46,7 +46,7 @@ export interface RunRecord {
   status: RunStatus;
   summary: string;
   prUrl: string;
-  repaired: boolean;
+  fixed: boolean;
   commitSha: string | null;
   commentUrl: string | null;
   changedFiles: string[];
@@ -56,7 +56,7 @@ export interface RunRecord {
 const GREEN = new Set<RunStatus>([
   "reviewed",
   "already-reviewed",
-  "repair-published",
+  "fix-pushed",
   "deferred",
   "unsupported-pr",
   "stale-pr",
@@ -87,7 +87,7 @@ export function readRunRecord(path: string): RunRecord | null {
       status: value.status,
       summary: typeof value.summary === "string" ? value.summary : "",
       prUrl: typeof value.prUrl === "string" ? value.prUrl : "",
-      repaired: value.repaired === true,
+      fixed: value.fixed === true,
       commitSha: typeof value.commitSha === "string" ? value.commitSha : null,
       commentUrl: typeof value.commentUrl === "string" ? value.commentUrl : null,
       changedFiles: Array.isArray(value.changedFiles)
@@ -132,7 +132,7 @@ export function initialRecord(status: RunStatus, summary: string, prUrl = ""): R
     status,
     summary,
     prUrl,
-    repaired: false,
+    fixed: false,
     commitSha: null,
     commentUrl: null,
     changedFiles: [],

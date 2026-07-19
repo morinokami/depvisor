@@ -2,7 +2,7 @@
  * Token-holding publication boundary for v2.
  *
  * The agent never receives GH_TOKEN. This step rechecks the updater-owned state,
- * current PR head, and captured working-tree repair, then creates at most one
+ * current PR head, and captured working-tree fix, then creates at most one
  * commit on the existing updater branch and creates/updates one marker comment.
  */
 
@@ -10,10 +10,10 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { materializeNewRepairFiles } from "./core/apply-repair.ts";
-import { changedDependencyState, readDependencySnapshot } from "./core/dependency-state.ts";
-import { captureRepairChanges, sameRepairChanges, treeBlobPaths } from "./core/git.ts";
-import { readRepairPayload } from "./core/repair-payload.ts";
+import { writeNewFixFiles } from "./core/apply-fix.ts";
+import { changedDependencyFiles, readDependencySnapshot } from "./core/dependency-files.ts";
+import { captureFixChanges, sameFixChanges, treeBlobPaths } from "./core/git.ts";
+import { readFixPayload } from "./core/fix-payload.ts";
 import { renderReportBody } from "./core/report-body.ts";
 import { REPORT_MARKER } from "./core/report-state.ts";
 import { readRunContext } from "./core/run-context.ts";
@@ -35,7 +35,7 @@ function verifySnapshotFiles(contextFile: string): ReturnType<typeof readRunCont
   }
   const snapshotText = readFileSync(context.dependencySnapshotFile);
   if (sha256(snapshotText) !== required("DEPVISOR_SNAPSHOT_SHA")) {
-    throw new Error("The dependency-state snapshot changed after it was prepared");
+    throw new Error("The dependency-files snapshot changed after it was prepared");
   }
   return context;
 }
@@ -73,14 +73,14 @@ function git(cwd: string, env: NodeJS.ProcessEnv, args: string[], input?: string
   return (result.stdout || "").trim();
 }
 
-function applyRepair(
+function applyFix(
   clone: string,
   env: NodeJS.ProcessEnv,
-  changes: ReturnType<typeof captureRepairChanges>,
+  changes: ReturnType<typeof captureFixChanges>,
 ): void {
   if (changes.patch)
     git(clone, env, ["apply", "--binary", "--whitespace=nowarn", "-"], changes.patch);
-  materializeNewRepairFiles(clone, changes.newFiles);
+  writeNewFixFiles(clone, changes.newFiles);
 }
 
 interface PublishedCommit {
@@ -92,7 +92,7 @@ function publishCommit(
   repository: string,
   headRef: string,
   headSha: string,
-  changes: ReturnType<typeof captureRepairChanges>,
+  changes: ReturnType<typeof captureFixChanges>,
 ): PublishedCommit {
   if (repository !== required("DEPVISOR_REPOSITORY")) {
     throw new Error("Refusing to push outside the workflow repository");
@@ -106,10 +106,10 @@ function publishCommit(
   git(root.path, env, ["clone", "--quiet", "--no-checkout", `${server}/${repository}.git`, clone]);
   git(clone, env, ["checkout", "--quiet", "--detach", headSha]);
   git(clone, env, ["check-ref-format", "--branch", headRef]);
-  applyRepair(clone, env, changes);
+  applyFix(clone, env, changes);
   git(clone, env, ["add", "--all"]);
   const staged = git(clone, env, ["diff", "--cached", "--name-only"]);
-  if (!staged) throw new Error("The captured repair produced no changes in a fresh clone");
+  if (!staged) throw new Error("The captured fix produced no changes in a fresh clone");
   git(clone, env, [
     "-c",
     "user.name=depvisor",
@@ -122,7 +122,7 @@ function publishCommit(
     "commit",
     "--quiet",
     "--message",
-    "fix(deps): repair dependency update",
+    "fix(deps): adapt to dependency update",
     "--author",
     "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
   ]);
@@ -167,7 +167,7 @@ async function upsertComment(repository: string, prNumber: number, body: string)
 
 /**
  * Refusal to publish over changed updater-owned state. The catch block maps
- * this — and only this — failure to the dedicated dependency-state-changed
+ * this — and only this — failure to the dedicated dependency-files-changed
  * status, so the classification must not hang on error-message wording.
  */
 class DependencyStateChangedError extends Error {}
@@ -179,7 +179,7 @@ async function main(): Promise<void> {
   let commitSha: string | null = null;
   try {
     const context = verifySnapshotFiles(required("DEPVISOR_CONTEXT_FILE"));
-    const payload = readRepairPayload(required("DEPVISOR_PAYLOAD_FILE"));
+    const payload = readFixPayload(required("DEPVISOR_PAYLOAD_FILE"));
     if (
       payload.repository !== context.repository ||
       payload.prNumber !== context.pullRequest.number ||
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
       payload.headRef !== context.pullRequest.headRef ||
       payload.headRepository !== context.repository
     ) {
-      throw new Error("The repair payload does not match the prepared updater PR");
+      throw new Error("The fix payload does not match the prepared updater PR");
     }
     const pr = object(
       await github(`/repos/${payload.repository}/pulls/${payload.prNumber}`),
@@ -212,15 +212,15 @@ async function main(): Promise<void> {
     }
 
     const snapshot = readDependencySnapshot(context.dependencySnapshotFile);
-    const dependencyChanges = changedDependencyState(REPO, snapshot);
+    const dependencyChanges = changedDependencyFiles(REPO, snapshot);
     if (dependencyChanges.length > 0) {
       throw new DependencyStateChangedError(
         `Dependency state changed: ${dependencyChanges.join(", ")}`,
       );
     }
-    const liveChanges = captureRepairChanges(REPO);
-    if (!sameRepairChanges(liveChanges, payload.changes)) {
-      throw new Error("The working-tree repair changed after the agent result was captured");
+    const liveChanges = captureFixChanges(REPO);
+    if (!sameFixChanges(liveChanges, payload.changes)) {
+      throw new Error("The working-tree fix changed after the agent result was captured");
     }
 
     let published: PublishedCommit | null = null;
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
       );
       commitSha = published.sha;
     }
-    // Without a repair the links pin the snapshotted head, whose tree may differ
+    // Without a fix the links pin the snapshotted head, whose tree may differ
     // from an unpublished (deferred) working tree — so enumerate the commit, not the files.
     const blobPaths = published?.blobPaths ?? treeBlobPaths(REPO, context.pullRequest.headSha);
     const commentUrl = await upsertComment(
@@ -247,17 +247,17 @@ async function main(): Promise<void> {
       }),
     );
     const status =
-      payload.agent.verdict === "defer" ? "deferred" : commitSha ? "repair-published" : "reviewed";
+      payload.agent.verdict === "defer" ? "deferred" : commitSha ? "fix-pushed" : "reviewed";
     writeRunRecord(statusFile, {
       ...previous,
       status,
       summary:
         status === "deferred"
           ? payload.agent.defer_reason || payload.agent.summary
-          : status === "repair-published"
-            ? "Published one repair commit to the existing updater PR and posted the reviewer report."
-            : "The updater PR required no repair; posted the reviewer report.",
-      repaired: commitSha !== null,
+          : status === "fix-pushed"
+            ? "Pushed one fix commit to the existing updater PR and posted the reviewer report."
+            : "The updater PR required no fix; posted the reviewer report.",
+      fixed: commitSha !== null,
       commitSha,
       commentUrl: commentUrl || null,
       changedFiles: liveChanges.paths,
@@ -267,7 +267,7 @@ async function main(): Promise<void> {
       ...previous,
       status:
         error instanceof DependencyStateChangedError
-          ? "dependency-state-changed"
+          ? "dependency-files-changed"
           : "publish-failed",
       summary: `Nothing further was published: ${String(error)}`,
       commitSha,

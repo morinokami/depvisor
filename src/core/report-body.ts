@@ -8,7 +8,7 @@
  * here, and evidenceLink stays the only agent-supplied URL that can render.
  */
 
-import type { RepairPayload } from "./repair-payload.ts";
+import type { FixPayload } from "./fix-payload.ts";
 import { REPORT_MARKER, generatorName, renderReportState } from "./report-state.ts";
 import type { RunContext } from "./run-context.ts";
 import { cleanReportText, evidenceLink, linkifyRepoPaths, repoFileUrl } from "./text.ts";
@@ -17,9 +17,9 @@ const MAX_COMMENT_CHARS = 60_000;
 const MAX_REPORT_LINKS = 500;
 
 export interface ReportLinkInputs {
-  /** SHA of the published repair commit, or null for a no-repair or deferred review. */
+  /** SHA of the pushed fix commit, or null for a no-fix or deferred review. */
   commitSha: string | null;
-  /** Blob paths of the tree file links point into: the repair commit, or the snapshotted head. */
+  /** Blob paths of the tree file links point into: the fix commit, or the snapshotted head. */
   blobPaths: ReadonlySet<string>;
   /** Validated https origin every built URL starts from. */
   server: string;
@@ -37,7 +37,7 @@ function bullets(
 
 /** Render the full marker comment, capped in size and link count. */
 export function renderReportBody(
-  payload: RepairPayload,
+  payload: FixPayload,
   context: RunContext,
   links: ReportLinkInputs,
 ): string {
@@ -77,10 +77,10 @@ export function renderReportBody(
     agent.verdict === "defer"
       ? "Depvisor deferred this update"
       : commitSha
-        ? "Depvisor published a repair"
+        ? "Depvisor pushed a fix"
         : "Depvisor reviewed this update";
   const runLink = runUrl === null ? "" : ` ([workflow run](${runUrl}))`;
-  // Record the reviewed head only for a no-repair review: a published repair
+  // Record the reviewed head only for a no-fix review: a pushed fix
   // moves the branch head, and the next CI pass must review that new head.
   const stateLine =
     commitSha === null && agent.verdict !== "defer"
@@ -99,10 +99,10 @@ ${prose(agent.summary)}
 
 ${upstream}
 
-### Repair
+### Fix
 
-${bullets(agent.changes_made, commitSha ? "The repair commit contains the working-tree changes listed above." : "No code repair was needed.", prose)}
-${commitSha ? `\nRepair commit: \`${commitSha}\`` : ""}
+${bullets(agent.changes_made, commitSha ? "The fix commit contains the working-tree changes listed above." : "No fix was needed.", prose)}
+${commitSha ? `\nFix commit: \`${commitSha}\`` : ""}
 
 ### Verification evidence
 
@@ -111,7 +111,7 @@ ${verification}
 ### Residual risks
 
 ${bullets(agent.risks, "No additional repository-specific risk was identified.", prose)}
-${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${prose(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
+${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${prose(agent.defer_reason || "No safe bounded fix was found.")}` : ""}
 
 Initial CI: **${cleanReportText(context.trigger.conclusion, 100)}**${context.trigger.url ? ` — ${cleanReportText(context.trigger.workflowName || "workflow run", 200)}${evidenceLink(context.trigger.url)}` : ""}.
 

@@ -8,7 +8,7 @@ import { releaseNotesTool } from "../tools/release-notes.ts";
 
 export const description =
   "Turns an existing Dependabot or Renovate PR into a green, reviewable PR by investigating " +
-  "the update, repairing the checkout when needed, running checks, and reporting evidence.";
+  "the update, fixing the checkout when needed, running checks, and reporting evidence.";
 
 /**
  * v2 deliberately gives one agent the same kind of host workspace and shell a

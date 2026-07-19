@@ -2,12 +2,12 @@
 
 import { chmodSync, existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
-import type { NewRepairFile } from "./git.ts";
+import type { NewFixFile } from "./git.ts";
 import { isSafeRepoPath } from "./paths.ts";
 
 function safePath(root: string, path: string): string {
   if (!isSafeRepoPath(path)) {
-    throw new Error(`Unsafe repair path: ${path}`);
+    throw new Error(`Unsafe fix path: ${path}`);
   }
   return resolve(root, path);
 }
@@ -24,19 +24,17 @@ function ensureDirectories(root: string, parent: string): void {
     }
     const stat = lstatSync(current);
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error(
-        `Repair path has a non-directory or symlink parent: ${relative(root, current)}`,
-      );
+      throw new Error(`Fix path has a non-directory or symlink parent: ${relative(root, current)}`);
     }
   }
 }
 
-export function materializeNewRepairFiles(root: string, files: readonly NewRepairFile[]): void {
+export function writeNewFixFiles(root: string, files: readonly NewFixFile[]): void {
   for (const file of files) {
     const absolute = safePath(root, file.path);
     ensureDirectories(root, dirname(absolute));
     if (existsSync(absolute)) {
-      throw new Error(`Repair new-file path already exists: ${file.path}`);
+      throw new Error(`Fix new-file path already exists: ${file.path}`);
     }
     const content = Buffer.from(file.contentBase64, "base64");
     if (file.symlink) symlinkSync(content.toString("utf8"), absolute);

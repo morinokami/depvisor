@@ -5,7 +5,7 @@ import { AgentResultSchema } from "../src/core/agent-result.ts";
 
 const ready = {
   verdict: "ready",
-  summary: "No repair needed.",
+  summary: "No fix needed.",
   upstream_changes: [],
   changes_made: [],
   verification: [{ command: "pnpm test", outcome: "passed", evidence: "exit 0" }],

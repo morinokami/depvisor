@@ -7,7 +7,7 @@ export const description =
   "evidence-based operational findings, or none for a healthy period.";
 
 /**
- * Deliberately weaker than the repair agent: no local() sandbox, no tools, no
+ * Deliberately weaker than the depvisor agent: no local() sandbox, no tools, no
  * checkout, no network beyond the model provider. The analyst only sees the
  * collector-built envelope in its prompt and returns structured findings that
  * the token-holding reporter re-validates.
