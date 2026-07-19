@@ -41,6 +41,9 @@ jobs:
           llm_api_key: ${{ secrets.OPENAI_API_KEY }} # zizmor: ignore[secrets-outside-env] agent step has no GitHub token
           llm_model: openai/gpt-5.5
 
+      # The weekly self-check parses this line back out of the job log
+      # (OUTPUTS_LINE in src/core/self-check.ts); keep the field names and
+      # order in sync with that regex. test/workflow-contract.test.ts pins it.
       - name: Show depvisor outputs
         if: always()
         env:
