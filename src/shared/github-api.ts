@@ -1,10 +1,24 @@
 /** Minimal GitHub REST client shared by the token-holding entrypoints. */
 
 import { isRecord } from "../core/json.ts";
+import { isValidServerUrl } from "../core/text.ts";
 import { required } from "./env.ts";
 
 export function apiBase(): string {
   return (process.env.DEPVISOR_API_URL || "https://api.github.com").replace(/\/$/, "");
+}
+
+/**
+ * Workflow-provided web origin every rendered URL starts from. One validated
+ * reader for all token-holding entrypoints: a malformed origin fails the step
+ * instead of degrading into unlinked or silently dropped output.
+ */
+export function serverUrl(): string {
+  const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
+  if (!isValidServerUrl(server)) {
+    throw new Error("Refusing an invalid GitHub server URL");
+  }
+  return server;
 }
 
 export function githubHeaders(): Record<string, string> {

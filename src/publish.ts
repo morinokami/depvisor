@@ -22,12 +22,11 @@ import {
   actionsRunUrl,
   cleanReportText,
   evidenceLink,
-  isValidServerUrl,
   linkifyRepoPaths,
   repoFileUrl,
 } from "./core/text.ts";
 import { required } from "./shared/env.ts";
-import { github, latestMarkerComment, object } from "./shared/github-api.ts";
+import { github, latestMarkerComment, object, serverUrl } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
 
 const MAX_COMMENT_CHARS = 60_000;
@@ -90,14 +89,6 @@ function applyRepair(
   if (changes.patch)
     git(clone, env, ["apply", "--binary", "--whitespace=nowarn", "-"], changes.patch);
   materializeNewRepairFiles(clone, changes.newFiles);
-}
-
-function serverUrl(): string {
-  const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
-  if (!isValidServerUrl(server)) {
-    throw new Error("Refusing an invalid GitHub server URL");
-  }
-  return server;
 }
 
 interface PublishedCommit {
