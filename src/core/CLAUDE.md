@@ -28,6 +28,8 @@ Pipeline:
 - `tar.ts` extracts npm tarballs without executing tar: regular files only,
   bounded entry count and unpacked size, each path through `paths.ts`, so
   nothing extracted can escape or alias the comparison directory.
+- `temp.ts` is the one disposable temp-directory helper (`using`) behind the
+  publisher's fresh clone and the npm-diff scratch tree.
 - `text.ts` owns PR-comment and step-summary rendering boundaries, including
   the publisher-built file links: only backticked mentions that pass `paths.ts`
   and exist at the pinned commit become URLs; agent text never supplies one.

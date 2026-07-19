@@ -120,7 +120,9 @@ async function main(): Promise<void> {
   writeOutput("created_issues", String(created));
 }
 
-main().catch((error: unknown) => {
+try {
+  await main();
+} catch (error: unknown) {
   console.error(`::error::self-check could not publish its findings: ${String(error)}`);
   process.exitCode = 1;
-});
+}

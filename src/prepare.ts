@@ -236,7 +236,10 @@ async function main(): Promise<void> {
     }
   }
 
-  const changedFiles = await pullRequestFiles(repository, number);
+  const [changedFiles, jobs] = await Promise.all([
+    pullRequestFiles(repository, number),
+    failedJobs(repository, workflowRunId),
+  ]);
   const dependencySnapshotFile = join(runDir, "dependency-state.json");
   const updaterPaths = changedFiles.flatMap((file) =>
     file.previousFilename ? [file.filename, file.previousFilename] : [file.filename],
@@ -271,7 +274,7 @@ async function main(): Promise<void> {
       url: process.env.DEPVISOR_WORKFLOW_URL || "",
     },
     changedFiles,
-    failedJobs: await failedJobs(repository, workflowRunId),
+    failedJobs: jobs,
     dependencySnapshotFile,
   };
   writeFileSync(contextFile, JSON.stringify(context, null, 2));
@@ -286,7 +289,9 @@ async function main(): Promise<void> {
   output("pr_url", prUrl);
 }
 
-main().catch((error: unknown) => {
+try {
+  await main();
+} catch (error: unknown) {
   console.error(`::error::depvisor could not prepare the updater PR: ${String(error)}`);
   process.exitCode = 1;
-});
+}

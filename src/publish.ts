@@ -8,8 +8,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { materializeNewRepairFiles } from "./core/apply-repair.ts";
 import { changedDependencyState, readDependencySnapshot } from "./core/dependency-state.ts";
@@ -19,6 +18,7 @@ import { renderReportBody } from "./core/report-body.ts";
 import { REPORT_MARKER } from "./core/report-state.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
+import { tempDir } from "./core/temp.ts";
 import { actionsRunUrl } from "./core/text.ts";
 import { required } from "./shared/env.ts";
 import { github, latestMarkerComment, object, serverUrl } from "./shared/github-api.ts";
@@ -98,49 +98,45 @@ function publishCommit(
     throw new Error("Refusing to push outside the workflow repository");
   }
   const server = serverUrl();
-  const root = mkdtempSync(join(tmpdir(), "depvisor-v2-publish-"));
-  const home = join(root, "home");
-  const clone = join(root, "repo");
+  using root = tempDir("depvisor-v2-publish-");
+  const home = join(root.path, "home");
+  const clone = join(root.path, "repo");
   mkdirSync(home);
   const env = secureGitEnv(home, required("GH_TOKEN"));
-  try {
-    git(root, env, ["clone", "--quiet", "--no-checkout", `${server}/${repository}.git`, clone]);
-    git(clone, env, ["checkout", "--quiet", "--detach", headSha]);
-    git(clone, env, ["check-ref-format", "--branch", headRef]);
-    applyRepair(clone, env, changes);
-    git(clone, env, ["add", "--all"]);
-    const staged = git(clone, env, ["diff", "--cached", "--name-only"]);
-    if (!staged) throw new Error("The captured repair produced no changes in a clean clone");
-    git(clone, env, [
-      "-c",
-      "user.name=depvisor",
-      "-c",
-      "user.email=depvisor[bot]@users.noreply.github.com",
-      "-c",
-      "author.name=github-actions[bot]",
-      "-c",
-      "author.email=41898282+github-actions[bot]@users.noreply.github.com",
-      "commit",
-      "--quiet",
-      "--message",
-      "fix(deps): repair dependency update",
-      "--author",
-      "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
-    ]);
-    const commitSha = git(clone, env, ["rev-parse", "HEAD"]);
-    // The report links files at this exact commit; read its tree before the clone goes away.
-    const blobPaths = treeBlobPaths(clone, commitSha);
-    git(clone, env, [
-      "push",
-      "--quiet",
-      `--force-with-lease=refs/heads/${headRef}:${headSha}`,
-      "origin",
-      `HEAD:refs/heads/${headRef}`,
-    ]);
-    return { sha: commitSha, blobPaths };
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  git(root.path, env, ["clone", "--quiet", "--no-checkout", `${server}/${repository}.git`, clone]);
+  git(clone, env, ["checkout", "--quiet", "--detach", headSha]);
+  git(clone, env, ["check-ref-format", "--branch", headRef]);
+  applyRepair(clone, env, changes);
+  git(clone, env, ["add", "--all"]);
+  const staged = git(clone, env, ["diff", "--cached", "--name-only"]);
+  if (!staged) throw new Error("The captured repair produced no changes in a clean clone");
+  git(clone, env, [
+    "-c",
+    "user.name=depvisor",
+    "-c",
+    "user.email=depvisor[bot]@users.noreply.github.com",
+    "-c",
+    "author.name=github-actions[bot]",
+    "-c",
+    "author.email=41898282+github-actions[bot]@users.noreply.github.com",
+    "commit",
+    "--quiet",
+    "--message",
+    "fix(deps): repair dependency update",
+    "--author",
+    "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+  ]);
+  const commitSha = git(clone, env, ["rev-parse", "HEAD"]);
+  // The report links files at this exact commit; read its tree before the clone goes away.
+  const blobPaths = treeBlobPaths(clone, commitSha);
+  git(clone, env, [
+    "push",
+    "--quiet",
+    `--force-with-lease=refs/heads/${headRef}:${headSha}`,
+    "origin",
+    `HEAD:refs/heads/${headRef}`,
+  ]);
+  return { sha: commitSha, blobPaths };
 }
 
 /**

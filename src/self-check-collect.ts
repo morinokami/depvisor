@@ -148,16 +148,18 @@ async function main(): Promise<void> {
   };
   writeFileSync(contextFile, JSON.stringify(envelope, null, 2));
 
-  const byConclusion = new Map<string, number>();
-  for (const run of runs) {
-    byConclusion.set(run.conclusion, (byConclusion.get(run.conclusion) ?? 0) + 1);
-  }
-  const counts = [...byConclusion.entries()].map(([key, count]) => `${key}=${count}`).join(" ");
+  const counts = Map.groupBy(runs, (run) => run.conclusion)
+    .entries()
+    .map(([conclusion, group]) => `${conclusion}=${group.length}`)
+    .toArray()
+    .join(" ");
   console.log(`self-check collected ${runs.length} depvisor run(s): ${counts || "none"}`);
   writeOutput("analyzable", runs.length > 0 ? "true" : "false");
 }
 
-main().catch((error: unknown) => {
+try {
+  await main();
+} catch (error: unknown) {
   console.error(`::error::self-check could not collect depvisor runs: ${String(error)}`);
   process.exitCode = 1;
-});
+}

@@ -68,14 +68,9 @@ export function repoFileUrl(
  * break out of the Markdown link.
  */
 export function evidenceLink(value: string | undefined): string {
-  if (!value) return "";
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:") return "";
-    return ` ([source](${url.href.replaceAll(")", "%29")}))`;
-  } catch {
-    return "";
-  }
+  const url = value ? URL.parse(value) : null;
+  if (url === null || url.protocol !== "https:") return "";
+  return ` ([source](${url.href.replaceAll(")", "%29")}))`;
 }
 
 const CODE_SPAN = /`([^`\n]{1,256})`/g;
@@ -95,31 +90,9 @@ export function linkifyRepoPaths(text: string, link: (path: string) => string | 
 
 /** Render a single untrusted value as literal inline text in a step summary. */
 export function escapeStepSummaryText(value: string, max = 2_000): string {
-  const html = inline(value, max)
+  return inline(value, max)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-  let escaped = html;
-  for (const character of [
-    "\\",
-    "`",
-    "*",
-    "_",
-    "{",
-    "}",
-    "[",
-    "]",
-    "(",
-    ")",
-    "#",
-    "+",
-    "-",
-    ".",
-    "!",
-    "|",
-    "~",
-  ]) {
-    escaped = escaped.replaceAll(character, `\\${character}`);
-  }
-  return escaped;
+    .replaceAll(">", "&gt;")
+    .replace(/[\\`*_{}[\]()#+\-.!|~]/g, "\\$&");
 }
