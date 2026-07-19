@@ -56,9 +56,11 @@ that token's push, even after approval or a rerun, so the follow-up
 `reviewed`/`already-reviewed` pass does not start on its own. The fix commit
 and full report are already published by then; approve the gated CI run and
 merge on green. Any genuinely new PR event on that head — an updater rebase, a
-human push, or close/reopen — starts the next depvisor pass. A GitHub App or
-PAT supplied as `github_token` makes the follow-up pass automatic, at the cost
-of a more broadly scoped credential in the token-holding steps.
+human push, or close/reopen — starts the next depvisor pass. A GitHub App
+installation token or PAT supplied as `github_token` makes the follow-up pass
+automatic, because pushes made with it do trigger `workflow_run`. The cost is
+operating a separately managed credential in the token-holding steps; scope it
+as narrowly as the default token it replaces.
 
 ## Agent environment
 

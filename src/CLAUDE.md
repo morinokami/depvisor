@@ -29,7 +29,7 @@ raw.githubusercontent.com, and registry.npmjs.org with lexically validated
 coordinates, and return size-capped untrusted text. No fixer/digest subagents remain.
 
 The weekly self-check (`.github/workflows/self-check.yml`) reuses this
-privilege separation with fewer capabilities. `agents/self-check.ts`
+per-step credential separation with fewer capabilities. `agents/self-check.ts`
 deliberately has no `local()` sandbox, tools, or checkout access: the analyst
 only reads the collector envelope embedded in its prompt (untrusted log
 excerpts, bounded by `self-check-collect.ts`) and returns findings validated

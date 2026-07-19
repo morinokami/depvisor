@@ -22,7 +22,7 @@ Order is load-bearing:
 7. local-sandbox agent with model key and no GitHub token;
 8. scrub loader/shell env, verify source integrity, then run token-holding
    fresh-clone publication when a payload exists; these are file/environment
-   checks, not protection from a same-UID residual process or writable toolchain;
+   checks, not protection from a lingering same-UID process or writable toolchain;
 9. always verify source again and report status/outputs.
 
 Keep the two runner workarounds documented in action.yml: nested `uses:` cannot
@@ -43,8 +43,8 @@ implementation or credential-free dry-run.
 
 `.github/workflows/self-check.yml` is the weekly cron (plus manual dispatch)
 that reads the last week of depvisor runs and files at most two
-`self-check`-labeled issues. It repeats the action's privilege separation in
-miniature:
+`self-check`-labeled issues. It repeats the action's per-step credential
+separation in miniature:
 `self-check-collect.ts` (GH_TOKEN, `actions: read`) builds a bounded envelope,
 `flue run workflow:self-check` (qualified: the agent and workflow share the
 name) analyzes it with the model key, no GitHub token, and no sandbox, and
