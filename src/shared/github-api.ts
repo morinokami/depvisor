@@ -55,6 +55,15 @@ export function object(value: unknown, label: string): Record<string, unknown> {
   return value;
 }
 
+/**
+ * GitHub job/run conclusions that need no failure attention. Shared by the
+ * prepare and self-check collectors so "what counts as failed" cannot drift
+ * between them; an empty or in-progress conclusion is not green.
+ */
+export function isGreenConclusion(conclusion: string): boolean {
+  return conclusion === "success" || conclusion === "skipped" || conclusion === "neutral";
+}
+
 /** Download one workflow-job log and keep only its bounded tail. */
 export async function downloadJobLog(
   repository: string,

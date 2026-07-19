@@ -22,7 +22,13 @@ import {
 import { initialRecord, writeRunRecord } from "./core/status.ts";
 import { writeOutput as output } from "./shared/actions.ts";
 import { required } from "./shared/env.ts";
-import { downloadJobLog, github, latestMarkerComment, object } from "./shared/github-api.ts";
+import {
+  downloadJobLog,
+  github,
+  isGreenConclusion,
+  latestMarkerComment,
+  object,
+} from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
 
 const MAX_JOB_LOG_CHARS = 60_000;
@@ -110,11 +116,9 @@ async function failedJobs(repository: string, runId: number | null): Promise<Fai
     },
     { pageSize: 100, maxPages: MAX_JOB_PAGES, label: "Workflow job list" },
   );
-  const failed = jobs.filter((value) => {
-    if (!isRecord(value)) return false;
-    const conclusion = str(value.conclusion);
-    return conclusion !== "success" && conclusion !== "skipped" && conclusion !== "neutral";
-  });
+  const failed = jobs.filter(
+    (value) => isRecord(value) && !isGreenConclusion(str(value.conclusion)),
+  );
   let remaining = MAX_TOTAL_LOG_CHARS;
   const result: FailedJob[] = [];
   for (const value of failed) {
