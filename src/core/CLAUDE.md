@@ -12,7 +12,10 @@ Pipeline:
   dependency files. Discovery is filesystem-only and executes no target code.
 - `git.ts` captures tracked binary diffs plus untracked files without accepting
   an agent-authored commit. Publication is capped at 200 files / 5 MiB. The
-  module also supplies repo-local credential inspection.
+  module also supplies repo-local credential inspection, and because the
+  pre-install credential gate loads it, it must never import an installable
+  package — the repair-shape schemas live in `repair-payload.ts` and flow back
+  type-only.
 - `context-budget.ts` and `pagination.ts` bound PR patches and workflow-job
   context before it reaches the model.
 - `apply-repair.ts` materializes new files without following symlink parents.

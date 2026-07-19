@@ -1,9 +1,32 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import * as v from "valibot";
 import { AgentResultSchema } from "./agent-result.ts";
-import { RepairChangesSchema } from "./git.ts";
+import { MAX_REPAIR_FILES } from "./git.ts";
 
 const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Shape of the captured repair. The schemas live here rather than in git.ts
+ * because the pre-install credential gate loads git.ts before `pnpm install`
+ * exists — git.ts must stay free of installable imports, so it re-exports
+ * these types type-only while the capture limit constant flows the other way.
+ */
+const NewRepairFileSchema = v.object({
+  path: v.string(),
+  contentBase64: v.string(),
+  executable: v.boolean(),
+  symlink: v.boolean(),
+});
+
+export type NewRepairFile = v.InferOutput<typeof NewRepairFileSchema>;
+
+const RepairChangesSchema = v.object({
+  patch: v.string(),
+  newFiles: v.pipe(v.array(NewRepairFileSchema), v.maxLength(MAX_REPAIR_FILES)),
+  paths: v.pipe(v.array(v.string()), v.maxLength(MAX_REPAIR_FILES)),
+});
+
+export type RepairChanges = v.InferOutput<typeof RepairChangesSchema>;
 
 /**
  * The token-free workflow → publisher handoff. The agent and changes shapes
