@@ -20,7 +20,7 @@ const failed = record ? statusFails(record.status) : true;
 const commitSha = record?.commitSha ?? "";
 writeOutput("status", record?.status ?? "");
 writeOutput("failed", failed ? "true" : "false");
-writeOutput("repaired", record?.repaired ? "true" : "false");
+writeOutput("fix_pushed", record?.fixPushed ? "true" : "false");
 writeOutput("pr_url", safeUrl(record?.prUrl ?? null));
 writeOutput("commit_sha", /^[0-9a-f]{40}$/.test(commitSha) ? commitSha : "");
 writeOutput("comment_url", safeUrl(record?.commentUrl ?? null));
@@ -34,7 +34,7 @@ const summary = record
   ? `## depvisor\n\n**${record.status}** — ${escapeStepSummaryText(record.summary)}\n\n` +
     `PR: ${safeUrl(record.prUrl) || "unavailable"}\n\n` +
     (record.changedFiles.length > 0
-      ? `Repair files:\n${record.changedFiles.map((path) => `- ${escapeStepSummaryText(path, 500)}`).join("\n")}\n\n`
+      ? `Changed files:\n${record.changedFiles.map((path) => `- ${escapeStepSummaryText(path, 500)}`).join("\n")}\n\n`
       : "") +
     (record.usage
       ? `Model: ${escapeStepSummaryText(record.usage.model, 500)} · tokens: ${record.usage.totalTokens} · estimated cost: $${record.usage.costUsd.toFixed(6)}\n`

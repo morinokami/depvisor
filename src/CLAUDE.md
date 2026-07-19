@@ -12,7 +12,7 @@ them, not in duplicated code.
 | ------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------- |
 | `check-credentials.ts`    | Reject repo-local persisted git credentials                                            | none                                           |
 | `prepare.ts`              | Resolve PR, skip already-reviewed heads, changed files, failed jobs/logs, frozen state | `GH_TOKEN`                                     |
-| `workflows/repair.ts`     | Autonomous repository repair/review                                                    | model provider key in runtime; no GitHub token |
+| `workflows/fix.ts`        | Autonomous repository review and fix                                                   | model provider key in runtime; no GitHub token |
 | `publish.ts`              | Fresh-clone commit/push and maintained PR comment                                      | `GH_TOKEN`                                     |
 | `report-status.ts`        | Action outputs and step summary                                                        | none                                           |
 | `self-check-collect.ts`   | Bounded envelope of recent depvisor runs plus self-check issue titles                  | `GH_TOKEN`                                     |

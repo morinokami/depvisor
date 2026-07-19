@@ -1,4 +1,4 @@
-/** Structured evidence the autonomous repair agent hands to the publisher. */
+/** Structured evidence the depvisor agent hands to the publisher. */
 
 import * as v from "valibot";
 
@@ -7,7 +7,7 @@ const MAX_LIST_ENTRIES = 200;
 
 /**
  * One schema for both boundaries: the workflow validates the model's result
- * against it, and the publisher re-validates the same shape inside the repair
+ * against it, and the publisher re-validates the same shape inside the fix
  * payload. The size caps and the defer_reason rule live here so an invalid
  * result is corrected at the model boundary instead of failing publication.
  */

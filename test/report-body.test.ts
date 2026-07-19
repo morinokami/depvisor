@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentResult } from "../src/core/agent-result.ts";
 import { renderReportBody } from "../src/core/report-body.ts";
-import type { RepairPayload } from "../src/core/repair-payload.ts";
+import type { FixPayload } from "../src/core/fix-payload.ts";
 import { REPORT_MARKER, parseReportState } from "../src/core/report-state.ts";
 import type { RunContext } from "../src/core/run-context.ts";
 
@@ -22,7 +22,7 @@ function agentResult(overrides: Partial<AgentResult> = {}): AgentResult {
   };
 }
 
-function payload(agent: AgentResult): RepairPayload {
+function payload(agent: AgentResult): FixPayload {
   return {
     version: 2,
     repository: "octo/repo",
@@ -61,11 +61,11 @@ function context(): RunContext {
     },
     changedFiles: [],
     failedJobs: [],
-    dependencySnapshotFile: "/tmp/dependency-state.json",
+    frozenFilesSnapshotFile: "/tmp/frozen-files.json",
   };
 }
 
-test("a no-repair review embeds the reviewed-head state line", () => {
+test("a no-fix review embeds the reviewed-head state line", () => {
   const body = renderReportBody(payload(agentResult()), context(), {
     commitSha: null,
     blobPaths: new Set(),
@@ -74,14 +74,14 @@ test("a no-repair review embeds the reviewed-head state line", () => {
   });
   assert.equal(body.startsWith(REPORT_MARKER), true);
   assert.match(body, /## Depvisor reviewed this update/);
-  assert.match(body, /No code repair was needed\./);
+  assert.match(body, /No fix was needed\./);
   assert.equal(body.includes("(workflow run)"), false);
   const state = parseReportState(body);
   assert.equal(state?.headSha, HEAD);
   assert.equal(state?.conclusion, "success");
 });
 
-test("a published repair names the commit and records no state line", () => {
+test("a pushed fix names the commit and records no state line", () => {
   const agent = agentResult({ changes_made: ["Adjusted `src/a.ts` for the renamed option."] });
   const body = renderReportBody(payload(agent), context(), {
     commitSha: COMMIT,
@@ -89,8 +89,8 @@ test("a published repair names the commit and records no state line", () => {
     server: SERVER,
     runUrl: "https://github.com/octo/repo/actions/runs/12345",
   });
-  assert.match(body, /## Depvisor published a repair/);
-  assert.equal(body.includes(`Repair commit: \`${COMMIT}\``), true);
+  assert.match(body, /## Depvisor pushed a fix/);
+  assert.equal(body.includes(`Fix commit: \`${COMMIT}\``), true);
   assert.equal(parseReportState(body), null);
   assert.equal(body.includes(`[\`src/a.ts\`](${SERVER}/octo/repo/blob/${COMMIT}/src/a.ts)`), true);
   assert.equal(
@@ -112,7 +112,53 @@ test("a deferred review renders the reason and records no state line", () => {
   });
   assert.match(body, /## Depvisor deferred this update/);
   assert.match(body, /\*\*Why depvisor deferred:\*\* The failure needs a human decision\./);
+  assert.match(body, /### Attempted fix/);
+  assert.match(body, /The agent left no working-tree edits\./);
+  assert.match(body, /No fix was published\./);
+  assert.equal(body.includes("No fix was needed."), false);
   assert.equal(parseReportState(body), null);
+});
+
+test("a deferred review with leftover edits marks them unpublished", () => {
+  const agent = agentResult({
+    verdict: "defer",
+    defer_reason: "The failure needs a human decision.",
+    changes_made: ["Updated `src/a.ts` for the new API."],
+  });
+  const body = renderReportBody(payload(agent), context(), {
+    commitSha: null,
+    blobPaths: new Set(["src/a.ts"]),
+    server: SERVER,
+    runUrl: null,
+  });
+  assert.match(body, /### Attempted fix/);
+  assert.equal(body.includes("for the new API."), true);
+  assert.match(
+    body,
+    /No fix was published\. Any working-tree edits from this run were not pushed\./,
+  );
+  assert.equal(body.includes("No fix was needed."), false);
+  assert.equal(body.includes("The agent left no working-tree edits."), false);
+});
+
+test("the deferred notice and reason survive the comment length cap", () => {
+  const agent = agentResult({
+    verdict: "defer",
+    defer_reason: "The failure needs a human decision.",
+    changes_made: Array.from({ length: 200 }, (_, index) => `Edit ${index}: ${"x".repeat(3_000)}`),
+  });
+  const body = renderReportBody(payload(agent), context(), {
+    commitSha: null,
+    blobPaths: new Set(),
+    server: SERVER,
+    runUrl: null,
+  });
+  assert.equal(body.length <= 60_000, true);
+  assert.match(
+    body,
+    /No fix was published\. Any working-tree edits from this run were not pushed\./,
+  );
+  assert.match(body, /\*\*Why depvisor deferred:\*\* The failure needs a human decision\./);
 });
 
 test("file mentions link only into the enumerated tree; evidence links stay https-only", () => {

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { captureRepairChanges, headSha, isClean, treeBlobPaths } from "../src/core/git.ts";
+import { captureFixChanges, headSha, isClean, treeBlobPaths } from "../src/core/git.ts";
 
 function repo(): string {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-git-v2-"));
@@ -24,10 +24,10 @@ test("captures tracked edits and untracked files without making a commit", () =>
   mkdirSync(join(dir, "new"));
   writeFileSync(join(dir, "new/file.txt"), "created\n");
   assert.equal(isClean(dir), false);
-  const repair = captureRepairChanges(dir);
-  assert.deepEqual(repair.paths, ["new/file.txt", "tracked.txt"]);
-  assert.match(repair.patch, /-before/);
-  assert.equal(Buffer.from(repair.newFiles[0]!.contentBase64, "base64").toString(), "created\n");
+  const fix = captureFixChanges(dir);
+  assert.deepEqual(fix.paths, ["new/file.txt", "tracked.txt"]);
+  assert.match(fix.patch, /-before/);
+  assert.equal(Buffer.from(fix.newFiles[0]!.contentBase64, "base64").toString(), "created\n");
   assert.equal(headSha(dir), before);
 });
 
@@ -44,11 +44,11 @@ test("enumerates committed blob paths and fails soft on an unknown ref", () => {
   assert.equal(treeBlobPaths(dir, "not-a-ref").size, 0);
 });
 
-test("rejects a repair that exceeds the publication file limit", () => {
+test("rejects a fix that exceeds the publication file limit", () => {
   const dir = repo();
   mkdirSync(join(dir, "many"));
   for (let index = 0; index < 201; index += 1) {
     writeFileSync(join(dir, `many/${index}.txt`), `${index}\n`);
   }
-  assert.throws(() => captureRepairChanges(dir), /publication limit/);
+  assert.throws(() => captureFixChanges(dir), /publication limit/);
 });

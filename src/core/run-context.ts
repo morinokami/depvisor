@@ -44,7 +44,7 @@ export interface RunContext {
   };
   changedFiles: PullRequestFile[];
   failedJobs: FailedJob[];
-  dependencySnapshotFile: string;
+  frozenFilesSnapshotFile: string;
 }
 
 function string(value: unknown, field: string): string {
@@ -138,7 +138,7 @@ export function readRunContext(path: string): RunContext {
     },
     changedFiles: root.changedFiles.map(pullRequestFile),
     failedJobs: root.failedJobs.map(failedJob),
-    dependencySnapshotFile: string(root.dependencySnapshotFile, "dependencySnapshotFile"),
+    frozenFilesSnapshotFile: string(root.frozenFilesSnapshotFile, "frozenFilesSnapshotFile"),
   };
 }
 

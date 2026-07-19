@@ -1,9 +1,9 @@
 # depvisor v2
 
-depvisor is a GitHub composite action that reviews and repairs existing
-Dependabot/Renovate PRs. Version discovery, dependency-state edits, update
+depvisor is a GitHub composite action that reviews and fixes existing
+Dependabot/Renovate PRs. Version discovery, dependency-file edits, update
 grouping, and PR lifecycle belong to the updater — never to depvisor. One run
-reviews one updater PR, repairs it when needed, and maintains an evidence-based
+reviews one updater PR, fixes it when needed, and maintains an evidence-based
 comment.
 
 ## Commands
@@ -17,14 +17,14 @@ actionlint
 zizmor --persona=auditor .
 ```
 
-A local `flue run repair` needs a context prepared by `prepare.ts` for a real
+A local `flue run fix` needs a context prepared by `prepare.ts` for a real
 updater PR; the `depvisor-update-flow` skill documents the exact sequence.
 
 ## Architecture
 
 One pipeline: `prepare.ts` (GH_TOKEN, read-only PR/CI snapshot) → single
 `depvisor` agent in Flue's `local()` sandbox (no GitHub token) → `publish.ts`
-(GH_TOKEN, fresh-clone publication of the captured repair and report) →
+(GH_TOKEN, fresh-clone publication of the captured fix and report) →
 `report-status.ts` (Action outputs). `src/CLAUDE.md` maps entrypoints and
 credentials; `src/core/CLAUDE.md` owns the deterministic publication boundary.
 
@@ -81,13 +81,13 @@ Whenever behavior changes, update the owning reference in the same change.
 - `workflow_run` is deliberate: it starts after CI and makes secrets available
   from a default-branch workflow even for Dependabot PRs. The consumer must check
   out `github.event.workflow_run.head_sha`, not the default branch.
-- A repair push with the default `github_token` does not trigger the next
-  depvisor pass on its own: GitHub can gate the repaired head's CI run behind
+- A fix push with the default `github_token` does not trigger the next
+  depvisor pass on its own: GitHub can gate the new head's CI run behind
   manual approval, and it delivers no `workflow_run` event for a CI run
   originally triggered by that token's push (a rerun keeps that original
-  trigger). The repair and full report are already published by the first pass.
+  trigger). The fix and full report are already published by the first pass.
   A later updater- or human-initiated green run on that head updates the same
-  report comment and makes no new commit unless more repair is genuinely
+  report comment and makes no new commit unless another fix is genuinely
   needed; further green passes on the unchanged head skip with
   `already-reviewed` via the comment's state line.
 - Flue is exact-pinned beta. Use the `flue` skill and bundled `flue docs` rather

@@ -3,14 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sameRepairChanges, type RepairChanges } from "../src/core/git.ts";
-import {
-  readRepairPayload,
-  writeRepairPayload,
-  type RepairPayload,
-} from "../src/core/repair-payload.ts";
+import { sameFixChanges, type FixChanges } from "../src/core/git.ts";
+import { readFixPayload, writeFixPayload, type FixPayload } from "../src/core/fix-payload.ts";
 
-function payload(changes: RepairChanges): RepairPayload {
+function payload(changes: FixChanges): FixPayload {
   return {
     version: 2,
     repository: "owner/repo",
@@ -31,17 +27,17 @@ function payload(changes: RepairChanges): RepairPayload {
   };
 }
 
-test("repair changes survive a payload write/read round trip", () => {
-  const changes: RepairChanges = {
+test("fix changes survive a payload write/read round trip", () => {
+  const changes: FixChanges = {
     patch: "",
     newFiles: [],
     paths: [],
   };
-  const file = join(mkdtempSync(join(tmpdir(), "depvisor-payload-")), "repair.json");
-  writeRepairPayload(file, payload(changes));
-  const roundTrip = readRepairPayload(file).changes;
+  const file = join(mkdtempSync(join(tmpdir(), "depvisor-payload-")), "fix.json");
+  writeFixPayload(file, payload(changes));
+  const roundTrip = readFixPayload(file).changes;
   assert.deepEqual(roundTrip, changes);
-  assert.equal(sameRepairChanges(changes, roundTrip), true);
+  assert.equal(sameFixChanges(changes, roundTrip), true);
 });
 
 test("rejects a payload whose agent defers without a reason", () => {
@@ -49,22 +45,22 @@ test("rejects a payload whose agent defers without a reason", () => {
     ...payload({ patch: "", newFiles: [], paths: [] }),
     agent: { ...payload({ patch: "", newFiles: [], paths: [] }).agent, verdict: "defer" },
   };
-  const file = join(mkdtempSync(join(tmpdir(), "depvisor-payload-")), "repair.json");
+  const file = join(mkdtempSync(join(tmpdir(), "depvisor-payload-")), "fix.json");
   writeFileSync(file, JSON.stringify(invalid));
-  assert.throws(() => readRepairPayload(file));
+  assert.throws(() => readFixPayload(file));
 });
 
-test("rejects a payload exceeding the repair file-count cap", () => {
+test("rejects a payload exceeding the fix file-count cap", () => {
   const paths = Array.from({ length: 201 }, (_, index) => `file${index}.txt`);
   const invalid = { ...payload({ patch: "", newFiles: [], paths: [] }) };
   invalid.changes = { patch: "", newFiles: [], paths };
-  const file = join(mkdtempSync(join(tmpdir(), "depvisor-payload-")), "repair.json");
+  const file = join(mkdtempSync(join(tmpdir(), "depvisor-payload-")), "fix.json");
   writeFileSync(file, JSON.stringify(invalid));
-  assert.throws(() => readRepairPayload(file));
+  assert.throws(() => readFixPayload(file));
 });
 
-test("repair comparison rejects changed new-file bytes", () => {
-  const changes: RepairChanges = {
+test("fix comparison rejects changed new-file bytes", () => {
+  const changes: FixChanges = {
     patch: "patch",
     paths: ["new.txt"],
     newFiles: [
@@ -76,7 +72,7 @@ test("repair comparison rejects changed new-file bytes", () => {
       },
     ],
   };
-  const changed: RepairChanges = {
+  const changed: FixChanges = {
     ...changes,
     newFiles: [
       {
@@ -85,5 +81,5 @@ test("repair comparison rejects changed new-file bytes", () => {
       },
     ],
   };
-  assert.equal(sameRepairChanges(changes, changed), false);
+  assert.equal(sameFixChanges(changes, changed), false);
 });

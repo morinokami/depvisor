@@ -12,14 +12,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  repair:
+  review:
     if: github.event.workflow_run.event == 'pull_request'
-    name: Repair and review dependency PR
+    name: Review and fix dependency PR
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       actions: read # read failed jobs and their logs
-      contents: write # add one repair commit to the updater branch
+      contents: write # add one fix commit to the updater branch
       pull-requests: write # maintain the reviewer report comment
     steps:
       # The agent needs unrestricted research/install access in v2. Harden-runner
@@ -49,8 +49,8 @@ jobs:
         env:
           STATUS: ${{ steps.depvisor.outputs.status }}
           FAILED: ${{ steps.depvisor.outputs.failed }}
-          REPAIRED: ${{ steps.depvisor.outputs.repaired }}
+          FIX_PUSHED: ${{ steps.depvisor.outputs.fix_pushed }}
           PR_URL: ${{ steps.depvisor.outputs.pr_url }}
           TOTAL_TOKENS: ${{ steps.depvisor.outputs.total_tokens }}
           EST_COST_USD: ${{ steps.depvisor.outputs.est_cost_usd }}
-        run: echo "status=$STATUS failed=$FAILED repaired=$REPAIRED pr=$PR_URL total_tokens=$TOTAL_TOKENS est_cost_usd=$EST_COST_USD"
+        run: echo "status=$STATUS failed=$FAILED fix_pushed=$FIX_PUSHED pr=$PR_URL total_tokens=$TOTAL_TOKENS est_cost_usd=$EST_COST_USD"

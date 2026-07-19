@@ -9,7 +9,7 @@ test("classifies published, reviewed, deferred and irrelevant PRs as green", () 
   for (const status of [
     "reviewed",
     "already-reviewed",
-    "repair-published",
+    "fix-pushed",
     "deferred",
     "unsupported-pr",
     "stale-pr",
@@ -19,10 +19,10 @@ test("classifies published, reviewed, deferred and irrelevant PRs as green", () 
 });
 
 test("fails closed for incomplete and unsafe outcomes", () => {
-  assert.equal(statusFails("in-progress"), true);
+  assert.equal(statusFails("incomplete"), true);
   assert.equal(statusFails("setup-failed"), true);
-  assert.equal(statusFails("dependency-state-changed"), true);
-  assert.equal(initialRecord("agent-failed", "failed").repaired, false);
+  assert.equal(statusFails("frozen-files-changed"), true);
+  assert.equal(initialRecord("agent-failed", "failed").fixPushed, false);
 });
 
 test("rejects an injected status and drops malformed usage", () => {

@@ -23,13 +23,13 @@ Expected noise that is NOT a finding by itself:
   waste substantial agent time (cancellation late in long runs).
 - `unsupported-pr`: runs triggered by non-updater PRs skip by design. Worth
   raising only when they dominate the run volume.
-- A second green pass after a repair that updates the comment without a new
+- A second green pass after a fix that updates the comment without a new
   commit, or `already-reviewed` skips: both are by design.
 
 Signals that ARE worth raising when the evidence is clear: repeated
 `agent-failed`/`publish-failed`/`setup-failed` with a common cause visible in
-the excerpts; the same PR being repaired again and again; token or cost
-outliers far above the period's norm; runs stopping at `in-progress`;
+the excerpts; the same PR being fixed again and again; token or cost
+outliers far above the period's norm; runs stopping at `incomplete`;
 duration patterns that suggest a stuck step.
 
 Requirements for every finding:

@@ -2,7 +2,7 @@
  * The one lexical validator for untrusted repository-relative paths.
  *
  * Every path that crosses toward publication — updater-changed files, captured
- * repair paths, snapshot entries, materialized new files — must pass this exact
+ * fix paths, snapshot entries, captured new files — must pass this exact
  * rule set so no boundary is quietly looser than another. `.git` segments are
  * rejected as defense in depth: git cannot track such paths, so a path carrying
  * one is either corrupt or aimed at the metadata of a checkout or clone.

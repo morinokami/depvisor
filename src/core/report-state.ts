@@ -1,7 +1,7 @@
 /**
  * Machine-readable reviewed-head state line in the maintained PR comment.
  *
- * The publisher records which PR head a no-repair review covered so a later
+ * The publisher records which PR head a no-fix review covered so a later
  * run triggered by another green CI completion of the same head can skip a
  * duplicate model review. The line lives in an editable PR comment, so it is
  * never trusted for anything stronger than suppressing that duplicate work:

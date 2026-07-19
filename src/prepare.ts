@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { MAX_PATCH_CHARS, MAX_TOTAL_PATCH_CHARS, takeText } from "./core/context-budget.ts";
-import { snapshotDependencyState } from "./core/dependency-state.ts";
+import { snapshotFrozenFiles } from "./core/frozen-files.ts";
 import { headSha as currentHeadSha } from "./core/git.ts";
 import { int, isRecord, str } from "./core/json.ts";
 import { collectPages } from "./core/pagination.ts";
@@ -197,7 +197,7 @@ async function main(): Promise<void> {
     writeRunRecord(
       statusFile,
       initialRecord(
-        "wrong-head",
+        "head-mismatch",
         `The checkout is not the current head of PR #${number}; check out the workflow_run head_sha before invoking depvisor.`,
         prUrl,
       ),
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // The maintained comment records which head a no-repair review covered. The
+  // The maintained comment records which head a no-fix review covered. The
   // comment is editable, so the recorded state is trusted only to skip a
   // duplicate review of a green head under the same depvisor version — a
   // missing, forged, or stale line simply falls through to a full run, and a
@@ -239,16 +239,12 @@ async function main(): Promise<void> {
     pullRequestFiles(repository, number),
     failedJobs(repository, workflowRunId),
   ]);
-  const dependencySnapshotFile = join(runDir, "dependency-state.json");
+  const frozenFilesSnapshotFile = join(runDir, "frozen-files.json");
   const updaterPaths = changedFiles.flatMap((file) =>
     file.previousFilename ? [file.filename, file.previousFilename] : [file.filename],
   );
-  const dependencySnapshotText = JSON.stringify(
-    snapshotDependencyState(REPO, updaterPaths),
-    null,
-    2,
-  );
-  writeFileSync(dependencySnapshotFile, dependencySnapshotText);
+  const frozenFilesSnapshotText = JSON.stringify(snapshotFrozenFiles(REPO, updaterPaths), null, 2);
+  writeFileSync(frozenFilesSnapshotFile, frozenFilesSnapshotText);
 
   const context: RunContext = {
     version: 2,
@@ -274,17 +270,17 @@ async function main(): Promise<void> {
     },
     changedFiles,
     failedJobs: jobs,
-    dependencySnapshotFile,
+    frozenFilesSnapshotFile,
   };
   writeFileSync(contextFile, JSON.stringify(context, null, 2));
   const contextSha = createHash("sha256").update(JSON.stringify(context)).digest("hex");
   writeRunRecord(
     statusFile,
-    initialRecord("in-progress", `depvisor is reviewing updater PR #${number}.`, prUrl),
+    initialRecord("incomplete", `depvisor is reviewing updater PR #${number}.`, prUrl),
   );
   output("processable", "true");
   output("context_sha", contextSha);
-  output("snapshot_sha", createHash("sha256").update(dependencySnapshotText).digest("hex"));
+  output("snapshot_sha", createHash("sha256").update(frozenFilesSnapshotText).digest("hex"));
   output("pr_url", prUrl);
 }
 
