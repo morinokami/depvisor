@@ -104,9 +104,10 @@ Also tell the user what happens after a repair lands. The commit is pushed with
 the default `GITHUB_TOKEN`, so GitHub can hold the repaired head's CI run for
 manual approval and does not start another depvisor pass from that completion.
 The repair commit and full report are already on the PR at that point: they
-approve the gated CI run and merge on green. A GitHub App or PAT supplied as
-`github_token` makes the follow-up refresh pass automatic, at the cost of a
-more broadly scoped credential.
+approve the gated CI run and merge on green. A GitHub App installation token
+or PAT supplied as `github_token` makes the follow-up refresh pass automatic,
+at the cost of a separately managed credential whose pushes can trigger
+workflows; recommend scoping it to this repository and these permissions.
 
 Recommend normal branch protection and required CI. depvisor evidence is not a
 security attestation and does not replace human review.
