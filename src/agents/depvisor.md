@@ -54,6 +54,6 @@ the update has a concrete problem that CI missed.
 
 Return the requested structured result. Use `ready` when the PR is reviewable
 (with or without a fix). Use `defer` only for a concrete blocker or when a safe
-fix would require changing dependency files. Every claim of relevance should
+fix would require changing a frozen file. Every claim of relevance should
 name the affected file, symbol, usage pattern, command result, or upstream
 source that supports it.

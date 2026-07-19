@@ -21,10 +21,10 @@ export interface FrozenFilesSnapshot {
 
 export function readFrozenFilesSnapshot(path: string): FrozenFilesSnapshot {
   const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
-  if (!raw || typeof raw !== "object") throw new Error("Invalid dependency snapshot");
+  if (!raw || typeof raw !== "object") throw new Error("Invalid frozen-files snapshot");
   const value = raw as Partial<FrozenFilesSnapshot>;
   if (value.version !== 1 || !value.files || typeof value.files !== "object") {
-    throw new Error("Invalid dependency snapshot");
+    throw new Error("Invalid frozen-files snapshot");
   }
   const files: Record<string, string | null> = {};
   for (const [name, hash] of Object.entries(value.files)) {
@@ -32,7 +32,7 @@ export function readFrozenFilesSnapshot(path: string): FrozenFilesSnapshot {
       !isSafeRepoPath(name) ||
       (hash !== null && (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)))
     ) {
-      throw new Error("Invalid dependency snapshot entry");
+      throw new Error("Invalid frozen-files snapshot entry");
     }
     files[name] = hash;
   }

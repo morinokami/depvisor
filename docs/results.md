@@ -25,7 +25,7 @@ a full run.
 | `failed`       | `true` when the job must fail. Safe to consume from a later `if: always()` step. |
 | `fix_pushed`   | `true` only when a fix commit was pushed.                                        |
 | `pr_url`       | Target updater PR URL.                                                           |
-| `commit_sha`   | Fix commit SHA, empty when no commit was needed.                                 |
+| `commit_sha`   | Pushed fix commit SHA, empty when no fix commit was pushed.                      |
 | `comment_url`  | Maintained reviewer-report comment URL.                                          |
 | `total_tokens` | Model tokens used by the agent, empty when no agent result exists.               |
 | `est_cost_usd` | Provider-priced estimate, not an invoice. Empty when no agent result exists.     |

@@ -112,6 +112,8 @@ test("a deferred review renders the reason and records no state line", () => {
   });
   assert.match(body, /## Depvisor deferred this update/);
   assert.match(body, /\*\*Why depvisor deferred:\*\* The failure needs a human decision\./);
+  assert.match(body, /No fix was published\./);
+  assert.equal(body.includes("No fix was needed."), false);
   assert.equal(parseReportState(body), null);
 });
 

@@ -44,7 +44,7 @@ outputs:
     description: URL of the updater PR.
     value: ${{ steps.report.outputs.pr_url }}
   commit_sha:
-    description: SHA of the fix commit, or empty when no fix was needed.
+    description: SHA of the pushed fix commit, or empty when no fix commit was pushed.
     value: ${{ steps.report.outputs.commit_sha }}
   comment_url:
     description: URL of depvisor's maintained reviewer-report comment.

@@ -80,6 +80,13 @@ export function renderReportBody(
         ? "Depvisor pushed a fix"
         : "Depvisor reviewed this update";
   const runLink = runUrl === null ? "" : ` ([workflow run](${runUrl}))`;
+  // A deferred review may leave unpublished working-tree edits behind; only a
+  // ready no-commit review can claim no fix was needed.
+  const changesFallback = commitSha
+    ? "The fix commit contains the working-tree changes listed above."
+    : agent.verdict === "defer"
+      ? "No fix was published."
+      : "No fix was needed.";
   // Record the reviewed head only for a no-fix review: a pushed fix
   // moves the branch head, and the next CI pass must review that new head.
   const stateLine =
@@ -101,7 +108,7 @@ ${upstream}
 
 ### Fix
 
-${bullets(agent.changes_made, commitSha ? "The fix commit contains the working-tree changes listed above." : "No fix was needed.", prose)}
+${bullets(agent.changes_made, changesFallback, prose)}
 ${commitSha ? `\nFix commit: \`${commitSha}\`` : ""}
 
 ### Verification evidence
