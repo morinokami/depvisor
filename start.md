@@ -100,6 +100,14 @@ state. If the agent changes any of it, or changes Git history, no repair or repo
 is published. Otherwise a later token-holding step may push one repair commit to
 the existing updater branch and update one reviewer-report comment.
 
+Also tell the user what happens after a repair lands. The commit is pushed with
+the default `GITHUB_TOKEN`, so GitHub can hold the repaired head's CI run for
+manual approval and does not start another depvisor pass from that completion.
+The repair commit and full report are already on the PR at that point: they
+approve the gated CI run and merge on green. A GitHub App or PAT supplied as
+`github_token` makes the follow-up refresh pass automatic, at the cost of a
+wider credential.
+
 Recommend normal branch protection and required CI. depvisor evidence is not a
 security attestation and does not replace human review.
 

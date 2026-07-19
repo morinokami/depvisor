@@ -32,14 +32,14 @@ a full run.
 
 ## Green statuses
 
-| Status             | Meaning                                                                                                                                |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `reviewed`         | The PR needed no code repair; depvisor posted/updated the reviewer report.                                                             |
-| `already-reviewed` | The report comment already covers this exact head on a green CI run under the same depvisor version; the duplicate review was skipped. |
-| `repair-published` | One repair commit was pushed to the existing updater branch and the report was posted. CI is expected to run again for that new head.  |
-| `deferred`         | The agent identified a concrete blocker and reported it without publishing its working-tree edits.                                     |
-| `unsupported-pr`   | The triggering run did not belong to an open, same-repository Dependabot/Renovate PR, so it was ignored.                               |
-| `stale-pr`         | The PR closed or its head moved while depvisor was working. The superseded run published nothing and completed without an error.       |
+| Status             | Meaning                                                                                                                                                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reviewed`         | The PR needed no code repair; depvisor posted/updated the reviewer report.                                                                                                                                                 |
+| `already-reviewed` | The report comment already covers this exact head on a green CI run under the same depvisor version; the duplicate review was skipped.                                                                                     |
+| `repair-published` | One repair commit was pushed to the existing updater branch and the report was posted. With the default token, the new head's CI run can need manual approval and does not restart depvisor by itself (see configuration). |
+| `deferred`         | The agent identified a concrete blocker and reported it without publishing its working-tree edits.                                                                                                                         |
+| `unsupported-pr`   | The triggering run did not belong to an open, same-repository Dependabot/Renovate PR, so it was ignored.                                                                                                                   |
+| `stale-pr`         | The PR closed or its head moved while depvisor was working. The superseded run published nothing and completed without an error.                                                                                           |
 
 ## Failing statuses
 

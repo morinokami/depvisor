@@ -40,7 +40,11 @@ creation, or open-PR budget. Those are updater responsibilities.
    handoff is capped at 200 files and 5 MiB of patch/new-file content.
 7. The publisher creates or updates one marker comment containing upstream
    relevance, repair details, command evidence, and residual risks. A later CI
-   run updates the same comment. For a no-repair review the comment also embeds
+   run updates the same comment; the repair push itself does not start one with
+   the default `github_token` (GitHub can gate the repaired head's CI behind
+   approval and drops `workflow_run` delivery for that token-initiated lineage),
+   so the refresh pass waits for the next updater- or human-initiated event or
+   an App/PAT `github_token`. For a no-repair review the comment also embeds
    the reviewed-head state line that enables the `already-reviewed` skip.
 8. `report-status.ts` exposes fixed machine outputs and fails the Action for any
    incomplete/unsafe/infrastructure outcome.

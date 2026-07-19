@@ -49,6 +49,17 @@ If several CI workflows should feed depvisor, list them under `workflows:`. Each
 completion produces an independent review attempt, so prefer the single workflow
 that represents your complete required CI suite.
 
+After a repair push, GitHub's recursion prevention applies to the default
+`github_token`: the repaired head's CI run can require manual approval, and a
+completion in that token-initiated lineage is not delivered to `workflow_run`
+even after approval or a rerun, so the follow-up `reviewed`/`already-reviewed`
+pass does not start on its own. The repair commit and full report are already
+published by then; approve the gated CI run and merge on green. Any genuinely
+new PR event on that head — an updater rebase, a human push, or close/reopen —
+resumes the chain. A GitHub App or PAT supplied as `github_token` makes the
+follow-up pass automatic, at the cost of widening the credential the
+token-holding steps carry.
+
 ## Agent environment
 
 Flue's local sandbox gives the agent direct access to the checkout and host shell.
