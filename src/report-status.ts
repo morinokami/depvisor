@@ -11,7 +11,7 @@ function safeUrl(value: string | null): string {
 
 function logText(value: string): string {
   // oxlint-disable-next-line no-control-regex -- workflow-command boundary
-  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 2_000);
+  return value.replaceAll(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 2_000);
 }
 
 const file = process.env.DEPVISOR_STATUS_FILE || "";

@@ -217,8 +217,7 @@ async function main(): Promise<void> {
     const state = existing === null ? null : parseReportState(existing.body);
     if (
       existing !== null &&
-      state !== null &&
-      state.headSha === headSha &&
+      state?.headSha === headSha &&
       state.conclusion === "success" &&
       state.generator === generatorName()
     ) {

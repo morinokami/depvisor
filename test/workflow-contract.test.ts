@@ -39,7 +39,7 @@ test("the development workflow's outputs echo stays parseable by the self-check"
     TOTAL_TOKENS: "1234",
     EST_COST_USD: "0.123456",
   };
-  const line = match[1]!.replace(/\$([A-Z_]+)/g, (_span, name: string) => {
+  const line = match[1]!.replaceAll(/\$([A-Z_]+)/g, (_span, name: string) => {
     const value = values[name];
     assert.ok(value !== undefined, `the outputs echo uses an unexpected variable $${name}`);
     return value;

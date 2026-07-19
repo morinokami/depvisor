@@ -5,7 +5,7 @@ import { isSafeRepoPath } from "./paths.ts";
 // oxlint-disable no-control-regex -- normalize control bytes at a rendering boundary
 function inline(value: string, max: number): string {
   return value
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replaceAll(/[\u0000-\u001f\u007f]+/g, " ")
     .slice(0, max)
     .trim();
 }
@@ -69,7 +69,7 @@ export function repoFileUrl(
  */
 export function evidenceLink(value: string | undefined): string {
   const url = value ? URL.parse(value) : null;
-  if (url === null || url.protocol !== "https:") return "";
+  if (url?.protocol !== "https:") return "";
   return ` ([source](${url.href.replaceAll(")", "%29")}))`;
 }
 
@@ -94,5 +94,5 @@ export function escapeStepSummaryText(value: string, max = 2_000): string {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replace(/[\\`*_{}[\]()#+\-.!|~]/g, "\\$&");
+    .replaceAll(/[\\`*_{}[\]()#+\-.!|~]/g, "\\$&");
 }

@@ -160,11 +160,11 @@ function defusedProse(value: string, max?: number): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll("](", "]\\(")
-    .replace(/([A-Za-z][A-Za-z0-9+.-]*):\/\//g, `$1:${ZWSP}//`)
-    .replace(/\bwww\./gi, `www${ZWSP}.`)
+    .replaceAll(/([A-Za-z][A-Za-z0-9+.-]*):\/\//g, `$1:${ZWSP}//`)
+    .replaceAll(/\bwww\./gi, `www${ZWSP}.`)
     .replaceAll("@", `@${ZWSP}`)
-    .replace(/#(\d)/g, `#${ZWSP}$1`)
-    .replace(/\bGH-(\d)/gi, `GH-${ZWSP}$1`);
+    .replaceAll(/#(\d)/g, `#${ZWSP}$1`)
+    .replaceAll(/\bGH-(\d)/gi, `GH-${ZWSP}$1`);
 }
 
 /**
