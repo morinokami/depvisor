@@ -80,13 +80,20 @@ export function renderReportBody(
         ? "Depvisor pushed a fix"
         : "Depvisor reviewed this update";
   const runLink = runUrl === null ? "" : ` ([workflow run](${runUrl}))`;
-  // A deferred review may leave unpublished working-tree edits behind; only a
-  // ready no-commit review can claim no fix was needed.
+  // A deferred review may leave unpublished working-tree edits behind, and
+  // any file links point at the PR head rather than those edits — so the
+  // deferred section is named "Attempted fix" and always carries the
+  // not-published notice, listed edits or not.
+  const fixHeading = agent.verdict === "defer" ? "Attempted fix" : "Fix";
   const changesFallback = commitSha
-    ? "The fix commit contains the working-tree changes listed above."
+    ? "The fix commit contains the captured working-tree changes."
     : agent.verdict === "defer"
-      ? "No fix was published."
+      ? "The agent left no working-tree edits."
       : "No fix was needed.";
+  const deferNotice =
+    agent.verdict === "defer"
+      ? "\n_No fix was published. Any working-tree edits from this run were discarded._"
+      : "";
   // Record the reviewed head only for a no-fix review: a pushed fix
   // moves the branch head, and the next CI pass must review that new head.
   const stateLine =
@@ -106,10 +113,10 @@ ${prose(agent.summary)}
 
 ${upstream}
 
-### Fix
+### ${fixHeading}
 
 ${bullets(agent.changes_made, changesFallback, prose)}
-${commitSha ? `\nFix commit: \`${commitSha}\`` : ""}
+${commitSha ? `\nFix commit: \`${commitSha}\`` : ""}${deferNotice}
 
 ### Verification evidence
 

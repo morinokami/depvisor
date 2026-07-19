@@ -86,9 +86,9 @@ For another provider, set the optional `llm_api_key_env` input.
   log tails.
 - A green CI run still gets a review of the upstream changes as they affect
   your repository, normally without a code change.
-- A fix is one commit force-pushed with `--force-with-lease`, expecting the
-  snapshotted PR head. A concurrent updater/human change supersedes the run
-  without making the depvisor job fail.
+- depvisor pushes at most one fix commit with `--force-with-lease` against
+  the snapshotted PR head. A concurrent updater/human change supersedes the
+  run without making the depvisor job fail.
 - The same PR comment is updated on later runs. A fix push made with the
   default `github_token` does not trigger the next depvisor pass by itself:
   GitHub can hold the new head's CI run for manual approval, and its

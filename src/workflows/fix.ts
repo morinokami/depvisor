@@ -66,7 +66,7 @@ Work directly in the current checkout, which is exactly the PR head. First inspe
 the dependency diff and repository usage. Use the fetch_release_notes and
 diff_npm_package tools to consult authoritative upstream sources, and only state
 upstream specifics you fetched during this run or explicitly attribute to the
-PR-body notes. If CI failed, reproduce the useful
+PR-body notes. If CI failed, reproduce the relevant
 failure locally, diagnose it, make the smallest safe source/test/config fix,
 and run the relevant checks. If CI passed, do not manufacture work: normally
 leave the tree unchanged and produce a repository-specific review.

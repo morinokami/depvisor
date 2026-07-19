@@ -112,9 +112,30 @@ test("a deferred review renders the reason and records no state line", () => {
   });
   assert.match(body, /## Depvisor deferred this update/);
   assert.match(body, /\*\*Why depvisor deferred:\*\* The failure needs a human decision\./);
+  assert.match(body, /### Attempted fix/);
+  assert.match(body, /The agent left no working-tree edits\./);
   assert.match(body, /No fix was published\./);
   assert.equal(body.includes("No fix was needed."), false);
   assert.equal(parseReportState(body), null);
+});
+
+test("a deferred review with leftover edits marks them unpublished", () => {
+  const agent = agentResult({
+    verdict: "defer",
+    defer_reason: "The failure needs a human decision.",
+    changes_made: ["Updated `src/a.ts` for the new API."],
+  });
+  const body = renderReportBody(payload(agent), context(), {
+    commitSha: null,
+    blobPaths: new Set(["src/a.ts"]),
+    server: SERVER,
+    runUrl: null,
+  });
+  assert.match(body, /### Attempted fix/);
+  assert.equal(body.includes("for the new API."), true);
+  assert.match(body, /No fix was published\./);
+  assert.equal(body.includes("No fix was needed."), false);
+  assert.equal(body.includes("The agent left no working-tree edits."), false);
 });
 
 test("file mentions link only into the enumerated tree; evidence links stay https-only", () => {
