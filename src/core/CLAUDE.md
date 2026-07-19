@@ -21,8 +21,10 @@ Pipeline:
   readers for untrusted JSON.
 - `upstream.ts` fetches bounded upstream evidence (GitHub releases/CHANGELOG,
   npm tarball diffs) for the agent's read-only tools. It holds no credential,
-  pins its hosts, validates every coordinate lexically, and extracts npm
-  tarballs itself — regular files only, each path through `paths.ts`.
+  pins its hosts, and validates every coordinate lexically.
+- `tar.ts` extracts npm tarballs without executing tar: regular files only,
+  bounded entry count and unpacked size, each path through `paths.ts`, so
+  nothing extracted can escape or alias the comparison directory.
 - `text.ts` owns PR-comment and step-summary rendering boundaries, including
   the publisher-built file links: only backticked mentions that pass `paths.ts`
   and exist at the pinned commit become URLs; agent text never supplies one.

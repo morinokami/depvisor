@@ -1,40 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { gzipSync } from "node:zlib";
 import {
   diffNpmPackage,
-  extractPackageFiles,
   fetchReleaseNotes,
   isGitHubRepository,
   isNpmPackageName,
   isVersionToken,
 } from "../src/core/upstream.ts";
-
-function tarHeader(name: string, size: number, typeflag: string): Buffer {
-  const header = Buffer.alloc(512);
-  header.write(name, 0, 100, "utf8");
-  header.write("0000644\0", 100, 8, "ascii");
-  header.write("0000000\0", 108, 8, "ascii");
-  header.write("0000000\0", 116, 8, "ascii");
-  header.write(`${size.toString(8).padStart(11, "0")}\0`, 124, 12, "ascii");
-  header.write("00000000000\0", 136, 12, "ascii");
-  header.write("        ", 148, 8, "ascii");
-  header.write(typeflag, 156, 1, "ascii");
-  header.write("ustar\0", 257, 6, "ascii");
-  header.write("00", 263, 2, "ascii");
-  return header;
-}
-
-function tarEntry(name: string, content: string, typeflag = "0"): Buffer {
-  const body = Buffer.from(content, "utf8");
-  const padded = Buffer.alloc(Math.ceil(body.length / 512) * 512);
-  body.copy(padded);
-  return Buffer.concat([tarHeader(name, body.length, typeflag), padded]);
-}
-
-function tarball(entries: Buffer[]): Buffer {
-  return gzipSync(Buffer.concat([...entries, Buffer.alloc(1024)]));
-}
+import { tarEntry, tarball } from "./tar-fixture.ts";
 
 function stubFetch(routes: Record<string, () => Response>): typeof fetch {
   return async (input) => {
@@ -63,33 +36,6 @@ test("validates upstream coordinates lexically", () => {
   for (const version of ["", "-1", "1/2", "1.0 ", "v".repeat(65)]) {
     assert.equal(isVersionToken(version), false, JSON.stringify(version));
   }
-});
-
-test("extracts only safe regular files and strips the package prefix", () => {
-  const files = extractPackageFiles(
-    tarball([
-      tarEntry("package/index.js", "console.log(1)\n"),
-      tarEntry("package/lib/util.js", "util\n"),
-      tarEntry("package/../evil.txt", "escape\n"),
-      tarEntry("toplevel.txt", "no prefix\n"),
-      tarEntry("package/link", "target", "2"),
-      tarEntry("package/dir/", "", "5"),
-    ]),
-  );
-  assert.deepEqual([...files.keys()].toSorted(), ["index.js", "lib/util.js"]);
-  assert.equal(files.get("index.js")?.toString("utf8"), "console.log(1)\n");
-});
-
-test("honors GNU long names before the following entry", () => {
-  const longName = `package/${"deep/".repeat(24)}leaf.txt`;
-  const files = extractPackageFiles(
-    tarball([
-      tarEntry("././@LongLink", `${longName}\0`, "L"),
-      tarEntry("package/truncated", "long content\n"),
-    ]),
-  );
-  assert.deepEqual([...files.keys()], [longName.slice("package/".length)]);
-  assert.equal(files.get(longName.slice("package/".length))?.toString("utf8"), "long content\n");
 });
 
 test("fetches and filters GitHub releases", async () => {
