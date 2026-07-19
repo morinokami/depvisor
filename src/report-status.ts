@@ -5,27 +5,24 @@ import { writeOutput } from "./shared/actions.ts";
 
 function safeUrl(value: string | null): string {
   if (!value) return "";
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && !/[\r\n]/.test(value) ? value : "";
-  } catch {
-    return "";
-  }
+  const url = URL.parse(value);
+  return url?.protocol === "https:" && !/[\r\n]/.test(value) ? value : "";
 }
 
 function logText(value: string): string {
   // oxlint-disable-next-line no-control-regex -- workflow-command boundary
-  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 2_000);
+  return value.replaceAll(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 2_000);
 }
 
 const file = process.env.DEPVISOR_STATUS_FILE || "";
 const record = file ? readRunRecord(file) : null;
 const failed = record ? statusFails(record.status) : true;
+const commitSha = record?.commitSha ?? "";
 writeOutput("status", record?.status ?? "");
 writeOutput("failed", failed ? "true" : "false");
 writeOutput("repaired", record?.repaired ? "true" : "false");
 writeOutput("pr_url", safeUrl(record?.prUrl ?? null));
-writeOutput("commit_sha", /^[0-9a-f]{40}$/.test(record?.commitSha ?? "") ? record!.commitSha! : "");
+writeOutput("commit_sha", /^[0-9a-f]{40}$/.test(commitSha) ? commitSha : "");
 writeOutput("comment_url", safeUrl(record?.commentUrl ?? null));
 writeOutput("total_tokens", record?.usage ? String(record.usage.totalTokens) : "");
 writeOutput(

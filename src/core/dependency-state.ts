@@ -166,7 +166,7 @@ export function snapshotDependencyState(
   repo: string,
   updaterPaths: readonly string[] = [],
 ): DependencySnapshot {
-  const paths = new Set([...discoverDependencyStatePaths(repo), ...updaterPaths]);
+  const paths = new Set(discoverDependencyStatePaths(repo)).union(new Set(updaterPaths));
   const files: Record<string, string | null> = {};
   for (const path of [...paths].toSorted()) files[path] = hashPath(repo, path);
   return { version: 1, files };
@@ -175,7 +175,7 @@ export function snapshotDependencyState(
 /** Return frozen paths whose current value differs from the pre-agent value. */
 export function changedDependencyState(repo: string, snapshot: DependencySnapshot): string[] {
   const currentPaths = new Set(discoverDependencyStatePaths(repo));
-  const paths = new Set([...Object.keys(snapshot.files), ...currentPaths]);
+  const paths = currentPaths.union(new Set(Object.keys(snapshot.files)));
   return [...paths]
     .filter((path) => hashPath(repo, path) !== (snapshot.files[path] ?? null))
     .toSorted();

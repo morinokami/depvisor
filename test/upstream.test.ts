@@ -130,11 +130,20 @@ test("diffs two published npm versions with bounded output", async () => {
 });
 
 test("rejects tarball locations outside the npm registry", async () => {
+  // Both versions download concurrently, so 2.0.0 resolves cleanly to keep the
+  // evil-location rejection the only possible failure.
+  const to = tarball([tarEntry("package/index.js", "new\n")]);
   const fetchImpl = stubFetch({
     "https://registry.npmjs.org/demo/1.0.0": () =>
       new Response(JSON.stringify({ dist: { tarball: "https://evil.invalid/demo.tgz" } }), {
         status: 200,
       }),
+    "https://registry.npmjs.org/demo/2.0.0": () =>
+      new Response(
+        JSON.stringify({ dist: { tarball: "https://registry.npmjs.org/demo/-/demo-2.0.0.tgz" } }),
+        { status: 200 },
+      ),
+    "https://registry.npmjs.org/demo/-/demo-2.0.0.tgz": () => new Response(new Uint8Array(to)),
   });
   await assert.rejects(
     diffNpmPackage("demo", "1.0.0", "2.0.0", { fetchImpl }),

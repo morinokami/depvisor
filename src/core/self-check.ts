@@ -51,7 +51,7 @@ export interface ParsedRunOutputs {
 }
 
 const OUTPUTS_LINE =
-  /\bstatus=(\S*) failed=(\S*) repaired=(\S*) pr=(\S*)(?: total_tokens=(\S*) est_cost_usd=(\S*))?[ \t\r]*$/gm;
+  /\bstatus=(?<status>\S*) failed=(?<failed>\S*) repaired=(?<repaired>\S*) pr=\S*(?: total_tokens=(?<tokens>\S*) est_cost_usd=(?<cost>\S*))?[ \t\r]*$/gm;
 
 function parseBool(value: string): boolean | null {
   return value === "true" ? true : value === "false" ? false : null;
@@ -66,7 +66,7 @@ function parseBool(value: string): boolean | null {
 export function parseOutputsLine(log: string): ParsedRunOutputs | null {
   let parsed: ParsedRunOutputs | null = null;
   for (const match of log.matchAll(OUTPUTS_LINE)) {
-    const [, status = "", failed = "", repaired = "", , tokens, cost] = match;
+    const { status = "", failed = "", repaired = "", tokens, cost } = match.groups ?? {};
     if (!/^[a-z][a-z-]{0,39}$/.test(status)) continue;
     const totalTokens = tokens !== undefined && /^\d{1,12}$/.test(tokens) ? Number(tokens) : null;
     const estCostUsd =
@@ -160,11 +160,11 @@ function defusedProse(value: string, max?: number): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll("](", "]\\(")
-    .replace(/([A-Za-z][A-Za-z0-9+.-]*):\/\//g, `$1:${ZWSP}//`)
-    .replace(/\bwww\./gi, `www${ZWSP}.`)
+    .replaceAll(/([A-Za-z][A-Za-z0-9+.-]*):\/\//g, `$1:${ZWSP}//`)
+    .replaceAll(/\bwww\./gi, `www${ZWSP}.`)
     .replaceAll("@", `@${ZWSP}`)
-    .replace(/#(\d)/g, `#${ZWSP}$1`)
-    .replace(/\bGH-(\d)/gi, `GH-${ZWSP}$1`);
+    .replaceAll(/#(\d)/g, `#${ZWSP}$1`)
+    .replaceAll(/\bGH-(\d)/gi, `GH-${ZWSP}$1`);
 }
 
 /**

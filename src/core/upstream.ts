@@ -8,12 +8,12 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { takeText } from "./context-budget.ts";
 import { isRecord, str } from "./json.ts";
 import { extractPackageFiles } from "./tar.ts";
+import { tempDir } from "./temp.ts";
 
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_RELEASE_PAGES = 2;
@@ -179,15 +179,12 @@ export async function fetchReleaseNotes(
 
 async function readCapped(response: Response, maxBytes: number): Promise<Buffer> {
   if (!response.body) throw new Error("The tarball response had no body.");
-  const reader = response.body.getReader();
   const chunks: Buffer[] = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  // Throwing out of the loop cancels the stream via the async iterator's return().
+  for await (const value of response.body) {
     total += value.byteLength;
     if (total > maxBytes) {
-      await reader.cancel();
       throw new Error(`The package tarball exceeds depvisor's ${maxBytes}-byte limit.`);
     }
     chunks.push(Buffer.from(value));
@@ -284,8 +281,10 @@ export async function diffNpmPackage(
   if (!isVersionToken(fromVersion) || !isVersionToken(toVersion)) {
     throw new Error("Pass exact published version strings.");
   }
-  const before = await downloadPackage(name, fromVersion, options);
-  const after = await downloadPackage(name, toVersion, options);
+  const [before, after] = await Promise.all([
+    downloadPackage(name, fromVersion, options),
+    downloadPackage(name, toVersion, options),
+  ]);
 
   const addedFiles: string[] = [];
   const modifiedFiles: string[] = [];
@@ -298,15 +297,10 @@ export async function diffNpmPackage(
   }
   const removedFiles = [...before.keys()].filter((path) => !after.has(path)).toSorted();
 
-  const root = mkdtempSync(join(tmpdir(), "depvisor-npm-diff-"));
-  let diffText: string;
-  try {
-    writeTree(join(root, "a"), before);
-    writeTree(join(root, "b"), after);
-    diffText = runSystemDiff(root);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  using root = tempDir("depvisor-npm-diff-");
+  writeTree(join(root.path, "a"), before);
+  writeTree(join(root.path, "b"), after);
+  const diffText = runSystemDiff(root.path);
 
   const fileListTruncated =
     addedFiles.length > MAX_LISTED_FILES ||

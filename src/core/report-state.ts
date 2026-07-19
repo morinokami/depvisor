@@ -28,7 +28,7 @@ const GENERATOR = /^depvisor(@v\d+\.\d+\.\d+)?$/;
 // Anchored to a whole line: agent prose cannot produce one because
 // cleanReportText escapes HTML comment markers before the body is assembled.
 const STATE_LINE =
-  /^<!-- depvisor-v2-state sha:([0-9a-f]{40}) ci:([a-z][a-z_-]{0,31}) generator:(depvisor(?:@v\d+\.\d+\.\d+)?) -->$/m;
+  /^<!-- depvisor-v2-state sha:(?<headSha>[0-9a-f]{40}) ci:(?<conclusion>[a-z][a-z_-]{0,31}) generator:(?<generator>depvisor(?:@v\d+\.\d+\.\d+)?) -->$/m;
 
 /** Render the state line, or nothing when a component fails its shape check. */
 export function renderReportState(state: ReportState): string | null {
@@ -44,9 +44,10 @@ export function renderReportState(state: ReportState): string | null {
 
 /** Parse the state line of a comment body; anything malformed parses as absent. */
 export function parseReportState(body: string): ReportState | null {
-  const match = STATE_LINE.exec(body);
-  if (!match) return null;
-  return { headSha: match[1]!, conclusion: match[2]!, generator: match[3]! };
+  const groups = STATE_LINE.exec(body)?.groups;
+  if (!groups) return null;
+  const { headSha = "", conclusion = "", generator = "" } = groups;
+  return { headSha, conclusion, generator };
 }
 
 /**
