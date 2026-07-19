@@ -1,6 +1,6 @@
 name: depvisor
 
-on:
+on: # zizmor: ignore[dangerous-triggers] workflow_run is deliberate: depvisor starts after CI with default-branch secrets; see CLAUDE.md gotchas
   workflow_run:
     workflows: [CI]
     types: [completed]

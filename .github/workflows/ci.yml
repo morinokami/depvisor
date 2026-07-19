@@ -88,5 +88,4 @@ jobs:
         with:
           advanced-security: false
           annotations: true
-          min-confidence: high
           persona: auditor
