@@ -23,7 +23,7 @@ a full run.
 | -------------- | -------------------------------------------------------------------------------- |
 | `status`       | Final status below, or empty if setup crashed before a record was written.       |
 | `failed`       | `true` when the job must fail. Safe to consume from a later `if: always()` step. |
-| `fixed`        | `true` only when a fix commit was pushed.                                        |
+| `fix_pushed`   | `true` only when a fix commit was pushed.                                        |
 | `pr_url`       | Target updater PR URL.                                                           |
 | `commit_sha`   | Fix commit SHA, empty when no commit was needed.                                 |
 | `comment_url`  | Maintained reviewer-report comment URL.                                          |
@@ -43,14 +43,14 @@ a full run.
 
 ## Failing statuses
 
-| Status                     | Meaning                                                                                                                          |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `setup-failed`             | Runtime installation or PR-context preparation failed before agent work.                                                         |
-| `head-mismatch`            | The checkout was not the current updater PR head. Usually the workflow omitted `ref: ${{ github.event.workflow_run.head_sha }}`. |
-| `agent-failed`             | The checkout was dirty, the model operation failed, or no valid structured result was produced.                                  |
-| `dependency-files-changed` | The agent changed updater-owned dependency files or Git history. Nothing was published.                                          |
-| `publish-failed`           | The fresh-clone commit/push or PR comment update failed. The summary carries the concrete error.                                 |
-| `incomplete`               | The process stopped before reaching a final status. It fails closed.                                                             |
+| Status                 | Meaning                                                                                                                          |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `setup-failed`         | Runtime installation or PR-context preparation failed before agent work.                                                         |
+| `head-mismatch`        | The checkout was not the current updater PR head. Usually the workflow omitted `ref: ${{ github.event.workflow_run.head_sha }}`. |
+| `agent-failed`         | The checkout was dirty, the model operation failed, or no valid structured result was produced.                                  |
+| `frozen-files-changed` | The agent changed a frozen file or Git history. Nothing was published.                                                           |
+| `publish-failed`       | The fresh-clone commit/push or PR comment update failed. The summary carries the concrete error.                                 |
+| `incomplete`           | The process stopped before reaching a final status. It fails closed.                                                             |
 
 `deferred` is green because it is a complete, reviewer-visible outcome rather
 than an infrastructure failure. `stale-pr` is green because a newer updater or

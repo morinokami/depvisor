@@ -61,7 +61,7 @@ function context(): RunContext {
     },
     changedFiles: [],
     failedJobs: [],
-    dependencySnapshotFile: "/tmp/dependency-files.json",
+    frozenFilesSnapshotFile: "/tmp/frozen-files.json",
   };
 }
 

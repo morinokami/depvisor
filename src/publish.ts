@@ -1,7 +1,7 @@
 /**
  * Token-holding publication boundary for v2.
  *
- * The agent never receives GH_TOKEN. This step rechecks the updater-owned state,
+ * The agent never receives GH_TOKEN. This step rechecks the frozen files,
  * current PR head, and captured working-tree fix, then creates at most one
  * commit on the existing updater branch and creates/updates one marker comment.
  */
@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeNewFixFiles } from "./core/apply-fix.ts";
-import { changedDependencyFiles, readDependencySnapshot } from "./core/dependency-files.ts";
+import { changedFrozenFiles, readFrozenFilesSnapshot } from "./core/frozen-files.ts";
 import { captureFixChanges, sameFixChanges, treeBlobPaths } from "./core/git.ts";
 import { readFixPayload } from "./core/fix-payload.ts";
 import { renderReportBody } from "./core/report-body.ts";
@@ -33,9 +33,9 @@ function verifySnapshotFiles(contextFile: string): ReturnType<typeof readRunCont
   if (sha256(JSON.stringify(context)) !== required("DEPVISOR_CONTEXT_SHA")) {
     throw new Error("The token-free run context changed after it was prepared");
   }
-  const snapshotText = readFileSync(context.dependencySnapshotFile);
+  const snapshotText = readFileSync(context.frozenFilesSnapshotFile);
   if (sha256(snapshotText) !== required("DEPVISOR_SNAPSHOT_SHA")) {
-    throw new Error("The dependency-files snapshot changed after it was prepared");
+    throw new Error("The frozen-files snapshot changed after it was prepared");
   }
   return context;
 }
@@ -166,11 +166,11 @@ async function upsertComment(repository: string, prNumber: number, body: string)
 }
 
 /**
- * Refusal to publish over changed updater-owned state. The catch block maps
- * this — and only this — failure to the dedicated dependency-files-changed
+ * Refusal to publish over changed frozen files. The catch block maps
+ * this — and only this — failure to the dedicated frozen-files-changed
  * status, so the classification must not hang on error-message wording.
  */
-class DependencyStateChangedError extends Error {}
+class FrozenFilesChangedError extends Error {}
 
 async function main(): Promise<void> {
   const statusFile = required("DEPVISOR_STATUS_FILE");
@@ -206,17 +206,16 @@ async function main(): Promise<void> {
         status: "stale-pr",
         summary:
           "The updater PR changed or closed while depvisor was working; nothing was published.",
+        fixPushed: false,
       };
       writeRunRecord(statusFile, record);
       return;
     }
 
-    const snapshot = readDependencySnapshot(context.dependencySnapshotFile);
-    const dependencyChanges = changedDependencyFiles(REPO, snapshot);
-    if (dependencyChanges.length > 0) {
-      throw new DependencyStateChangedError(
-        `Dependency state changed: ${dependencyChanges.join(", ")}`,
-      );
+    const snapshot = readFrozenFilesSnapshot(context.frozenFilesSnapshotFile);
+    const frozenChanges = changedFrozenFiles(REPO, snapshot);
+    if (frozenChanges.length > 0) {
+      throw new FrozenFilesChangedError(`Frozen files changed: ${frozenChanges.join(", ")}`);
     }
     const liveChanges = captureFixChanges(REPO);
     if (!sameFixChanges(liveChanges, payload.changes)) {
@@ -257,7 +256,7 @@ async function main(): Promise<void> {
           : status === "fix-pushed"
             ? "Pushed one fix commit to the existing updater PR and posted the reviewer report."
             : "The updater PR required no fix; posted the reviewer report.",
-      fixed: commitSha !== null,
+      fixPushed: commitSha !== null,
       commitSha,
       commentUrl: commentUrl || null,
       changedFiles: liveChanges.paths,
@@ -265,11 +264,11 @@ async function main(): Promise<void> {
   } catch (error: unknown) {
     writeRunRecord(statusFile, {
       ...previous,
-      status:
-        error instanceof DependencyStateChangedError
-          ? "dependency-files-changed"
-          : "publish-failed",
+      status: error instanceof FrozenFilesChangedError ? "frozen-files-changed" : "publish-failed",
       summary: `Nothing further was published: ${String(error)}`,
+      // A failure after publishCommit returned still pushed a commit; report
+      // exactly what reached the branch.
+      fixPushed: commitSha !== null,
       commitSha,
     });
     console.error(`::error::depvisor publication failed: ${String(error)}`);

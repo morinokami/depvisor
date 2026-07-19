@@ -21,8 +21,8 @@ test("classifies published, reviewed, deferred and irrelevant PRs as green", () 
 test("fails closed for incomplete and unsafe outcomes", () => {
   assert.equal(statusFails("incomplete"), true);
   assert.equal(statusFails("setup-failed"), true);
-  assert.equal(statusFails("dependency-files-changed"), true);
-  assert.equal(initialRecord("agent-failed", "failed").fixed, false);
+  assert.equal(statusFails("frozen-files-changed"), true);
+  assert.equal(initialRecord("agent-failed", "failed").fixPushed, false);
 });
 
 test("rejects an injected status and drops malformed usage", () => {

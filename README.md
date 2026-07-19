@@ -104,10 +104,10 @@ See [configuration](docs/configuration.md) for the five inputs and
 
 ## What gets published
 
-The updater-owned dependency files are frozen before the agent starts. This
-includes every path in the original updater diff plus recognized manifests and
-lockfiles across common ecosystems. If the agent changes any of them—or changes
-Git history—depvisor publishes neither the fix nor its report.
+depvisor freezes a set of files before the agent starts: every path in the
+original updater diff plus recognized dependency manifests and lockfiles across
+common ecosystems. If the agent changes any frozen file—or changes Git
+history—depvisor publishes neither the fix nor its report.
 
 Everything else is agent-driven. The agent may inspect and edit the checkout,
 run commands, install tools, and research upstream sources. It does not receive

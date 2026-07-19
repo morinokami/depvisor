@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { MAX_PATCH_CHARS, MAX_TOTAL_PATCH_CHARS, takeText } from "./core/context-budget.ts";
-import { snapshotDependencyFiles } from "./core/dependency-files.ts";
+import { snapshotFrozenFiles } from "./core/frozen-files.ts";
 import { headSha as currentHeadSha } from "./core/git.ts";
 import { int, isRecord, str } from "./core/json.ts";
 import { collectPages } from "./core/pagination.ts";
@@ -239,16 +239,12 @@ async function main(): Promise<void> {
     pullRequestFiles(repository, number),
     failedJobs(repository, workflowRunId),
   ]);
-  const dependencySnapshotFile = join(runDir, "dependency-files.json");
+  const frozenFilesSnapshotFile = join(runDir, "frozen-files.json");
   const updaterPaths = changedFiles.flatMap((file) =>
     file.previousFilename ? [file.filename, file.previousFilename] : [file.filename],
   );
-  const dependencySnapshotText = JSON.stringify(
-    snapshotDependencyFiles(REPO, updaterPaths),
-    null,
-    2,
-  );
-  writeFileSync(dependencySnapshotFile, dependencySnapshotText);
+  const frozenFilesSnapshotText = JSON.stringify(snapshotFrozenFiles(REPO, updaterPaths), null, 2);
+  writeFileSync(frozenFilesSnapshotFile, frozenFilesSnapshotText);
 
   const context: RunContext = {
     version: 2,
@@ -274,7 +270,7 @@ async function main(): Promise<void> {
     },
     changedFiles,
     failedJobs: jobs,
-    dependencySnapshotFile,
+    frozenFilesSnapshotFile,
   };
   writeFileSync(contextFile, JSON.stringify(context, null, 2));
   const contextSha = createHash("sha256").update(JSON.stringify(context)).digest("hex");
@@ -284,7 +280,7 @@ async function main(): Promise<void> {
   );
   output("processable", "true");
   output("context_sha", contextSha);
-  output("snapshot_sha", createHash("sha256").update(dependencySnapshotText).digest("hex"));
+  output("snapshot_sha", createHash("sha256").update(frozenFilesSnapshotText).digest("hex"));
   output("pr_url", prUrl);
 }
 

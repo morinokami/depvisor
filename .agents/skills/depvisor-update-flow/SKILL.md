@@ -1,6 +1,6 @@
 ---
 name: depvisor-update-flow
-description: Use when changing or reasoning about depvisor v2's one-PR review/fix flow — workflow_run context, updater ownership, the local Flue agent, the frozen dependency files, fresh-clone fix push, report comment, and statuses.
+description: Use when changing or reasoning about depvisor v2's one-PR review/fix flow — workflow_run context, updater ownership, the local Flue agent, the frozen files, fresh-clone fix push, report comment, and statuses.
 ---
 
 # depvisor v2 per-PR flow
@@ -30,10 +30,10 @@ creation, or open-PR limit. Those are updater responsibilities.
    installs/checks, and edit source/tests/config. Upstream claims in its report
    must cite fetched sources or the PR-body notes. It must leave edits
    uncommitted and return structured evidence.
-5. The workflow requires unchanged HEAD and unchanged frozen dependency files,
+5. The workflow requires unchanged HEAD and unchanged frozen files,
    then captures tracked binary diff plus untracked files. A `defer` verdict may
    produce a report but never publishes its leftover edits.
-6. `publish.ts` revalidates the context/snapshot, current open PR head, dependency
+6. `publish.ts` revalidates the context/snapshot, current open PR head, frozen
    files, and byte-identical captured fix. For a ready fix it applies the fix
    in a fresh clone, creates one commit, and pushes with force-with-lease
    to the existing updater ref. It never creates a PR or targets a fork. The
@@ -75,7 +75,7 @@ Green: `reviewed`, `already-reviewed`, `fix-pushed`, `deferred`,
 `unsupported-pr`, `stale-pr`.
 
 Failing: `setup-failed`, `head-mismatch`, `agent-failed`,
-`dependency-files-changed`, `publish-failed`, `incomplete`.
+`frozen-files-changed`, `publish-failed`, `incomplete`.
 
 Update status classification in `core/status.ts`, `action.yml`,
 `docs/results.md`, and `start.md` together.

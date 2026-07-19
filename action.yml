@@ -37,9 +37,9 @@ outputs:
   failed:
     description: '"true" when depvisor could not safely complete the review or publication.'
     value: ${{ steps.report.outputs.failed }}
-  fixed:
+  fix_pushed:
     description: '"true" when depvisor pushed a fix commit to the updater PR.'
-    value: ${{ steps.report.outputs.fixed }}
+    value: ${{ steps.report.outputs.fix_pushed }}
   pr_url:
     description: URL of the updater PR.
     value: ${{ steps.report.outputs.pr_url }}
@@ -96,8 +96,8 @@ runs:
       working-directory: ${{ env.DEPVISOR_HOME }}
       run: pnpm install --frozen-lockfile
 
-    # Read-only and before the agent: resolve the updater PR, snapshot its exact
-    # dependency files, and collect failed-job logs. The resulting context has
+    # Read-only and before the agent: resolve the updater PR, snapshot the frozen
+    # files, and collect failed-job logs. The resulting context has
     # no credentials and is treated as untrusted text by the agent.
     - name: Prepare updater PR context
       id: prepare
@@ -201,7 +201,7 @@ runs:
           echo "publishable=true" >> "$GITHUB_OUTPUT"
         fi
 
-    # No new decisions here: recheck the frozen dependency state and PR head,
+    # No new decisions here: recheck the frozen files and PR head,
     # then publish the captured fix and agent-authored report to this one PR.
     - name: Publish fix and reviewer report
       if: steps.agent.outputs.publishable == 'true'
@@ -288,7 +288,7 @@ runs:
         if [ -z "$NODE_BIN" ] || [ -z "$EXPECTED_SOURCE_SHA" ]; then
           echo "status=setup-failed" >> "$GITHUB_OUTPUT"
           echo "failed=true" >> "$GITHUB_OUTPUT"
-          echo "fixed=false" >> "$GITHUB_OUTPUT"
+          echo "fix_pushed=false" >> "$GITHUB_OUTPUT"
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "commit_sha=" >> "$GITHUB_OUTPUT"
           echo "comment_url=" >> "$GITHUB_OUTPUT"
@@ -323,7 +323,7 @@ runs:
         if [ "$actual_source_sha" != "$EXPECTED_SOURCE_SHA" ]; then
           echo "status=publish-failed" >> "$GITHUB_OUTPUT"
           echo "failed=true" >> "$GITHUB_OUTPUT"
-          echo "fixed=false" >> "$GITHUB_OUTPUT"
+          echo "fix_pushed=false" >> "$GITHUB_OUTPUT"
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "commit_sha=" >> "$GITHUB_OUTPUT"
           echo "comment_url=" >> "$GITHUB_OUTPUT"

@@ -94,7 +94,7 @@ Repositories needing private registries or additional credentials must arrange
 those outside depvisor. Adding such credentials to the agent environment expands
 the agent's access and is not a depvisor input.
 
-## Frozen dependency files
+## Frozen files
 
 Before the agent runs, depvisor snapshots:
 
@@ -106,7 +106,7 @@ Before the agent runs, depvisor snapshots:
 
 The same snapshot is checked after the agent and immediately before publication.
 A changed, added, removed, or retargeted frozen path yields
-`dependency-files-changed`; no fix or report is published. This preserves the
+`frozen-files-changed`; no fix or report is published. This preserves the
 updater's ownership without reintroducing v1 package-manager logic.
 
 The publication handoff also rejects fixes exceeding 200 files or 5 MiB of

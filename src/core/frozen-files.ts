@@ -14,15 +14,15 @@ import { createHash } from "node:crypto";
 import { basename, join, relative, sep } from "node:path";
 import { isSafeRepoPath } from "./paths.ts";
 
-export interface DependencySnapshot {
+export interface FrozenFilesSnapshot {
   version: 1;
   files: Record<string, string | null>;
 }
 
-export function readDependencySnapshot(path: string): DependencySnapshot {
+export function readFrozenFilesSnapshot(path: string): FrozenFilesSnapshot {
   const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (!raw || typeof raw !== "object") throw new Error("Invalid dependency snapshot");
-  const value = raw as Partial<DependencySnapshot>;
+  const value = raw as Partial<FrozenFilesSnapshot>;
   if (value.version !== 1 || !value.files || typeof value.files !== "object") {
     throw new Error("Invalid dependency snapshot");
   }
@@ -162,10 +162,10 @@ function hashPath(repo: string, path: string): string | null {
   return hash.digest("hex");
 }
 
-export function snapshotDependencyFiles(
+export function snapshotFrozenFiles(
   repo: string,
   updaterPaths: readonly string[] = [],
-): DependencySnapshot {
+): FrozenFilesSnapshot {
   const paths = new Set(discoverDependencyFilePaths(repo)).union(new Set(updaterPaths));
   const files: Record<string, string | null> = {};
   for (const path of [...paths].toSorted()) files[path] = hashPath(repo, path);
@@ -173,7 +173,7 @@ export function snapshotDependencyFiles(
 }
 
 /** Return frozen paths whose current value differs from the pre-agent value. */
-export function changedDependencyFiles(repo: string, snapshot: DependencySnapshot): string[] {
+export function changedFrozenFiles(repo: string, snapshot: FrozenFilesSnapshot): string[] {
   const currentPaths = new Set(discoverDependencyFilePaths(repo));
   const paths = currentPaths.union(new Set(Object.keys(snapshot.files)));
   return [...paths]

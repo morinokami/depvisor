@@ -49,8 +49,8 @@ jobs:
         env:
           STATUS: ${{ steps.depvisor.outputs.status }}
           FAILED: ${{ steps.depvisor.outputs.failed }}
-          FIXED: ${{ steps.depvisor.outputs.fixed }}
+          FIX_PUSHED: ${{ steps.depvisor.outputs.fix_pushed }}
           PR_URL: ${{ steps.depvisor.outputs.pr_url }}
           TOTAL_TOKENS: ${{ steps.depvisor.outputs.total_tokens }}
           EST_COST_USD: ${{ steps.depvisor.outputs.est_cost_usd }}
-        run: echo "status=$STATUS failed=$FAILED fixed=$FIXED pr=$PR_URL total_tokens=$TOTAL_TOKENS est_cost_usd=$EST_COST_USD"
+        run: echo "status=$STATUS failed=$FAILED fix_pushed=$FIX_PUSHED pr=$PR_URL total_tokens=$TOTAL_TOKENS est_cost_usd=$EST_COST_USD"

@@ -22,14 +22,14 @@ const ZWSP = "\u{200B}";
 
 test("parses the current outputs echo with token and cost fields", () => {
   const log = [
-    '2026-07-17T01:02:03.0000000Z ##[group]Run echo "status=$STATUS failed=$FAILED fixed=$FIXED pr=$PR_URL total_tokens=$TOTAL_TOKENS est_cost_usd=$EST_COST_USD"',
+    '2026-07-17T01:02:03.0000000Z ##[group]Run echo "status=$STATUS failed=$FAILED fix_pushed=$FIX_PUSHED pr=$PR_URL total_tokens=$TOTAL_TOKENS est_cost_usd=$EST_COST_USD"',
     "2026-07-17T01:02:03.0000000Z ##[endgroup]",
-    "2026-07-17T01:02:04.0000000Z status=fix-pushed failed=false fixed=true pr=https://github.com/o/r/pull/5 total_tokens=48211 est_cost_usd=0.412335",
+    "2026-07-17T01:02:04.0000000Z status=fix-pushed failed=false fix_pushed=true pr=https://github.com/o/r/pull/5 total_tokens=48211 est_cost_usd=0.412335",
   ].join("\n");
   assert.deepEqual(parseOutputsLine(log), {
     status: "fix-pushed",
     failed: false,
-    fixed: true,
+    fixPushed: true,
     totalTokens: 48_211,
     estCostUsd: 0.412335,
   });
@@ -37,14 +37,14 @@ test("parses the current outputs echo with token and cost fields", () => {
 
 test("rejects an echo missing the token and cost fields", () => {
   const parsed = parseOutputsLine(
-    "2026-07-01T00:00:00Z status=reviewed failed=false fixed=false pr=https://github.com/o/r/pull/4",
+    "2026-07-01T00:00:00Z status=reviewed failed=false fix_pushed=false pr=https://github.com/o/r/pull/4",
   );
   assert.equal(parsed, null);
 });
 
 test("skips unexpanded command headers and non-status lines", () => {
   assert.equal(
-    parseOutputsLine('Run echo "status=$STATUS failed=$FAILED fixed=$FIXED pr=$PR_URL"'),
+    parseOutputsLine('Run echo "status=$STATUS failed=$FAILED fix_pushed=$FIX_PUSHED pr=$PR_URL"'),
     null,
   );
   assert.equal(parseOutputsLine("plain log line with no echo"), null);
@@ -52,7 +52,7 @@ test("skips unexpanded command headers and non-status lines", () => {
 
 test("nulls malformed token and cost values instead of guessing", () => {
   const parsed = parseOutputsLine(
-    "status=reviewed failed=maybe fixed=false pr=x total_tokens=lots est_cost_usd=",
+    "status=reviewed failed=maybe fix_pushed=false pr=x total_tokens=lots est_cost_usd=",
   );
   assert.ok(parsed);
   assert.equal(parsed.failed, null);

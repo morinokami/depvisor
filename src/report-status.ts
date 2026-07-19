@@ -20,7 +20,7 @@ const failed = record ? statusFails(record.status) : true;
 const commitSha = record?.commitSha ?? "";
 writeOutput("status", record?.status ?? "");
 writeOutput("failed", failed ? "true" : "false");
-writeOutput("fixed", record?.fixed ? "true" : "false");
+writeOutput("fix_pushed", record?.fixPushed ? "true" : "false");
 writeOutput("pr_url", safeUrl(record?.prUrl ?? null));
 writeOutput("commit_sha", /^[0-9a-f]{40}$/.test(commitSha) ? commitSha : "");
 writeOutput("comment_url", safeUrl(record?.commentUrl ?? null));

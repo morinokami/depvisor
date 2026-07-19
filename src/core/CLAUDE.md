@@ -5,10 +5,10 @@ agent-driven PR fix with a deliberately small mechanical boundary.
 
 Pipeline:
 
-`run-context` → `dependency-files snapshot` → agent → `HEAD/snapshot recheck` →
+`run-context` → `frozen-files snapshot` → agent → `HEAD/snapshot recheck` →
 `fix-payload` → fresh-clone publication → status.
 
-- `dependency-files.ts` freezes all updater-changed paths and recognized
+- `frozen-files.ts` freezes all updater-changed paths and recognized
   dependency files. Discovery is filesystem-only and executes no target code.
 - `git.ts` captures tracked binary diffs plus untracked files without accepting
   an agent-authored commit. Publication is capped at 200 files / 5 MiB. The

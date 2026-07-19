@@ -137,7 +137,7 @@ Green: `reviewed`, `already-reviewed`, `fix-pushed`, `deferred`,
 `unsupported-pr`, `stale-pr`.
 
 Failing: `setup-failed`, `head-mismatch`, `agent-failed`,
-`dependency-files-changed`, `publish-failed`, `incomplete`.
+`frozen-files-changed`, `publish-failed`, `incomplete`.
 
 See `docs/configuration.md` and `docs/results.md` in the depvisor repository for
 the complete reference.

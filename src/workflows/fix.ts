@@ -2,7 +2,7 @@ import { defineWorkflow } from "@flue/runtime";
 import * as v from "valibot";
 import depvisor from "../agents/depvisor.ts";
 import { AgentResultSchema, type AgentResult } from "../core/agent-result.ts";
-import { changedDependencyFiles, readDependencySnapshot } from "../core/dependency-files.ts";
+import { changedFrozenFiles, readFrozenFilesSnapshot } from "../core/frozen-files.ts";
 import { captureFixChanges, headSha, isClean, isRepoRoot } from "../core/git.ts";
 import { writeFixPayload } from "../core/fix-payload.ts";
 import { readRunContext } from "../core/run-context.ts";
@@ -19,7 +19,7 @@ import { REPO } from "../shared/target.ts";
 const OutputSchema = v.object({
   status: v.picklist(RUN_STATUSES),
   summary: v.string(),
-  fixed: v.boolean(),
+  fix_prepared: v.boolean(),
   changed_files: v.array(v.string()),
 });
 
@@ -45,11 +45,11 @@ function usageRecord(response: {
   };
 }
 
-function output(record: RunRecord) {
+function output(record: RunRecord, fixPrepared = false) {
   return v.parse(OutputSchema, {
     status: record.status,
     summary: record.summary,
-    fixed: record.fixed,
+    fix_prepared: fixPrepared,
     changed_files: record.changedFiles,
   });
 }
@@ -71,7 +71,7 @@ failure locally, diagnose it, make the smallest safe source/test/config fix,
 and run the relevant checks. If CI passed, do not manufacture work: normally
 leave the tree unchanged and produce a repository-specific review.
 
-Do not alter dependency state or any path owned by the updater. Do not create a
+Do not alter dependency files or any path the updater changed. Do not create a
 commit or use GitHub. Leave an accepted fix as uncommitted working-tree
 changes. Return the structured result with verdict, summary, upstream_changes,
 changes_made, verification, risks, and defer_reason when applicable.`;
@@ -112,17 +112,17 @@ export default defineWorkflow({
       const result: AgentResult = response.data;
       if (headSha(REPO) !== context.pullRequest.headSha) {
         return output(
-          fail("dependency-files-changed", "The agent changed Git history; nothing was published."),
+          fail("frozen-files-changed", "The agent changed Git history; nothing was published."),
         );
       }
 
-      const snapshot = readDependencySnapshot(context.dependencySnapshotFile);
-      const dependencyChanges = changedDependencyFiles(REPO, snapshot);
-      if (dependencyChanges.length > 0) {
+      const snapshot = readFrozenFilesSnapshot(context.frozenFilesSnapshotFile);
+      const frozenChanges = changedFrozenFiles(REPO, snapshot);
+      if (frozenChanges.length > 0) {
         return output(
           fail(
-            "dependency-files-changed",
-            `The agent changed updater-owned dependency state (${dependencyChanges.join(", ")}); nothing was published.`,
+            "frozen-files-changed",
+            `The agent changed frozen files (${frozenChanges.join(", ")}); nothing was published.`,
           ),
         );
       }
@@ -140,17 +140,20 @@ export default defineWorkflow({
         agent: result,
         changes,
       });
+      const fixPrepared = result.verdict === "ready" && changes.paths.length > 0;
       const record: RunRecord = {
         version: 2,
         status: "incomplete",
         summary:
           result.verdict === "defer"
             ? result.defer_reason || result.summary
-            : changes.paths.length > 0
+            : fixPrepared
               ? `The agent prepared a focused fix touching ${changes.paths.length} file(s).`
               : "The updater PR needs no fix; its reviewer report is ready.",
         prUrl: context.pullRequest.url,
-        fixed: result.verdict === "ready" && changes.paths.length > 0,
+        // A prepared fix is not a pushed fix: only the publisher, after an
+        // actual push, records fixPushed.
+        fixPushed: false,
         commitSha: null,
         commentUrl: null,
         changedFiles: changes.paths,
@@ -158,7 +161,7 @@ export default defineWorkflow({
       };
       writeRunRecord(statusFile, record);
       log.info(record.summary);
-      return output(record);
+      return output(record, fixPrepared);
     } catch (error: unknown) {
       return output(fail("agent-failed", `The depvisor agent failed: ${String(error)}`));
     }
