@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 import { parseOutputsLine } from "../src/core/self-check.ts";
 
 /**
@@ -84,4 +84,29 @@ test("declared outputs, fallback echoes, and report-status writes stay in sync",
       `output ${key} is missing from an inline fallback branch`,
     );
   }
+});
+
+test("check-credentials' import closure stays free of installable packages", () => {
+  // action.yml runs check-credentials.ts BEFORE `pnpm install`, so every
+  // module it transitively loads must resolve without node_modules. Type-only
+  // imports are erased by Node's type stripping and are allowed.
+  const seen = new Set<string>();
+  const queue = ["src/check-credentials.ts"];
+  while (queue.length > 0) {
+    const file = queue.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const match of read(file).matchAll(/^import\s+(type\s)?[^;]*?from\s+"([^"]+)";/gm)) {
+      if (match[1]) continue;
+      const specifier = match[2]!;
+      if (specifier.startsWith("node:")) continue;
+      assert.ok(
+        specifier.startsWith("."),
+        `${file} reaches the installable import "${specifier}", ` +
+          "but check-credentials runs before pnpm install",
+      );
+      queue.push(normalize(join(dirname(file), specifier)));
+    }
+  }
+  assert.ok(seen.has("src/core/git.ts"), "the walk no longer reaches core/git.ts");
 });

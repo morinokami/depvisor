@@ -1,13 +1,23 @@
-/** Minimal git leaves used by v2's snapshot and repair handoff. */
+/**
+ * Minimal git leaves used by v2's snapshot and repair handoff.
+ *
+ * check-credentials.ts loads this module (through credentials.ts) BEFORE
+ * `pnpm install`, so it must import only node: builtins and relative modules
+ * — never an installable package. The repair-shape types are therefore
+ * imported type-only from repair-payload.ts (erased at runtime), which owns
+ * the valibot schemas; test/workflow-contract.test.ts pins this closure.
+ */
 
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import * as v from "valibot";
 import { isSafeRepoPath } from "./paths.ts";
+import type { NewRepairFile, RepairChanges } from "./repair-payload.ts";
+
+export type { NewRepairFile, RepairChanges };
 
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"] as const;
-const MAX_REPAIR_FILES = 200;
+export const MAX_REPAIR_FILES = 200;
 const MAX_REPAIR_BYTES = 5 * 1024 * 1024;
 
 interface GitResult {
@@ -77,28 +87,6 @@ export function treeBlobPaths(repo: string, ref: string): Set<string> {
   }
   return paths;
 }
-
-const NewRepairFileSchema = v.object({
-  path: v.string(),
-  contentBase64: v.string(),
-  executable: v.boolean(),
-  symlink: v.boolean(),
-});
-
-export type NewRepairFile = v.InferOutput<typeof NewRepairFileSchema>;
-
-/**
- * Value shape of the captured repair. The schema lives next to the capture
- * limits so the payload boundary re-validates against the same definition
- * instead of a hand-written copy.
- */
-export const RepairChangesSchema = v.object({
-  patch: v.string(),
-  newFiles: v.pipe(v.array(NewRepairFileSchema), v.maxLength(MAX_REPAIR_FILES)),
-  paths: v.pipe(v.array(v.string()), v.maxLength(MAX_REPAIR_FILES)),
-});
-
-export type RepairChanges = v.InferOutput<typeof RepairChangesSchema>;
 
 /** Compare the repair handoff by value, never by JavaScript object insertion order. */
 export function sameRepairChanges(left: RepairChanges, right: RepairChanges): boolean {
