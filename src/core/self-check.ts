@@ -51,7 +51,7 @@ export interface ParsedRunOutputs {
 }
 
 const OUTPUTS_LINE =
-  /\bstatus=(?<status>\S*) failed=(?<failed>\S*) fixed=(?<fixed>\S*) pr=\S*(?: total_tokens=(?<tokens>\S*) est_cost_usd=(?<cost>\S*))?[ \t\r]*$/gm;
+  /\bstatus=(?<status>\S*) failed=(?<failed>\S*) fixed=(?<fixed>\S*) pr=\S* total_tokens=(?<tokens>\S*) est_cost_usd=(?<cost>\S*)[ \t\r]*$/gm;
 
 function parseBool(value: string): boolean | null {
   return value === "true" ? true : value === "false" ? false : null;
@@ -60,17 +60,16 @@ function parseBool(value: string): boolean | null {
 /**
  * Extract the development workflow's `status=… failed=…` echo from a job-log
  * tail. The last lexically valid match wins: earlier matches can be the
- * unexpanded `echo "status=$STATUS …"` command header the runner prints. Runs
- * older than the cost echo carry no total_tokens/est_cost_usd fields.
+ * unexpanded `echo "status=$STATUS …"` command header the runner prints. A log
+ * whose echo does not carry every current field simply does not match.
  */
 export function parseOutputsLine(log: string): ParsedRunOutputs | null {
   let parsed: ParsedRunOutputs | null = null;
   for (const match of log.matchAll(OUTPUTS_LINE)) {
-    const { status = "", failed = "", fixed = "", tokens, cost } = match.groups ?? {};
+    const { status = "", failed = "", fixed = "", tokens = "", cost = "" } = match.groups ?? {};
     if (!/^[a-z][a-z-]{0,39}$/.test(status)) continue;
-    const totalTokens = tokens !== undefined && /^\d{1,12}$/.test(tokens) ? Number(tokens) : null;
-    const estCostUsd =
-      cost !== undefined && /^\d{1,7}(\.\d{1,9})?$/.test(cost) ? Number(cost) : null;
+    const totalTokens = /^\d{1,12}$/.test(tokens) ? Number(tokens) : null;
+    const estCostUsd = /^\d{1,7}(\.\d{1,9})?$/.test(cost) ? Number(cost) : null;
     parsed = {
       status,
       failed: parseBool(failed),

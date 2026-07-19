@@ -35,17 +35,11 @@ test("parses the current outputs echo with token and cost fields", () => {
   });
 });
 
-test("parses the pre-cost echo and leaves the missing fields null", () => {
+test("rejects an echo missing the token and cost fields", () => {
   const parsed = parseOutputsLine(
     "2026-07-01T00:00:00Z status=reviewed failed=false fixed=false pr=https://github.com/o/r/pull/4",
   );
-  assert.deepEqual(parsed, {
-    status: "reviewed",
-    failed: false,
-    fixed: false,
-    totalTokens: null,
-    estCostUsd: null,
-  });
+  assert.equal(parsed, null);
 });
 
 test("skips unexpanded command headers and non-status lines", () => {
