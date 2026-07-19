@@ -14,7 +14,7 @@ Node >= 24 and pnpm are required.
 pnpm test
 pnpm run check
 actionlint
-zizmor --persona=auditor --min-confidence=high .
+zizmor --persona=auditor .
 ```
 
 A local `flue run repair` needs a context prepared by `prepare.ts` for a real
