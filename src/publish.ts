@@ -13,25 +13,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { materializeNewRepairFiles } from "./core/apply-repair.ts";
 import { changedDependencyState, readDependencySnapshot } from "./core/dependency-state.ts";
-import { captureRepairChanges, sameRepairChanges } from "./core/git.ts";
+import { captureRepairChanges, sameRepairChanges, treeBlobPaths } from "./core/git.ts";
 import { readRepairPayload } from "./core/repair-payload.ts";
-import { REPORT_MARKER, generatorName, renderReportState } from "./core/report-state.ts";
+import { renderReportBody } from "./core/report-body.ts";
+import { REPORT_MARKER } from "./core/report-state.ts";
 import { readRunContext } from "./core/run-context.ts";
 import { initialRecord, readRunRecord, writeRunRecord, type RunRecord } from "./core/status.ts";
-import {
-  actionsRunUrl,
-  cleanReportText,
-  evidenceLink,
-  isValidServerUrl,
-  linkifyRepoPaths,
-  repoFileUrl,
-} from "./core/text.ts";
+import { actionsRunUrl } from "./core/text.ts";
 import { required } from "./shared/env.ts";
-import { github, latestMarkerComment, object } from "./shared/github-api.ts";
+import { github, latestMarkerComment, object, serverUrl } from "./shared/github-api.ts";
 import { REPO } from "./shared/target.ts";
-
-const MAX_COMMENT_CHARS = 60_000;
-const MAX_REPORT_LINKS = 500;
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -90,14 +81,6 @@ function applyRepair(
   if (changes.patch)
     git(clone, env, ["apply", "--binary", "--whitespace=nowarn", "-"], changes.patch);
   materializeNewRepairFiles(clone, changes.newFiles);
-}
-
-function serverUrl(): string {
-  const server = (process.env.DEPVISOR_SERVER_URL || "https://github.com").replace(/\/$/, "");
-  if (!isValidServerUrl(server)) {
-    throw new Error("Refusing an invalid GitHub server URL");
-  }
-  return server;
 }
 
 interface PublishedCommit {
@@ -171,123 +154,6 @@ function reportRunUrl(): string | null {
   return actionsRunUrl(serverUrl(), repository, runId);
 }
 
-function bullets(
-  items: readonly string[],
-  empty: string,
-  render: (value: string) => string,
-): string {
-  return items.length > 0 ? items.map((item) => `- ${render(item)}`).join("\n") : `- ${empty}`;
-}
-
-/**
- * Enumerate the blob paths of one commit with a single read-only git call so
- * per-mention existence checks never spawn a process. A failed enumeration
- * renders a report without links instead of failing the run.
- */
-function treeBlobPaths(cwd: string, ref: string): Set<string> {
-  const paths = new Set<string>();
-  const result = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "ls-tree", "-r", "-z", ref], {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (result.status !== 0) return paths;
-  for (const entry of (result.stdout ?? "").split("\0")) {
-    const tab = entry.indexOf("\t");
-    if (tab === -1) continue;
-    if (entry.slice(0, tab).split(" ")[1] === "blob") paths.add(entry.slice(tab + 1));
-  }
-  return paths;
-}
-
-function reportBody(
-  payload: ReturnType<typeof readRepairPayload>,
-  context: ReturnType<typeof readRunContext>,
-  published: PublishedCommit | null,
-): string {
-  const agent = payload.agent;
-  const commitSha = published?.sha ?? null;
-  const server = serverUrl();
-  const linkSha = commitSha ?? context.pullRequest.headSha;
-  // Without a repair the link pins the snapshotted head, whose tree may differ
-  // from an unpublished (deferred) working tree — so enumerate the commit, not the files.
-  const blobPaths = published?.blobPaths ?? treeBlobPaths(REPO, context.pullRequest.headSha);
-  let links = 0;
-  const fileUrl = (path: string): string | null => {
-    if (links >= MAX_REPORT_LINKS || !blobPaths.has(path)) return null;
-    const url = repoFileUrl(server, payload.repository, linkSha, path);
-    if (url !== null) links += 1;
-    return url;
-  };
-  const prose = (value: string, max?: number): string =>
-    linkifyRepoPaths(cleanReportText(value, max), fileUrl);
-  const upstream =
-    agent.upstream_changes.length > 0
-      ? agent.upstream_changes
-          .map(
-            (item) =>
-              `- **${cleanReportText(item.dependency, 200)}:** ${prose(item.change)} ` +
-              `_${prose(item.relevance)}_${evidenceLink(item.evidence_url)}`,
-          )
-          .join("\n")
-      : "- No repository-relevant upstream change stood out from the available evidence.";
-  const verification =
-    agent.verification.length > 0
-      ? agent.verification
-          .map(
-            (item) =>
-              `- \`${cleanReportText(item.command, 500).replaceAll("`", "\\`")}\` — **${item.outcome}**: ` +
-              prose(item.evidence),
-          )
-          .join("\n")
-      : "- No local verification result was available.";
-  const heading =
-    agent.verdict === "defer"
-      ? "Depvisor deferred this update"
-      : commitSha
-        ? "Depvisor published a repair"
-        : "Depvisor reviewed this update";
-  const runUrl = reportRunUrl();
-  const runLink = runUrl === null ? "" : ` ([action run](${runUrl}))`;
-  // Record the reviewed head only for a no-repair review: a published repair
-  // moves the branch head, and the next CI pass must review that new head.
-  const stateLine =
-    published === null && agent.verdict !== "defer"
-      ? renderReportState({
-          headSha: context.pullRequest.headSha,
-          conclusion: context.trigger.conclusion,
-          generator: generatorName(),
-        })
-      : null;
-  const body = `${REPORT_MARKER}${stateLine === null ? "" : `\n${stateLine}`}
-## ${heading}
-
-${prose(agent.summary)}
-
-### Relevant upstream changes
-
-${upstream}
-
-### Repair
-
-${bullets(agent.changes_made, commitSha ? "The repair commit contains the working-tree changes listed above." : "No code repair was needed.", prose)}
-${commitSha ? `\nRepair commit: \`${commitSha}\`` : ""}
-
-### Verification evidence
-
-${verification}
-
-### Residual risks
-
-${bullets(agent.risks, "No additional repository-specific risk was identified.", prose)}
-${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${prose(agent.defer_reason || "No safe bounded repair was found.")}` : ""}
-
-Initial CI: **${cleanReportText(context.trigger.conclusion, 100)}**${context.trigger.url ? ` — ${cleanReportText(context.trigger.workflowName || "workflow run", 200)}${evidenceLink(context.trigger.url)}` : ""}.
-
-_Generated by ${generatorName()}${runLink}. Review before merging._`;
-  return body.slice(0, MAX_COMMENT_CHARS);
-}
-
 async function upsertComment(repository: string, prNumber: number, body: string): Promise<string> {
   const existing = await latestMarkerComment(repository, prNumber, REPORT_MARKER);
   const response = existing
@@ -302,6 +168,13 @@ async function upsertComment(repository: string, prNumber: number, body: string)
   const comment = object(response, "comment");
   return typeof comment.html_url === "string" ? comment.html_url : "";
 }
+
+/**
+ * Refusal to publish over changed updater-owned state. The catch block maps
+ * this — and only this — failure to the dedicated dependency-state-changed
+ * status, so the classification must not hang on error-message wording.
+ */
+class DependencyStateChangedError extends Error {}
 
 async function main(): Promise<void> {
   const statusFile = required("DEPVISOR_STATUS_FILE");
@@ -345,7 +218,9 @@ async function main(): Promise<void> {
     const snapshot = readDependencySnapshot(context.dependencySnapshotFile);
     const dependencyChanges = changedDependencyState(REPO, snapshot);
     if (dependencyChanges.length > 0) {
-      throw new Error(`Dependency state changed: ${dependencyChanges.join(", ")}`);
+      throw new DependencyStateChangedError(
+        `Dependency state changed: ${dependencyChanges.join(", ")}`,
+      );
     }
     const liveChanges = captureRepairChanges(REPO);
     if (!sameRepairChanges(liveChanges, payload.changes)) {
@@ -362,10 +237,18 @@ async function main(): Promise<void> {
       );
       commitSha = published.sha;
     }
+    // Without a repair the links pin the snapshotted head, whose tree may differ
+    // from an unpublished (deferred) working tree — so enumerate the commit, not the files.
+    const blobPaths = published?.blobPaths ?? treeBlobPaths(REPO, context.pullRequest.headSha);
     const commentUrl = await upsertComment(
       payload.repository,
       payload.prNumber,
-      reportBody(payload, context, published),
+      renderReportBody(payload, context, {
+        commitSha,
+        blobPaths,
+        server: serverUrl(),
+        runUrl: reportRunUrl(),
+      }),
     );
     const status =
       payload.agent.verdict === "defer" ? "deferred" : commitSha ? "repair-published" : "reviewed";
@@ -386,9 +269,10 @@ async function main(): Promise<void> {
   } catch (error: unknown) {
     writeRunRecord(statusFile, {
       ...previous,
-      status: String(error).includes("Dependency state")
-        ? "dependency-state-changed"
-        : "publish-failed",
+      status:
+        error instanceof DependencyStateChangedError
+          ? "dependency-state-changed"
+          : "publish-failed",
       summary: `Nothing further was published: ${String(error)}`,
       commitSha,
     });

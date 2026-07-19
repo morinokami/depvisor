@@ -61,6 +61,23 @@ export function isClean(repo: string): boolean {
   return git(repo, ["status", "--porcelain=v1", "-z"]) === "";
 }
 
+/**
+ * Enumerate the blob paths of one commit with a single read-only git call so
+ * per-path existence checks never spawn a process. A failed enumeration
+ * returns an empty set instead of throwing; membership checks then fail soft.
+ */
+export function treeBlobPaths(repo: string, ref: string): Set<string> {
+  const paths = new Set<string>();
+  const result = run(repo, ["ls-tree", "-r", "-z", ref]);
+  if (result.code !== 0) return paths;
+  for (const entry of result.stdout.split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab === -1) continue;
+    if (entry.slice(0, tab).split(" ")[1] === "blob") paths.add(entry.slice(tab + 1));
+  }
+  return paths;
+}
+
 const NewRepairFileSchema = v.object({
   path: v.string(),
   contentBase64: v.string(),
