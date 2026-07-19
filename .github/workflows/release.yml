@@ -6,7 +6,7 @@ name: Release
 #
 # release-please maintains one Release PR from Conventional Commits on main.
 # Merging that PR cuts the vX.Y.Z tag + GitHub Release; the tag-major job then
-# moves the released major/minor movable tags so consumers pinning `@v2`
+# moves the released major/minor floating tags so consumers pinning `@v2`
 # (README) keep resolving. release-please creates immutable vX.Y.Z itself.
 
 on:
@@ -17,7 +17,7 @@ on:
 permissions: {}
 
 # Never run two release passes at once (a second push mid-release could race
-# the movable-tag rewrite). Do not cancel an in-flight release.
+# the floating-tag rewrite). Do not cancel an in-flight release.
 concurrency:
   group: release-please
   cancel-in-progress: false
@@ -58,7 +58,7 @@ jobs:
           # .agents/skills/depvisor-release/SKILL.md.
           token: ${{ github.token }}
 
-  # release-please stops at immutable vX.Y.Z tags. Re-point the movable major
+  # release-please stops at immutable vX.Y.Z tags. Re-point the floating major
   # (v2) and minor (v2.x) tags at the released commit so `morinokami/depvisor@v2`
   # in the README follows the latest v2.x. Hand-carved shell — no extra pinned
   # third-party action just to force-move two tags.
@@ -68,7 +68,7 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write # force-push the movable tags
+      contents: write # force-push the floating tags
     steps:
       - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:

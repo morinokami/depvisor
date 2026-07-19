@@ -1,11 +1,12 @@
 # src entrypoints and capability boundary
 
 `agents/depvisor.ts` imports Markdown instructions and uses `local()` from
-`@flue/runtime/node`; it is Flue-bundler-only. Nested core/shared modules remain
-plain-Node-safe and use explicit `.ts` imports. `shared/` carries the entrypoint
-plumbing (`env`, `github-api`, `actions`, `target`); `tools/` holds one file
-per agent tool. Entrypoints must not grow private copies of these helpers —
-the token boundary lives in which step runs them, not in duplicated code.
+`@flue/runtime/node`; only Flue's bundler can build it. Nested core/shared
+modules remain safe to run under plain Node and use explicit `.ts` imports.
+`shared/` carries the entrypoint plumbing (`env`, `github-api`, `actions`,
+`target`); `tools/` holds one file per agent tool. Entrypoints must not grow
+private copies of these helpers — the token boundary lives in which step runs
+them, not in duplicated code.
 
 | Entrypoint                | Role                                                                                   | Credentials                                    |
 | ------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------- |
@@ -28,20 +29,20 @@ raw.githubusercontent.com, and registry.npmjs.org with lexically validated
 coordinates, and return size-capped untrusted text. No fixer/digest subagents remain.
 
 The weekly self-check (`.github/workflows/self-check.yml`) reuses this
-capability split at lower power. `agents/self-check.ts` deliberately has no
-`local()` sandbox, tools, or checkout authority: the analyst only reads the
-collector envelope embedded in its prompt (untrusted log excerpts, bounded by
-`self-check-collect.ts`) and returns findings validated against
-`core/self-check.ts`. The reporter re-validates that handoff, resolves every
-cited run id against the envelope, builds all evidence links itself, and files
-at most two `self-check`-labeled issues, never filing a title that is already
-open or was already filed earlier in the same run.
+per-step credential separation with fewer capabilities. `agents/self-check.ts`
+deliberately has no `local()` sandbox, tools, or checkout access: the analyst
+only reads the collector envelope embedded in its prompt (untrusted log
+excerpts, bounded by `self-check-collect.ts`) and returns findings validated
+against `core/self-check.ts`. The reporter re-validates that handoff, resolves
+every cited run id against the envelope, builds all evidence links itself, and
+files at most two `self-check`-labeled issues, never filing a title that is
+already open or was already filed earlier in the same run.
 
 The provider key is needed by Flue itself but is not passed through `local()`'s
 default shell env allowlist. The GitHub token is absent from the entire agent
 step. This reduces accidental credential exposure but is not host isolation:
-model-directed code runs as the runner user. A background process can survive
-into the later step, and runner-writable executables, PATH entries, and run-temp
-status files are not attested. Malicious target install scripts share that
-authority; keep this residual risk explicit until publisher/reporter run on a
-fresh isolated runner.
+the agent's shell commands run as the runner user. A background process can
+survive into the later step, and runner-writable executables, PATH entries, and
+status files under `runner.temp` are not attested. Malicious target install
+scripts share that access; keep this residual risk explicit until
+publisher/reporter run on a fresh isolated runner.

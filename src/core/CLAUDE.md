@@ -18,7 +18,7 @@ Pipeline:
   type-only.
 - `context-budget.ts` and `pagination.ts` bound PR patches and workflow-job
   context before it reaches the model.
-- `apply-repair.ts` materializes new files without following symlink parents.
+- `apply-repair.ts` writes new files without following symlink parents.
 - `paths.ts` is the one lexical validator for untrusted repository-relative
   paths; `json.ts` is the shared record guard plus the loose `str`/`int` field
   readers for untrusted JSON.
@@ -42,13 +42,13 @@ Pipeline:
   payload/context plus publisher-supplied link inputs (published commit, blob
   enumeration, validated server/run URLs). It owns the comment layout, the
   size and link-count caps, and the rule that only a no-repair, non-deferred
-  review embeds the reviewed-head state line; the publisher transports its
-  output verbatim.
+  review embeds the reviewed-head state line; the publisher posts its output
+  verbatim.
 - `agent-result.ts` is evidence/report structure, never an attestation.
 - `report-state.ts` renders/parses the comment's reviewed-head state line and
-  names the generator version. The line is duplicate-work suppression read from
-  an editable comment, never an attestation: it only skips a re-review of the
-  same green head, and anything malformed parses as absent.
+  names the generator version. The line is read from an editable comment and is
+  never an attestation: it only skips a re-review of the same green head, and
+  anything malformed parses as absent.
 - `repair-payload.ts` validates the token-free handoff to publication against
   the same agent-result/repair-changes schemas the workflow enforced: one
   shape source, independently re-checked on the token side.
@@ -65,7 +65,7 @@ Keep these properties:
   again.
 - The publisher must compare every live captured repair field byte-for-byte with
   its parsed payload, without depending on JavaScript object key order, before
-  applying it to a clean clone.
+  applying it to a fresh clone.
 - Free text may go to the PR comment/step summary after control/marker handling,
   never to Action outputs, command arguments, refs, repository names, or paths.
 - Unknown/incomplete state fails closed. `unsupported-pr` and

@@ -11,7 +11,7 @@ shell, installed runner tools, and network access. The agent:
 2. reads failed CI logs and relevant upstream documentation;
 3. repairs source, tests, or configuration when appropriate;
 4. runs the checks needed to support its conclusion; and
-5. posts one maintained, evidence-grounded reviewer report.
+5. posts one evidence-based reviewer report, updated on later runs.
 
 When a repair is needed, depvisor adds one commit to the existing updater branch.
 It never opens a replacement PR. The final merge decision stays with you.
@@ -84,18 +84,18 @@ For another provider, set the optional `llm_api_key_env` input.
   Renovate bot accounts are processed.
 - A failed CI run gives the agent the PR diff plus the failed jobs and their
   log tails.
-- A green CI run still gets a repository-specific upstream review, normally
-  without a code change.
-- A repair is one commit pushed with a force-with-lease against the snapshotted
-  PR head. A concurrent updater/human change supersedes the run without making
-  the depvisor job fail.
+- A green CI run still gets a review of the upstream changes as they affect
+  your repository, normally without a code change.
+- A repair is one commit force-pushed with `--force-with-lease`, expecting the
+  snapshotted PR head. A concurrent updater/human change supersedes the run
+  without making the depvisor job fail.
 - The same PR comment is updated on later runs. A repair push made with the
-  default `github_token` does not restart the chain by itself: GitHub can hold
-  the repaired head's CI run for manual approval, and its completion is not
-  delivered back to `workflow_run`. The repair commit and full report are
-  already on the PR at that point; the next updater- or human-initiated green
-  run refreshes the report without another commit when no further work is
-  needed.
+  default `github_token` does not trigger the next depvisor pass by itself:
+  GitHub can hold the repaired head's CI run for manual approval, and its
+  completion is not delivered back to `workflow_run`. The repair commit and
+  full report are already on the PR at that point; the next updater- or
+  human-initiated green run refreshes the report without another commit when
+  no further work is needed.
 - The agent is ecosystem-agnostic. It uses whatever tools the GitHub runner and
   repository provide instead of depvisor maintaining package-manager logic.
 
@@ -111,12 +111,12 @@ Git history—depvisor publishes neither the repair nor its report.
 
 Everything else is agent-driven. The agent may inspect and edit the checkout,
 run commands, install tools, and research upstream sources. It does not receive
-the GitHub token. A later transport step rechecks the PR head and frozen state,
-then publishes the captured working-tree repair and updates a marker-deduplicated
-PR comment.
+the GitHub token. A later publish step rechecks the PR head and frozen state,
+then pushes the captured working-tree repair and updates a single PR comment
+identified by a hidden marker.
 
 Publication is bounded to at most 200 changed files and 5 MiB of captured
-patch/new-file content. A larger migration is left for a human-sized review.
+patch/new-file content. A larger migration is left for human review.
 
 ## Security model
 

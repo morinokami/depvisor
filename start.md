@@ -79,12 +79,12 @@ key for the provider chosen in step 1, and name that provider explicitly. They
 can run `gh secret set LLM_API_KEY` or use Settings → Secrets and variables →
 Actions. Never request or handle the secret value yourself.
 
-## 5. Explain the authority
+## 5. Explain what the agent can do
 
 Tell the user that v2 intentionally runs a coding agent in Flue's local sandbox.
 It can read and edit the checkout, execute runner commands, install target tools,
 and access the network. It does not receive the GitHub token or provider key in
-its model-directed shell, but it processes untrusted PR content, CI logs,
+its shell environment, but it processes untrusted PR content, CI logs,
 dependency code, and web pages.
 
 Be explicit that environment-variable omission is not credential isolation. The
@@ -104,9 +104,10 @@ Also tell the user what happens after a repair lands. The commit is pushed with
 the default `GITHUB_TOKEN`, so GitHub can hold the repaired head's CI run for
 manual approval and does not start another depvisor pass from that completion.
 The repair commit and full report are already on the PR at that point: they
-approve the gated CI run and merge on green. A GitHub App or PAT supplied as
-`github_token` makes the follow-up refresh pass automatic, at the cost of a
-wider credential.
+approve the gated CI run and merge on green. A GitHub App installation token
+or PAT supplied as `github_token` makes the follow-up refresh pass automatic,
+at the cost of a separately managed credential whose pushes can trigger
+workflows; recommend scoping it to this repository and these permissions.
 
 Recommend normal branch protection and required CI. depvisor evidence is not a
 security attestation and does not replace human review.
@@ -130,7 +131,7 @@ Check the YAML syntax and confirm:
 
 Then summarize the files changed and the one manual secret-setting step.
 
-## Result vocabulary
+## Result statuses
 
 Green: `reviewed`, `already-reviewed`, `repair-published`, `deferred`,
 `unsupported-pr`, `stale-pr`.

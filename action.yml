@@ -1,7 +1,7 @@
 name: depvisor
 description: >-
   Reviews an existing Dependabot or Renovate PR, repairs CI breakage with an AI
-  coding agent, verifies the repair, and posts an evidence-grounded report.
+  coding agent, verifies the repair, and posts an evidence-based report.
 branding:
   icon: package
   color: purple
@@ -201,8 +201,8 @@ runs:
           echo "publishable=true" >> "$GITHUB_OUTPUT"
         fi
 
-    # Transport only: recheck the frozen dependency state and PR head, then
-    # publish the captured repair and agent-authored report to this one PR.
+    # No new decisions here: recheck the frozen dependency state and PR head,
+    # then publish the captured repair and agent-authored report to this one PR.
     - name: Publish repair and reviewer report
       if: steps.agent.outputs.publishable == 'true'
       shell: bash

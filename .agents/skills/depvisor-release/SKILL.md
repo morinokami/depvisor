@@ -1,6 +1,6 @@
 ---
 name: depvisor-release
-description: Use when touching depvisor's composite action, development/CI/release workflows, release-please config, movable v2 tags, or dependency-bump Conventional Commit type.
+description: Use when touching depvisor's composite action, development/CI/release workflows, release-please config, floating v2 tags, or dependency-bump Conventional Commit type.
 ---
 
 # depvisor v2 CI and distribution
@@ -13,7 +13,7 @@ version. PR/run identifiers always come from GitHub context.
 
 Order is load-bearing:
 
-1. resolve the action/run-temp paths;
+1. resolve the action and `runner.temp` paths;
 2. set up depvisor's pinned pnpm and Node;
 3. reject checkout-persisted credentials;
 4. install depvisor;
@@ -22,7 +22,7 @@ Order is load-bearing:
 7. local-sandbox agent with model key and no GitHub token;
 8. scrub loader/shell env, verify source integrity, then run token-holding
    fresh-clone publication when a payload exists; these are file/environment
-   checks, not protection from a same-UID residual process or writable toolchain;
+   checks, not protection from a lingering same-UID process or writable toolchain;
 9. always verify source again and report status/outputs.
 
 Keep the two runner workarounds documented in action.yml: nested `uses:` cannot
@@ -43,13 +43,14 @@ implementation or credential-free dry-run.
 
 `.github/workflows/self-check.yml` is the weekly cron (plus manual dispatch)
 that reads the last week of depvisor runs and files at most two
-`self-check`-labeled issues. It repeats the action's token split in miniature:
+`self-check`-labeled issues. It repeats the action's per-step credential
+separation in miniature:
 `self-check-collect.ts` (GH_TOKEN, `actions: read`) builds a bounded envelope,
 `flue run workflow:self-check` (qualified: the agent and workflow share the
 name) analyzes it with the model key, no GitHub token, and no sandbox, and
 `self-check-report.ts` (GH_TOKEN, `issues: write`) re-validates the handoff —
-all cited run ids must resolve, agent-authored links and raw HTML render
-inert — before creating issues. An empty findings list is the designed
+all cited run ids must resolve, and agent-authored links and raw HTML are
+neutralized — before creating issues. An empty findings list is the expected
 healthy outcome, so a quiet week must not fail the job. Its harden-runner
 allowlist is block-mode and includes `*.blob.core.windows.net` (job-log
 archive redirects) and `api.openai.com` (analyst model). knip's

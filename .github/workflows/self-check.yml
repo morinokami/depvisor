@@ -65,7 +65,7 @@ jobs:
         run: node src/self-check-collect.ts
 
       # The analyst has the model key but no GitHub token, no sandbox shell,
-      # and no checkout authority; it only reads the envelope and returns
+      # and no checkout access; it only reads the envelope and returns
       # schema-validated findings.
       - name: Analyze the collected runs
         if: steps.collect.outputs.analyzable == 'true'

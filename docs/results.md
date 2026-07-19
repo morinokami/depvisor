@@ -1,12 +1,12 @@
 # Results
 
-One depvisor run corresponds to one existing updater PR. The Action writes a
-step summary, maintains one PR comment, and exposes machine-shaped outputs.
+One depvisor run corresponds to one existing updater PR. The action writes a
+step summary, maintains one PR comment, and exposes machine-readable outputs.
 Backticked file mentions in the comment link to the file at the exact commit
 the report describes — the repair commit when one was pushed, otherwise the
 reviewed PR head — and only when the file actually exists there; the publisher
 builds these links itself and never renders an agent-authored URL. The comment
-footer carries an "action run" link to the Actions run that last wrote the
+footer carries a "workflow run" link to the workflow run that last wrote the
 comment, so reviewers can jump straight to that run's logs.
 
 For a no-repair review the comment also carries a machine-readable state line
@@ -49,7 +49,7 @@ a full run.
 | `wrong-head`               | The checkout was not the current updater PR head. Usually the workflow omitted `ref: ${{ github.event.workflow_run.head_sha }}`. |
 | `agent-failed`             | The checkout was dirty, the model operation failed, or no valid structured result was produced.                                  |
 | `dependency-state-changed` | The agent changed updater-owned dependency state or Git history. Nothing was published.                                          |
-| `publish-failed`           | The clean-clone commit/push or PR comment update failed. The summary carries the concrete error.                                 |
+| `publish-failed`           | The fresh-clone commit/push or PR comment update failed. The summary carries the concrete error.                                 |
 | `in-progress`              | The process stopped before reaching a final status. It fails closed.                                                             |
 
 `deferred` is green because it is a complete, reviewer-visible outcome rather
