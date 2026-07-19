@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import * as v from "valibot";
 import { isSafeRepoPath } from "./paths.ts";
 
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"] as const;
@@ -77,18 +78,27 @@ export function treeBlobPaths(repo: string, ref: string): Set<string> {
   return paths;
 }
 
-export interface NewRepairFile {
-  path: string;
-  contentBase64: string;
-  executable: boolean;
-  symlink: boolean;
-}
+const NewRepairFileSchema = v.object({
+  path: v.string(),
+  contentBase64: v.string(),
+  executable: v.boolean(),
+  symlink: v.boolean(),
+});
 
-export interface RepairChanges {
-  patch: string;
-  newFiles: NewRepairFile[];
-  paths: string[];
-}
+export type NewRepairFile = v.InferOutput<typeof NewRepairFileSchema>;
+
+/**
+ * Value shape of the captured repair. The schema lives next to the capture
+ * limits so the payload boundary re-validates against the same definition
+ * instead of a hand-written copy.
+ */
+export const RepairChangesSchema = v.object({
+  patch: v.string(),
+  newFiles: v.pipe(v.array(NewRepairFileSchema), v.maxLength(MAX_REPAIR_FILES)),
+  paths: v.pipe(v.array(v.string()), v.maxLength(MAX_REPAIR_FILES)),
+});
+
+export type RepairChanges = v.InferOutput<typeof RepairChangesSchema>;
 
 /** Compare the repair handoff by value, never by JavaScript object insertion order. */
 export function sameRepairChanges(left: RepairChanges, right: RepairChanges): boolean {

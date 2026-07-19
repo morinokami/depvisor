@@ -42,7 +42,9 @@ Pipeline:
   names the generator version. The line is duplicate-work suppression read from
   an editable comment, never an attestation: it only skips a re-review of the
   same green head, and anything malformed parses as absent.
-- `repair-payload.ts` validates the token-free handoff to publication.
+- `repair-payload.ts` validates the token-free handoff to publication against
+  the same agent-result/repair-changes schemas the workflow enforced: one
+  shape source, independently re-checked on the token side.
 - `run-context.ts` validates the prepared PR/CI snapshot and updater identity.
 - `status.ts` owns the fixed one-PR status record and fail/green classification.
 
