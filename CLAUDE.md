@@ -78,10 +78,14 @@ Whenever behavior changes, update the owning reference in the same change.
 - `workflow_run` is deliberate: it starts after CI and makes secrets available
   from a default-branch workflow even for Dependabot PRs. The consumer must check
   out `github.event.workflow_run.head_sha`, not the default branch.
-- A repair push triggers CI and then depvisor again. The second green pass should
-  update the same marker comment and make no new commit unless more repair is
-  genuinely needed. Further green passes on that unchanged head skip with
-  `already-reviewed` via the comment's state line.
+- A repair push with the default `github_token` does not restart the chain on
+  its own: GitHub can gate the repaired head's CI run behind manual approval,
+  and completions in a `GITHUB_TOKEN`-initiated lineage are not delivered to
+  `workflow_run` (a rerun keeps that lineage). The repair and full report are
+  already published by the first pass. A later updater- or human-initiated
+  green run on that head updates the same marker comment and makes no new
+  commit unless more repair is genuinely needed; further green passes on the
+  unchanged head skip with `already-reviewed` via the comment's state line.
 - Flue is exact-pinned beta. Use the `flue` skill and bundled `flue docs` rather
   than guessing APIs.
 - Composite nested `uses:` cannot evaluate `github.action_path`, and

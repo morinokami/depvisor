@@ -89,9 +89,13 @@ For another provider, set the optional `llm_api_key_env` input.
 - A repair is one commit pushed with a force-with-lease against the snapshotted
   PR head. A concurrent updater/human change supersedes the run without making
   the depvisor job fail.
-- The same PR comment is updated on later runs. A repair push naturally reruns
-  CI; the following green run refreshes the evidence report without another
-  commit when no further work is needed.
+- The same PR comment is updated on later runs. A repair push made with the
+  default `github_token` does not restart the chain by itself: GitHub can hold
+  the repaired head's CI run for manual approval, and its completion is not
+  delivered back to `workflow_run`. The repair commit and full report are
+  already on the PR at that point; the next updater- or human-initiated green
+  run refreshes the report without another commit when no further work is
+  needed.
 - The agent is ecosystem-agnostic. It uses whatever tools the GitHub runner and
   repository provide instead of depvisor maintaining package-manager logic.
 
