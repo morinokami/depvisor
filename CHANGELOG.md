@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.3.0](https://github.com/morinokami/depvisor/compare/v2.2.0...v2.3.0) (2026-07-19)
+
+
+### Features
+
+* link the PR report footer to its Actions run ([#100](https://github.com/morinokami/depvisor/issues/100)) ([fcafd92](https://github.com/morinokami/depvisor/commit/fcafd92a8376e8c0bad6894949c5f2200fe254bc))
+* skip re-review of an already-reviewed head ([#104](https://github.com/morinokami/depvisor/issues/104)) ([8f44d36](https://github.com/morinokami/depvisor/commit/8f44d36b5d5c8e4229fabe9f1eb568dd318beb42))
+
+
+### Bug Fixes
+
+* freeze package-manager configuration before model work ([#103](https://github.com/morinokami/depvisor/issues/103)) ([8669a82](https://github.com/morinokami/depvisor/commit/8669a82f56dde7ee5b21f40b2137c0bbcaa74c5b))
+* freeze Package.swift and unify duplicated URL/JSON boundaries ([#109](https://github.com/morinokami/depvisor/issues/109)) ([bfde4bb](https://github.com/morinokami/depvisor/commit/bfde4bb5d4c37e8cfaac1242f0208856a0d0a59a))
+* keep the pre-install credential gate dependency-free ([#119](https://github.com/morinokami/depvisor/issues/119)) ([7aa942f](https://github.com/morinokami/depvisor/commit/7aa942f49937d3206d1dc76be10a8d54a2df8f5d))
+* stop the agent padding verification with no-op commands ([#105](https://github.com/morinokami/depvisor/issues/105)) ([1d82a0a](https://github.com/morinokami/depvisor/commit/1d82a0a1540bbcc758dbdda0e6407d5239498189))
+
 ## [2.2.0](https://github.com/morinokami/depvisor/compare/v2.1.0...v2.2.0) (2026-07-17)
 
 
