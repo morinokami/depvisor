@@ -1,6 +1,6 @@
 {
   "name": "depvisor",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
   "description": "GitHub Action that reviews and fixes existing Dependabot and Renovate PRs.",
   "type": "module",
