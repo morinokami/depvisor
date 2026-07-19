@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/morinokami/depvisor/compare/v2.3.0...v2.4.0) (2026-07-19)
+
+
+### Features
+
+* adopt from-scratch vocabulary for statuses, outputs, and internals ([#124](https://github.com/morinokami/depvisor/issues/124)) ([9d41c3d](https://github.com/morinokami/depvisor/commit/9d41c3dd1ac7b30dc69e048b678a9ed7fe33a989))
+
 ## [2.3.0](https://github.com/morinokami/depvisor/compare/v2.2.0...v2.3.0) (2026-07-19)
 
 
