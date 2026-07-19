@@ -133,9 +133,32 @@ test("a deferred review with leftover edits marks them unpublished", () => {
   });
   assert.match(body, /### Attempted fix/);
   assert.equal(body.includes("for the new API."), true);
-  assert.match(body, /No fix was published\./);
+  assert.match(
+    body,
+    /No fix was published\. Any working-tree edits from this run were not pushed\./,
+  );
   assert.equal(body.includes("No fix was needed."), false);
   assert.equal(body.includes("The agent left no working-tree edits."), false);
+});
+
+test("the deferred notice and reason survive the comment length cap", () => {
+  const agent = agentResult({
+    verdict: "defer",
+    defer_reason: "The failure needs a human decision.",
+    changes_made: Array.from({ length: 200 }, (_, index) => `Edit ${index}: ${"x".repeat(3_000)}`),
+  });
+  const body = renderReportBody(payload(agent), context(), {
+    commitSha: null,
+    blobPaths: new Set(),
+    server: SERVER,
+    runUrl: null,
+  });
+  assert.equal(body.length <= 60_000, true);
+  assert.match(
+    body,
+    /No fix was published\. Any working-tree edits from this run were not pushed\./,
+  );
+  assert.match(body, /\*\*Why depvisor deferred:\*\* The failure needs a human decision\./);
 });
 
 test("file mentions link only into the enumerated tree; evidence links stay https-only", () => {

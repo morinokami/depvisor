@@ -80,19 +80,20 @@ export function renderReportBody(
         ? "Depvisor pushed a fix"
         : "Depvisor reviewed this update";
   const runLink = runUrl === null ? "" : ` ([workflow run](${runUrl}))`;
-  // A deferred review may leave unpublished working-tree edits behind, and
-  // any file links point at the PR head rather than those edits — so the
-  // deferred section is named "Attempted fix" and always carries the
-  // not-published notice, listed edits or not.
+  // A deferred review may leave working-tree edits that were never pushed,
+  // and any file links point at the PR head rather than those edits. The
+  // deferred section is named "Attempted fix", and the not-pushed notice plus
+  // the defer reason render directly under the report heading so the comment
+  // length cap can never truncate them away behind long agent lists.
   const fixHeading = agent.verdict === "defer" ? "Attempted fix" : "Fix";
   const changesFallback = commitSha
     ? "The fix commit contains the captured working-tree changes."
     : agent.verdict === "defer"
       ? "The agent left no working-tree edits."
       : "No fix was needed.";
-  const deferNotice =
+  const deferBlock =
     agent.verdict === "defer"
-      ? "\n_No fix was published. Any working-tree edits from this run were discarded._"
+      ? `\n_No fix was published. Any working-tree edits from this run were not pushed._\n\n**Why depvisor deferred:** ${prose(agent.defer_reason || "No safe bounded fix was found.")}\n`
       : "";
   // Record the reviewed head only for a no-fix review: a pushed fix
   // moves the branch head, and the next CI pass must review that new head.
@@ -106,7 +107,7 @@ export function renderReportBody(
       : null;
   const body = `${REPORT_MARKER}${stateLine === null ? "" : `\n${stateLine}`}
 ## ${heading}
-
+${deferBlock}
 ${prose(agent.summary)}
 
 ### Relevant upstream changes
@@ -116,7 +117,7 @@ ${upstream}
 ### ${fixHeading}
 
 ${bullets(agent.changes_made, changesFallback, prose)}
-${commitSha ? `\nFix commit: \`${commitSha}\`` : ""}${deferNotice}
+${commitSha ? `\nFix commit: \`${commitSha}\`` : ""}
 
 ### Verification evidence
 
@@ -125,7 +126,6 @@ ${verification}
 ### Residual risks
 
 ${bullets(agent.risks, "No additional repository-specific risk was identified.", prose)}
-${agent.verdict === "defer" ? `\n**Why depvisor deferred:** ${prose(agent.defer_reason || "No safe bounded fix was found.")}` : ""}
 
 Initial CI: **${cleanReportText(context.trigger.conclusion, 100)}**${context.trigger.url ? ` — ${cleanReportText(context.trigger.workflowName || "workflow run", 200)}${evidenceLink(context.trigger.url)}` : ""}.
 
