@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { captureRepairChanges, headSha, isClean } from "../src/core/git.ts";
+import { captureRepairChanges, headSha, isClean, treeBlobPaths } from "../src/core/git.ts";
 
 function repo(): string {
   const dir = mkdtempSync(join(tmpdir(), "depvisor-git-v2-"));
@@ -29,6 +29,19 @@ test("captures tracked edits and untracked files without making a commit", () =>
   assert.match(repair.patch, /-before/);
   assert.equal(Buffer.from(repair.newFiles[0]!.contentBase64, "base64").toString(), "created\n");
   assert.equal(headSha(dir), before);
+});
+
+test("enumerates committed blob paths and fails soft on an unknown ref", () => {
+  const dir = repo();
+  mkdirSync(join(dir, "nested"));
+  writeFileSync(join(dir, "nested/inner.txt"), "inner\n");
+  execFileSync("git", ["add", "."], { cwd: dir });
+  execFileSync("git", ["commit", "-qm", "nested"], { cwd: dir });
+  const paths = treeBlobPaths(dir, "HEAD");
+  assert.equal(paths.has("tracked.txt"), true);
+  assert.equal(paths.has("nested/inner.txt"), true);
+  assert.equal(paths.has("nested"), false);
+  assert.equal(treeBlobPaths(dir, "not-a-ref").size, 0);
 });
 
 test("rejects a repair that exceeds the publication file limit", () => {
