@@ -4,7 +4,8 @@
  * This module runs in the Flue process while the model works, so it must hold
  * no GitHub or registry credential, contact only fixed public hosts with
  * lexically validated coordinates, and cap everything it returns. Everything
- * fetched here is upstream project content: untrusted data, never authority.
+ * fetched here is upstream project content: untrusted data, never instructions
+ * to follow.
  */
 
 import { execFileSync } from "node:child_process";

@@ -7,13 +7,13 @@ context supplied by GitHub Actions.
 
 ## Inputs
 
-| Input             | Default               | Description                                                                                                               |
-| ----------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `llm_api_key`     | none                  | Required provider API key. It is present in the Flue process but is not included in the model-directed shell environment. |
-| `llm_model`       | none                  | Required Flue model specifier, such as `openai/gpt-5.5`.                                                                  |
-| `llm_api_key_env` | inferred              | Provider environment variable. Inferred for `openai/*`, `anthropic/*`, and `openrouter/*`.                                |
-| `github_token`    | `${{ github.token }}` | Reads the triggering workflow/jobs and publishes to the existing PR. It is absent from the agent step.                    |
-| `node_version`    | `24`                  | Node version used to run depvisor itself; it does not select the target project's runtime.                                |
+| Input             | Default               | Description                                                                                                        |
+| ----------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `llm_api_key`     | none                  | Required provider API key. It is present in the Flue process but is not included in the agent's shell environment. |
+| `llm_model`       | none                  | Required Flue model specifier, such as `openai/gpt-5.5`.                                                           |
+| `llm_api_key_env` | inferred              | Provider environment variable. Inferred for `openai/*`, `anthropic/*`, and `openrouter/*`.                         |
+| `github_token`    | `${{ github.token }}` | Reads the triggering workflow/jobs and publishes to the existing PR. It is absent from the agent step.             |
+| `node_version`    | `24`                  | Node version used to run depvisor itself; it does not select the target project's runtime.                         |
 
 The minimum action configuration remains:
 
@@ -50,15 +50,15 @@ completion produces an independent review attempt, so prefer the single workflow
 that represents your complete required CI suite.
 
 After a repair push, GitHub's recursion prevention applies to the default
-`github_token`: the repaired head's CI run can require manual approval, and a
-completion in that token-initiated lineage is not delivered to `workflow_run`
-even after approval or a rerun, so the follow-up `reviewed`/`already-reviewed`
-pass does not start on its own. The repair commit and full report are already
-published by then; approve the gated CI run and merge on green. Any genuinely
-new PR event on that head — an updater rebase, a human push, or close/reopen —
-resumes the chain. A GitHub App or PAT supplied as `github_token` makes the
-follow-up pass automatic, at the cost of widening the credential the
-token-holding steps carry.
+`github_token`: the repaired head's CI run can require manual approval, and
+GitHub delivers no `workflow_run` event for a CI run originally triggered by
+that token's push, even after approval or a rerun, so the follow-up
+`reviewed`/`already-reviewed` pass does not start on its own. The repair commit
+and full report are already published by then; approve the gated CI run and
+merge on green. Any genuinely new PR event on that head — an updater rebase, a
+human push, or close/reopen — starts the next depvisor pass. A GitHub App or
+PAT supplied as `github_token` makes the follow-up pass automatic, at the cost
+of a more broadly scoped credential in the token-holding steps.
 
 ## Agent environment
 
@@ -68,18 +68,18 @@ The default local environment exposes ordinary runner variables such as `PATH`,
 provider key. Network access is unrestricted so the agent can install the target
 and consult ecosystem-specific upstream sources.
 
-The agent additionally has two read-only evidence tools: `fetch_release_notes`
-(GitHub releases with a CHANGELOG.md fallback) and `diff_npm_package` (the
-published contents of two npm versions, as file lists plus a unified diff).
-Both run unauthenticated against api.github.com, raw.githubusercontent.com, and
-registry.npmjs.org only, validate every model-supplied coordinate, and cap the
-returned text. They exist so the report's upstream claims cite sources the run
-actually fetched; their output remains untrusted data like any other upstream
-content.
+The agent additionally has two read-only tools for fetching upstream evidence:
+`fetch_release_notes` (GitHub releases with a CHANGELOG.md fallback) and
+`diff_npm_package` (the published contents of two npm versions, as file lists
+plus a unified diff). Both run unauthenticated against api.github.com,
+raw.githubusercontent.com, and registry.npmjs.org only, validate every
+model-supplied coordinate, and cap the returned text. They exist so the
+report's upstream claims cite sources the run actually fetched; their output
+remains untrusted data like any other upstream content.
 
 This environment filtering prevents ordinary inheritance; it is not an OS
-security boundary. depvisor hashes its own source before model work and the
-token-holding steps refuse to run if it changed, starting their child processes
+security boundary. depvisor hashes its own source before the agent runs; the
+token-holding steps refuse to run if it changed and start their child processes
 from a scrubbed environment. Still, the composite action runs agent and
 publisher steps in the same job under the same UID, and those checks do not
 stop a lingering background process, modification of runner-writable
@@ -90,11 +90,11 @@ are outside the supported threat model.
 
 Repositories needing private registries or additional credentials must arrange
 those outside depvisor. Adding such credentials to the agent environment expands
-its authority and is not a depvisor input.
+the agent's access and is not a depvisor input.
 
-## Dependency-state boundary
+## Frozen dependency state
 
-Before model work, depvisor snapshots:
+Before the agent runs, depvisor snapshots:
 
 - every current and previous path in the updater PR diff; and
 - recognized dependency manifests, lockfiles, catalogs, project files, and

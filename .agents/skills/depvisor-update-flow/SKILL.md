@@ -1,26 +1,26 @@
 ---
 name: depvisor-update-flow
-description: Use when changing or reasoning about depvisor v2's one-PR repair/review flow — workflow_run context, updater ownership, the local Flue agent, dependency-state publication boundary, fresh-clone repair push, report comment, and statuses.
+description: Use when changing or reasoning about depvisor v2's one-PR repair/review flow — workflow_run context, updater ownership, the local Flue agent, the frozen dependency state, fresh-clone repair push, report comment, and statuses.
 ---
 
 # depvisor v2 per-PR flow
 
 v2 consumes one existing Dependabot/Renovate PR. It contains no outdated scan,
 version selection, grouping, cooldown, deterministic bump, branch naming, PR
-creation, or open-PR budget. Those are updater responsibilities.
+creation, or open-PR limit. Those are updater responsibilities.
 
 ## Flow
 
 1. A consumer `workflow_run` starts after its named CI completes and checks out
    `workflow_run.head_sha` with persisted credentials disabled.
 2. `prepare.ts` uses a token read-only to resolve the PR, require an open
-   same-repository recognized Dependabot/Renovate head, validate checkout HEAD,
-   list the original changed paths, and collect globally bounded patches plus
-   paginated jobs and bounded failed-job logs. When the triggering CI is green
-   and the maintained comment's state line already records this exact head
-   reviewed on green CI by the same depvisor version, it stops with
+   same-repository PR from a recognized Dependabot/Renovate account, validate
+   checkout HEAD, list the original changed paths, and collect globally bounded
+   patches plus paginated jobs and bounded failed-job logs. When the triggering
+   CI is green and the maintained comment's state line already records this
+   exact head reviewed on green CI by the same depvisor version, it stops with
    `already-reviewed` instead of re-running the agent; the line lives in an
-   editable comment, so it is trusted only for that duplicate-work skip.
+   editable comment, so it is trusted only for skipping that duplicate review.
 3. It freezes every updater path plus recognized dependency manifests/lockfiles.
    The context and snapshot live under `runner.temp`, outside the target repo.
 4. `flue run repair` prompts the root agent once. The agent uses `local()` with
@@ -31,23 +31,24 @@ creation, or open-PR budget. Those are updater responsibilities.
    must cite fetched sources or the PR-body notes. It must leave edits
    uncommitted and return structured evidence.
 5. The workflow requires unchanged HEAD and unchanged frozen dependency state,
-   then captures tracked binary diff plus untracked files. A `defer` may produce
-   a report but never publishes its leftover edits.
+   then captures tracked binary diff plus untracked files. A `defer` verdict may
+   produce a report but never publishes its leftover edits.
 6. `publish.ts` revalidates the context/snapshot, current open PR head, dependency
    state, and byte-identical captured repair. For a ready repair it applies the
    repair in a fresh clone, creates one commit, and pushes with force-with-lease
    to the existing updater ref. It never creates a PR or targets a fork. The
    handoff is capped at 200 files and 5 MiB of patch/new-file content.
-7. The publisher creates or updates one marker comment containing upstream
-   relevance, repair details, command evidence, and residual risks. A later CI
-   run updates the same comment; the repair push itself does not start one with
-   the default `github_token` (GitHub can gate the repaired head's CI behind
-   approval and drops `workflow_run` delivery for that token-initiated lineage),
-   so the refresh pass waits for the next updater- or human-initiated event or
-   an App/PAT `github_token`. For a no-repair review the comment also embeds
-   the reviewed-head state line that enables the `already-reviewed` skip.
-8. `report-status.ts` exposes fixed machine outputs and fails the Action for any
-   incomplete/unsafe/infrastructure outcome.
+7. The publisher creates or updates one comment, identified by a hidden marker,
+   containing upstream relevance, repair details, command evidence, and residual
+   risks. A later CI run updates the same comment; the repair push itself does
+   not start one with the default `github_token` (GitHub can gate the repaired
+   head's CI behind approval and delivers no `workflow_run` event for a CI run
+   originally triggered by that token's push, even after a rerun), so the
+   refresh pass waits for the next updater- or human-initiated event or an
+   App/PAT `github_token`. For a no-repair review the comment also embeds the
+   reviewed-head state line that enables the `already-reviewed` skip.
+8. `report-status.ts` exposes a fixed set of machine-readable outputs and fails
+   the action for any incomplete/unsafe/infrastructure outcome.
 
 ## Local run
 
@@ -81,11 +82,12 @@ Update status classification in `core/status.ts`, `action.yml`,
 
 ## Trust model
 
-The agent is intentionally auto-mode powerful and local() is not an isolation
-boundary. GitHub credentials remain out of its step, and the updater-ownership
-check remains mechanical. External CI is the merge authority; agent verification
-is recorded evidence. Source hashing and env scrubbing do not stop same-UID
-residual processes, runner-writable toolchain/PATH replacement, run-temp status
-tampering, or malicious install scripts from reaching a later step. Never
-reintroduce a claim that the model's verdict itself proves CI green or that the
-current same-job token boundary is OS isolation.
+The agent is intentionally as powerful as an autonomous coding agent, and
+local() is not an isolation boundary. GitHub credentials remain out of its step,
+and the updater-ownership check remains mechanical. External CI remains the
+merge gate; agent verification is recorded evidence. Source hashing and env
+scrubbing do not stop lingering same-UID processes, runner-writable
+toolchain/PATH replacement, tampering with status files under `runner.temp`, or
+malicious install scripts from reaching a later step. Never reintroduce a claim
+that the model's verdict itself proves CI green or that the current same-job
+token boundary is OS isolation.

@@ -3,7 +3,7 @@
  *
  * Pure presentation over validated inputs: the publisher supplies the parsed
  * payload/context, the published commit (if any), the blob enumeration of the
- * linked tree, and pre-validated server/run URLs, then transports the returned
+ * linked tree, and pre-validated server/run URLs, then posts the returned
  * body verbatim. Agent-authored prose crosses the text.ts rendering boundaries
  * here, and evidenceLink stays the only agent-supplied URL that can render.
  */
@@ -79,7 +79,7 @@ export function renderReportBody(
       : commitSha
         ? "Depvisor published a repair"
         : "Depvisor reviewed this update";
-  const runLink = runUrl === null ? "" : ` ([action run](${runUrl}))`;
+  const runLink = runUrl === null ? "" : ` ([workflow run](${runUrl}))`;
   // Record the reviewed head only for a no-repair review: a published repair
   // moves the branch head, and the next CI pass must review that new head.
   const stateLine =

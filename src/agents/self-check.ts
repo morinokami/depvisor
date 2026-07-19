@@ -4,7 +4,7 @@ import { requireModel } from "../shared/env.ts";
 
 export const description =
   "Reads a bounded summary of recent depvisor workflow runs and reports at most two " +
-  "evidence-grounded operational findings, or none for a healthy period.";
+  "evidence-based operational findings, or none for a healthy period.";
 
 /**
  * Deliberately weaker than the repair agent: no local() sandbox, no tools, no

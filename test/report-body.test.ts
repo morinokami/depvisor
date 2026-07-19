@@ -75,7 +75,7 @@ test("a no-repair review embeds the reviewed-head state line", () => {
   assert.equal(body.startsWith(REPORT_MARKER), true);
   assert.match(body, /## Depvisor reviewed this update/);
   assert.match(body, /No code repair was needed\./);
-  assert.equal(body.includes("(action run)"), false);
+  assert.equal(body.includes("(workflow run)"), false);
   const state = parseReportState(body);
   assert.equal(state?.headSha, HEAD);
   assert.equal(state?.conclusion, "success");
@@ -94,7 +94,7 @@ test("a published repair names the commit and records no state line", () => {
   assert.equal(parseReportState(body), null);
   assert.equal(body.includes(`[\`src/a.ts\`](${SERVER}/octo/repo/blob/${COMMIT}/src/a.ts)`), true);
   assert.equal(
-    body.includes("[action run](https://github.com/octo/repo/actions/runs/12345)"),
+    body.includes("[workflow run](https://github.com/octo/repo/actions/runs/12345)"),
     true,
   );
 });

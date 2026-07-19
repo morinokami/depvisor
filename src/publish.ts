@@ -109,7 +109,7 @@ function publishCommit(
   applyRepair(clone, env, changes);
   git(clone, env, ["add", "--all"]);
   const staged = git(clone, env, ["diff", "--cached", "--name-only"]);
-  if (!staged) throw new Error("The captured repair produced no changes in a clean clone");
+  if (!staged) throw new Error("The captured repair produced no changes in a fresh clone");
   git(clone, env, [
     "-c",
     "user.name=depvisor",
