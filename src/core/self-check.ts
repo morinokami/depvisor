@@ -51,7 +51,7 @@ export interface ParsedRunOutputs {
 }
 
 const OUTPUTS_LINE =
-  /\bstatus=(?<status>\S*) failed=(?<failed>\S*) (?:fixed|repaired)=(?<fixed>\S*) pr=\S*(?: total_tokens=(?<tokens>\S*) est_cost_usd=(?<cost>\S*))?[ \t\r]*$/gm;
+  /\bstatus=(?<status>\S*) failed=(?<failed>\S*) fixed=(?<fixed>\S*) pr=\S*(?: total_tokens=(?<tokens>\S*) est_cost_usd=(?<cost>\S*))?[ \t\r]*$/gm;
 
 function parseBool(value: string): boolean | null {
   return value === "true" ? true : value === "false" ? false : null;
@@ -61,8 +61,7 @@ function parseBool(value: string): boolean | null {
  * Extract the development workflow's `status=… failed=…` echo from a job-log
  * tail. The last lexically valid match wins: earlier matches can be the
  * unexpanded `echo "status=$STATUS …"` command header the runner prints. Runs
- * older than the cost echo carry no total_tokens/est_cost_usd fields, and runs from before the
- * vocabulary rename echo `repaired=` instead of `fixed=`.
+ * older than the cost echo carry no total_tokens/est_cost_usd fields.
  */
 export function parseOutputsLine(log: string): ParsedRunOutputs | null {
   let parsed: ParsedRunOutputs | null = null;
