@@ -22,7 +22,7 @@
   "devDependencies": {
     "@flue/cli": "1.0.0-beta.9",
     "@types/node": "24.13.3",
-    "knip": "6.29.0",
+    "knip": "6.35.1",
     "oxfmt": "0.60.0",
     "oxlint": "1.73.0",
     "oxlint-tsgolint": "0.24.0",
